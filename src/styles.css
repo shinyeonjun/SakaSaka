@@ -134,6 +134,8 @@ ul { padding: 0; list-style: none; }
 .notice-mint, .notice-equilibrium { background: var(--equilibrium); }
 .notice-pink { background: var(--pink); }
 .notice-yellow { background: var(--yellow); }
+.notice-orange { background: var(--orange); }
+.notice-red { background: var(--red); }
 .notice-purple { background: var(--purple); }
 .start-principle-card { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; width: min(100%, 440px); padding: 20px; }
 .start-principle-card h2 { font-size: 19px; line-height: 1.38; }
@@ -147,8 +149,23 @@ ul { padding: 0; list-style: none; }
 .work-card, .needs-summary-card, .evidence-card, .living-product-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 22px; }
 .work-card, .needs-summary-card { min-height: 210px; }
 .work-title { font-size: 16px; font-weight: 500; line-height: 1.38; }
+.work-discovery { font-size: 13px; line-height: 1.4; }
 .needs-summary-card .big-number { font-size: 34px; font-weight: 700; line-height: 1.38; }
 .needs-summary-card .button { margin-top: auto; }
+
+.equilibrium-screen-stack { gap: 20px; }
+.equilibrium-main-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 26px; }
+.equilibrium-main-card h2 { font-size: 24px; line-height: 1.38; }
+.equilibrium-reason { font-size: 15px; font-weight: 500; line-height: 1.4; }
+.equilibrium-summary-grid { grid-template-columns: minmax(0, 520fr) minmax(0, 540fr); }
+.equilibrium-detail-card { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; min-height: 142px; padding: 20px; }
+.equilibrium-detail-card .section-header { width: 100%; }
+.plain-list { margin: 0; padding: 0; list-style: none; }
+.wake-trigger-list { display: flex; flex-direction: column; gap: 1px; font-size: 14px; line-height: 1.38; }
+.equilibrium-detail-card > strong { font-size: 14px; line-height: 1.4; }
+.equilibrium-ideas-card { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding: 20px; }
+.equilibrium-ideas-card .section-header { width: 100%; }
+.idea-primary-line { font-size: 14px; font-weight: 500; line-height: 1.45; }
 .evidence-card { min-height: 160px; }
 .living-product-card { min-height: 264px; }
 .check-list { display: flex; flex-direction: column; gap: 0; color: var(--text); font-size: 14px; font-weight: 500; line-height: 1.38; }
@@ -209,6 +226,7 @@ ul { padding: 0; list-style: none; }
 .timeline-time { color: var(--muted); font-size: 11px; }
 .timeline-summary { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .timeline-detail { grid-column: 2 / 4; padding: 0 0 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.timeline-version-meta { grid-column: 2 / 4; color: #98a0af; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.35; }
 .world-health-list { display: flex; flex-direction: column; gap: 3px; }
 .world-health-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 38px; padding: 5px 8px; }
 .world-health-row strong { font-size: 12px; }
@@ -236,6 +254,7 @@ ul { padding: 0; list-style: none; }
 .source-details div { display: flex; flex-direction: column; gap: 3px; }
 .source-details dt { color: var(--muted); font-size: 10px; }
 .source-details dd { font-size: 11px; font-weight: 700; }
+.source-raw-ref { overflow: hidden; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .source-refs { overflow: hidden; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .source-warning { background: #fffdfa; }
 .world-contract-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -247,6 +266,8 @@ ul { padding: 0; list-style: none; }
 .boundary-list { display: flex; flex-direction: column; gap: 10px; }
 .boundary-list div { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
 .boundary-list .pill { min-height: 27px; padding: 5px 10px; font-size: 11px; }
+.world-runtime-card { display: flex; flex-direction: column; gap: 13px; padding: 20px; }
+.runtime-contract-columns { width: 100%; }
 
 .artifact-viewer { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 22px; }
 .artifact-viewer > div { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; }
@@ -288,6 +309,8 @@ ul { padding: 0; list-style: none; }
 .ablation-step-active { border-color: #b2d9c0; background: #fbfffc; }
 .ablation-step-active > span { background: var(--mint); }
 .ablation-arrow { display: flex; align-items: center; color: var(--muted); font-size: 17px; }
+.policy-card { display: flex; flex-direction: column; gap: 13px; padding: 20px; }
+.policy-columns { width: 100%; }
 
 .spec-screen { width: 100%; max-width: 1440px; min-height: 100vh; margin: 0 auto; padding: 40px; }
 .spec-screen .page-heading { width: 100%; }

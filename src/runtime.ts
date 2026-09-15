@@ -1,11 +1,14 @@
 import { worldSourceKeys } from "./types";
 import type {
   ActionStatus,
+  ActionCandidate,
+  ActionEnvelope,
   ActionType,
   AgentAction,
   AppState,
   Artifact,
   ArtifactKind,
+  ContextPacket,
   EventActor,
   EventRecord,
   EventType,
@@ -16,6 +19,12 @@ import type {
   HumanItemKind,
   HumanItemStatus,
   Intent,
+  Observation,
+  Policy,
+  Relation,
+  RelationType,
+  ResourceLedger,
+  RetrievalIndexEntry,
   Project,
   ProjectSettings,
   RiskClass,
@@ -25,9 +34,15 @@ import type {
   WorldSnapshot,
   WorldSource,
   WorldSourceKey,
+  ToolCapability,
 } from "./types";
 
 export const nowIso = () => new Date().toISOString();
+
+export const RUNTIME_SCHEMA_VERSION = 1 as const;
+export const MODEL_VERSION = "local-deterministic-0.1";
+export const TOOL_VERSION = "local-tool-gateway-0.1";
+export const POLICY_VERSION = 1;
 
 export function makeId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -54,10 +69,44 @@ export function getWorldSnapshot(state: AppState, projectId: string): WorldSnaps
     .sort((a, b) => b.observedAt.localeCompare(a.observedAt))[0];
 }
 
+export function getProjectObservations(state: AppState, projectId: string): Observation[] {
+  return state.observations
+    .filter((observation) => observation.projectId === projectId)
+    .sort((a, b) => b.observedAt.localeCompare(a.observedAt));
+}
+
+export function getProjectContexts(state: AppState, projectId: string): ContextPacket[] {
+  return state.contexts
+    .filter((context) => context.projectId === projectId)
+    .sort((a, b) => b.assembledAt.localeCompare(a.assembledAt));
+}
+
+export function getActivePolicy(state: AppState, projectId: string): Policy | undefined {
+  return state.policies
+    .filter((policy) => policy.projectId === projectId && policy.status === "active")
+    .sort((a, b) => b.version - a.version)[0];
+}
+
+export function getResourceLedger(state: AppState, projectId: string, runId = getRun(state, projectId)?.id): ResourceLedger | undefined {
+  return state.resourceLedger
+    .filter((ledger) => ledger.projectId === projectId && (!runId || ledger.runId === runId))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
+export function getProjectRelations(state: AppState, projectId: string): Relation[] {
+  return state.relations.filter((relation) => relation.projectId === projectId);
+}
+
+export function getProjectRetrievalEntries(state: AppState, projectId: string): RetrievalIndexEntry[] {
+  return state.retrievalIndex
+    .filter((entry) => entry.projectId === projectId)
+    .sort((a, b) => b.recency - a.recency || b.outcomeQuality - a.outcomeQuality);
+}
+
 export function getProjectEvents(state: AppState, projectId: string): EventRecord[] {
   return state.events
     .filter((event) => event.projectId === projectId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => (b.sequence ?? -1) - (a.sequence ?? -1) || b.createdAt.localeCompare(a.createdAt));
 }
 
 export function getProjectHumanItems(state: AppState, projectId: string): HumanItem[] {
@@ -90,8 +139,12 @@ function appendEvent(
 ): AppState {
   const record: EventRecord = {
     id: input.id ?? makeId("event"),
-    schemaVersion: 1,
+    sequence: state.events.reduce((max, event) => Math.max(max, event.sequence ?? -1), -1) + 1,
     ...input,
+    schemaVersion: RUNTIME_SCHEMA_VERSION,
+    modelVersion: input.modelVersion ?? MODEL_VERSION,
+    toolVersion: input.toolVersion ?? TOOL_VERSION,
+    policyVersion: input.policyVersion ?? POLICY_VERSION,
   };
   return { ...state, events: [...state.events, record] };
 }
@@ -107,6 +160,143 @@ function updateRun(state: AppState, run: Run): AppState {
 function withWorldSnapshot(state: AppState, snapshot: WorldSnapshot): AppState {
   const remaining = state.worldSnapshots.filter((candidate) => candidate.projectId !== snapshot.projectId);
   return { ...state, worldSnapshots: [...remaining, snapshot] };
+}
+
+export function observationsFromSnapshot(snapshot: WorldSnapshot, idPrefix = "observation"): Observation[] {
+  return worldSourceKeys.map((key) => {
+    const worldSource = snapshot.sources[key];
+    return {
+      id: `${idPrefix}-${key}`,
+      projectId: snapshot.projectId,
+      source: key,
+      observedAt: worldSource.observedAt,
+      freshness: worldSource.freshness,
+      rawRef: `world://${snapshot.id}/${key}`,
+      compactView: worldSource.summary,
+      trustLevel: worldSource.trustLevel,
+      confidence: worldSource.trustLevel === "verified" ? 0.98 : worldSource.trustLevel === "observed" ? 0.82 : 0.4,
+      relatedEntities: worldSource.relatedEntities,
+    };
+  });
+}
+
+export function getToolSurface(project: Project): ToolCapability[] {
+  return [
+    { name: "repo.read", description: "git diff와 dependency/config를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
+    { name: "shell.sandbox", description: "격리 workspace에서 명령을 실행합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "browser.playwright", description: "브라우저와 DOM을 관찰·검증합니다.", riskClass: "P1", reversible: true, requiresNetwork: true, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "database.read", description: "연결된 DB 상태를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
+    { name: "deploy.production", description: "production side effect를 실행합니다.", riskClass: "P3", reversible: false, requiresNetwork: true, sideEffect: true, enabled: !project.settings.productionBlocked && !project.settings.requireExternalApproval, toolVersion: TOOL_VERSION },
+  ];
+}
+
+export function assembleContext(state: AppState, projectId: string, assembledAt = nowIso()): ContextPacket | undefined {
+  const project = getProject(state, projectId);
+  const intent = getIntent(state, projectId);
+  const run = getRun(state, projectId);
+  const world = getWorldSnapshot(state, projectId);
+  if (!project || !intent || !run || !world) return undefined;
+  const policy = getActivePolicy(state, projectId);
+  const openItems = getOpenHumanItems(state, projectId);
+  const observations = getProjectObservations(state, projectId).slice(0, 18);
+  const experiences = state.experiences
+    .filter((experience) => experience.projectId === projectId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 5);
+  return {
+    id: makeId("context"),
+    projectId,
+    intentRef: intent.id,
+    worldCursor: world.cursorEventId,
+    rawIntent: intent.rawText,
+    constraints: [...intent.constraints],
+    observationRefs: observations.map((observation) => observation.id),
+    openHumanItemRefs: openItems.map((item) => item.id),
+    experienceRefs: experiences.map((experience) => experience.id),
+    boundary: {
+      remainingBudget: Math.max(0, Number((project.settings.budgetLimit - project.budgetSpent).toFixed(2))),
+      maxHours: project.settings.maxHours,
+      networkPolicy: project.settings.networkPolicy,
+      productionBlocked: project.settings.productionBlocked,
+      openApprovalRefs: openItems.filter((item) => item.kind === "APPROVAL").map((item) => item.id),
+    },
+    toolSurface: getToolSurface(project),
+    assembledAt,
+    schemaVersion: RUNTIME_SCHEMA_VERSION,
+    modelVersion: MODEL_VERSION,
+    policyVersion: policy?.version ?? POLICY_VERSION,
+  };
+}
+
+export function selectActionCandidates(state: AppState, projectId: string, context: ContextPacket): ActionCandidate[] {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  if (!project || !run) return [];
+  const hasOpenQuestion = context.openHumanItemRefs.some((itemId) => state.humanItems.find((item) => item.id === itemId)?.kind === "QUESTION");
+  const firstCycle = run.cycleCount === 0;
+  const closure: ActionCandidate = {
+    id: makeId("candidate"),
+    projectId,
+    type: "ACT",
+    intentRef: context.intentRef,
+    worldCursor: context.worldCursor,
+    rationaleSummary: firstCycle ? "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증" : "현재 World의 evidence gap을 점검하고 다음 가치 있는 변화를 선택",
+    tool: firstCycle ? "playwright" : "world-adapter",
+    params: { cycle: run.cycleCount + 1, sandbox: true },
+    expectedValue: firstCycle ? 0.88 : 0.41,
+    riskClass: "P1",
+    evidencePlan: ["browser", "test", "world"],
+    force: "closure",
+    score: { goalGap: firstCycle ? 0.88 : 0.44, informationGain: firstCycle ? 0.74 : 0.4, evidenceGain: 0.8, cost: 0.38, risk: 0.08, total: firstCycle ? 2.02 : 1.18 },
+    sourceRefs: context.observationRefs.slice(0, 3),
+  };
+  const discovery: ActionCandidate = {
+    id: makeId("candidate"),
+    projectId,
+    type: "IDEA",
+    intentRef: context.intentRef,
+    worldCursor: context.worldCursor,
+    rationaleSummary: "반복된 사용자 행동에서 제품 기회를 제안",
+    tool: "browser-observation",
+    expectedValue: 0.45,
+    riskClass: "P1",
+    evidencePlan: ["browser", "human"],
+    force: "discovery",
+    score: { goalGap: 0.25, informationGain: 0.62, evidenceGain: 0.3, cost: 0.14, risk: 0.05, total: 0.98 },
+    sourceRefs: context.observationRefs.slice(0, 2),
+  };
+  const question: ActionCandidate = {
+    id: makeId("candidate"),
+    projectId,
+    type: "QUESTION",
+    intentRef: context.intentRef,
+    worldCursor: context.worldCursor,
+    rationaleSummary: "제품 권한 철학은 인간의 의도 없이는 결정할 수 없음",
+    tool: "human-boundary",
+    expectedValue: 0.52,
+    riskClass: "P2",
+    evidencePlan: ["human"],
+    force: "boundary",
+    score: { goalGap: hasOpenQuestion ? 0.42 : 0.12, informationGain: hasOpenQuestion ? 0.7 : 0.2, evidenceGain: 0.25, cost: 0.03, risk: 0.04, total: hasOpenQuestion ? 1.3 : 0.5 },
+    sourceRefs: hasOpenQuestion ? context.openHumanItemRefs : [],
+  };
+  const wait: ActionCandidate = {
+    id: makeId("candidate"),
+    projectId,
+    type: "WAIT",
+    intentRef: context.intentRef,
+    worldCursor: context.worldCursor,
+    rationaleSummary: "현재 비용·위험 대비 즉시 가치 있는 변화가 낮음",
+    force: "wait",
+    score: { goalGap: 0.05, informationGain: 0.08, evidenceGain: 0.04, cost: 0, risk: 0, total: 0.17 },
+    sourceRefs: [],
+  };
+  return [closure, question, discovery, wait].sort((a, b) => b.score.total - a.score.total);
+}
+
+export function selectNextAction(state: AppState, projectId: string, context: ContextPacket): ActionCandidate | undefined {
+  const candidates = selectActionCandidates(state, projectId, context);
+  return candidates[0];
 }
 
 function source(
@@ -217,6 +407,27 @@ export function createProject(
     lastCycleAt: createdAt,
     leaseExpiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
   };
+  const policy: Policy = {
+    id: makeId("policy"),
+    projectId,
+    version: POLICY_VERSION,
+    representation: "hard constraints → risk → required gap → information gain → opportunity → WAIT",
+    status: "active",
+    evalRefs: [],
+    createdAt,
+  };
+  const ledger: ResourceLedger = {
+    id: makeId("ledger"),
+    projectId,
+    runId,
+    tokens: 0,
+    modelCost: 0,
+    wallTimeMs: 0,
+    toolCalls: 0,
+    sandboxSeconds: 0,
+    budgetLimit: project.settings.budgetLimit,
+    updatedAt: createdAt,
+  };
 
   let next: AppState = {
     ...state,
@@ -225,7 +436,16 @@ export function createProject(
     intents: [...state.intents, intent],
     runs: [...state.runs, run],
     worldSnapshots: [...state.worldSnapshots, world],
+    observations: [...state.observations, ...observationsFromSnapshot(world, `${projectId}-observation`)],
+    contexts: [...state.contexts],
+    policies: [...state.policies, policy],
+    resourceLedger: [...state.resourceLedger, ledger],
+    relations: [...state.relations],
+    retrievalIndex: [...state.retrievalIndex],
   };
+  const initialContext = assembleContext(next, projectId, createdAt);
+  if (initialContext) next = { ...next, contexts: [...next.contexts, initialContext] };
+  next = { ...next, relations: [...next.relations, { id: makeId("relation"), projectId, fromId: intent.id, relationType: "supports", toId: project.id, createdAt }] };
   next = appendEvent(next, { projectId, type: "PROJECT_CREATED", actor: "human", summary: `${project.name} 프로젝트 생성`, detail: "workspace와 기본 boundary가 설정되었습니다.", createdAt });
   next = appendEvent(next, { projectId, type: "INTENT_CREATED", actor: "human", summary: "원문 Intent 보존", detail: intent.rawText, createdAt });
   next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: "ACTIVE · 첫 wake 준비", detail: "lease와 budget은 runtime이 관리합니다.", createdAt });
@@ -261,10 +481,11 @@ export function resolveHumanItem(
   let next: AppState = { ...state, humanItems: replaceById(state.humanItems, updatedItem) };
   const eventType: EventType =
     action === "answer" ? "HUMAN_ANSWERED" : action === "approve" ? "HUMAN_APPROVED" : action === "reject" ? "HUMAN_REJECTED" : "HUMAN_DEFERRED";
+  const normalizedEventType: EventType = action === "acknowledge" ? "HUMAN_ACKNOWLEDGED" : eventType;
   const actor: EventActor = "human";
   next = appendEvent(next, {
     projectId: item.projectId,
-    type: eventType,
+    type: normalizedEventType,
     actor,
     summary: `${item.id} · ${status.toLowerCase()}`,
     detail: option?.title ?? answer ?? "Human decision recorded",
@@ -292,7 +513,7 @@ export function resolveHumanItem(
   if (snapshot) {
     const human = snapshot.sources.human;
     const openCount = getOpenHumanItems(next, item.projectId).length;
-    next = withWorldSnapshot(next, {
+    const refreshedSnapshot: WorldSnapshot = {
       ...snapshot,
       observedAt: updatedAt,
       cursorEventId: next.events.at(-1)?.id ?? snapshot.cursorEventId,
@@ -305,7 +526,9 @@ export function resolveHumanItem(
           status: openCount ? "warning" : "healthy",
         },
       },
-    });
+    };
+    next = withWorldSnapshot(next, refreshedSnapshot);
+    next = { ...next, observations: [...next.observations, ...observationsFromSnapshot(refreshedSnapshot, makeId("observation"))] };
   }
   return next;
 }
@@ -325,7 +548,7 @@ function actionDescription(cycleCount: number): { summary: string; detail: strin
   };
 }
 
-function updateWorldAfterCycle(snapshot: WorldSnapshot, actionId: string, observedAt: string, cycleCount: number): WorldSnapshot {
+function updateWorldAfterCycle(snapshot: WorldSnapshot, actionId: string, observedAt: string, cycleCount: number, openHumanCount = 0): WorldSnapshot {
   return {
     ...snapshot,
     id: makeId("world"),
@@ -340,6 +563,7 @@ function updateWorldAfterCycle(snapshot: WorldSnapshot, actionId: string, observ
       runtime: { ...snapshot.sources.runtime, observedAt, summary: "Preview environment · healthy", status: "healthy", freshness: "fresh" },
       browser: { ...snapshot.sources.browser, observedAt, summary: cycleCount === 1 ? "mobile verified" : "last verified · 390/430px", status: "healthy", freshness: "fresh", trustLevel: "verified" },
       logs: { ...snapshot.sources.logs, observedAt, summary: "0 critical errors", status: "healthy", freshness: "fresh" },
+      human: { ...snapshot.sources.human, observedAt, summary: openHumanCount ? `${openHumanCount} open item${openHumanCount > 1 ? "s" : ""}` : "all decisions resolved", status: openHumanCount ? "warning" : "healthy", freshness: "fresh" },
     },
   };
 }
@@ -348,28 +572,43 @@ export function runCycle(state: AppState, projectId: string): AppState {
   const project = getProject(state, projectId);
   const run = getRun(state, projectId);
   const previousWorld = getWorldSnapshot(state, projectId);
-  if (!project || !run || !previousWorld || project.status === "PAUSED" || project.status === "KILLED") return state;
+  if (!project || !run || !previousWorld || project.status === "PAUSED" || project.status === "STALLED" || project.status === "KILLED") return state;
 
   const createdAt = nowIso();
-  const nextCycle = run.cycleCount + 1;
-  const actionId = makeId("action");
   const cost = 0.38;
+  if (project.budgetSpent + cost > project.settings.budgetLimit) {
+    return setRuntimeStatus(state, projectId, "STALLED", "sleep", "budget hard stop · 추가 실행 비용이 상한을 초과");
+  }
+  if (Date.parse(run.leaseExpiresAt) <= Date.now()) {
+    return setRuntimeStatus(state, projectId, "STALLED", "sleep", "lease expired · 새 wake가 필요");
+  }
+  const nextCycle = run.cycleCount + 1;
+  const context = assembleContext(state, projectId, createdAt);
+  if (!context) return state;
+  const selected = selectNextAction(state, projectId, context);
+  if (!selected) return state;
+  const actionId = makeId("action");
   const copy = actionDescription(run.cycleCount);
   const action: AgentAction = {
     id: actionId,
     projectId,
     runId: run.id,
-    type: "ACT",
-    intentRef: project.intentId,
-    worldCursor: previousWorld.cursorEventId,
-    rationaleSummary: copy.summary,
-    tool: copy.tool,
-    params: { cycle: nextCycle, sandbox: true },
-    expectedValue: nextCycle === 1 ? 0.88 : 0.41,
-    riskClass: "P1",
-    evidencePlan: ["browser", "test", "world"],
+    candidateId: selected.id,
+    type: selected.type,
+    intentRef: selected.intentRef,
+    worldCursor: selected.worldCursor,
+    rationaleSummary: selected.rationaleSummary,
+    tool: selected.tool,
+    params: selected.params,
+    expectedValue: selected.expectedValue,
+    riskClass: selected.riskClass,
+    evidencePlan: selected.evidencePlan,
     status: "VERIFIED",
     cost,
+    modelVersion: MODEL_VERSION,
+    toolVersion: TOOL_VERSION,
+    policyVersion: context.policyVersion,
+    contextId: context.id,
     createdAt,
     completedAt: createdAt,
   };
@@ -390,6 +629,7 @@ export function runCycle(state: AppState, projectId: string): AppState {
     ...state,
     actions: [...state.actions, action],
     evidence: [...state.evidence, cycleEvidence],
+    contexts: [...state.contexts, context],
   };
   const eventSteps: Array<{ type: EventType; summary: string; detail?: string; actor?: EventActor }> = [
     { type: "WAKE_TRIGGERED", summary: `cycle ${nextCycle} · lease and budget checked`, detail: "project/world cursor fixed before context assembly" },
@@ -415,8 +655,18 @@ export function runCycle(state: AppState, projectId: string): AppState {
     });
   }
 
-  const nextWorld = updateWorldAfterCycle(previousWorld, actionId, createdAt, nextCycle);
+  const nextWorld = updateWorldAfterCycle(previousWorld, actionId, createdAt, nextCycle, getOpenHumanItems(next, projectId).length);
   next = withWorldSnapshot(next, nextWorld);
+  next = {
+    ...next,
+    observations: [...next.observations, ...observationsFromSnapshot(nextWorld, `${actionId}-observation`)],
+    relations: [
+      ...next.relations,
+      { id: makeId("relation"), projectId, fromId: context.id, relationType: "derived-from", toId: actionId, createdAt },
+      { id: makeId("relation"), projectId, fromId: actionId, relationType: "verified-by", toId: evidenceId, createdAt },
+      { id: makeId("relation"), projectId, fromId: actionId, relationType: "caused", toId: nextWorld.id, createdAt },
+    ],
+  };
   next = appendEvent(next, {
     projectId,
     type: "WORLD_CHANGED",
@@ -428,6 +678,24 @@ export function runCycle(state: AppState, projectId: string): AppState {
     actionId,
     evidenceIds: [evidenceId],
   });
+
+  const previousLedger = getResourceLedger(state, projectId, run.id);
+  const updatedLedger: ResourceLedger = {
+    id: previousLedger?.id ?? makeId("ledger"),
+    projectId,
+    runId: run.id,
+    tokens: (previousLedger?.tokens ?? 0) + 1240,
+    modelCost: Number(((previousLedger?.modelCost ?? 0) + cost).toFixed(2)),
+    wallTimeMs: (previousLedger?.wallTimeMs ?? 0) + 1800,
+    toolCalls: (previousLedger?.toolCalls ?? 0) + 1,
+    sandboxSeconds: (previousLedger?.sandboxSeconds ?? 0) + 4,
+    budgetLimit: project.settings.budgetLimit,
+    updatedAt: createdAt,
+  };
+  next = {
+    ...next,
+    resourceLedger: previousLedger ? replaceById(next.resourceLedger, updatedLedger) : [...next.resourceLedger, updatedLedger],
+  };
 
   const hasBlockingHumanItem = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
   const nextStatus: RuntimeStatus = hasBlockingHumanItem ? "WAITING" : "EQUILIBRIUM";
@@ -472,7 +740,26 @@ export function runCycle(state: AppState, projectId: string): AppState {
     humanIntervention: false,
     createdAt,
   };
-  next = { ...next, experiences: [...next.experiences, experience] };
+  const retrievalEntry: RetrievalIndexEntry = {
+    id: makeId("retrieval"),
+    projectId,
+    entityId: experience.id,
+    sourceRef: experience.id,
+    metadata: { actionType: selected.type, tool: selected.tool ?? "none", verdict: cycleEvidence.verdict },
+    recency: 1,
+    outcomeQuality: cycleEvidence.verdict === "PASS" ? 0.91 : 0.2,
+    createdAt,
+  };
+  next = {
+    ...next,
+    experiences: [...next.experiences, experience],
+    retrievalIndex: [...next.retrievalIndex, retrievalEntry],
+    relations: [
+      ...next.relations,
+      { id: makeId("relation"), projectId, fromId: experience.id, relationType: "derived-from", toId: actionId, createdAt },
+      { id: makeId("relation"), projectId, fromId: experience.id, relationType: "verified-by", toId: evidenceId, createdAt },
+    ],
+  };
   return next;
 }
 
@@ -480,8 +767,9 @@ export function refreshWorld(state: AppState, projectId: string): AppState {
   const snapshot = getWorldSnapshot(state, projectId);
   if (!snapshot) return state;
   const observedAt = nowIso();
-  const updated = updateWorldAfterCycle(snapshot, snapshot.cursorEventId, observedAt, 2);
+  const updated = updateWorldAfterCycle(snapshot, snapshot.cursorEventId, observedAt, 2, getOpenHumanItems(state, projectId).length);
   let next = withWorldSnapshot(state, updated);
+  next = { ...next, observations: [...next.observations, ...observationsFromSnapshot(updated, makeId("observation"))] };
   next = appendEvent(next, {
     projectId,
     type: "OBSERVATION_REFRESHED",
@@ -505,6 +793,7 @@ function setRuntimeStatus(state: AppState, projectId: string, status: RuntimeSta
   const project = getProject(state, projectId);
   const run = getRun(state, projectId);
   if (!project || !run) return state;
+  if (project.status === "KILLED" && status !== "KILLED") return state;
   const updatedAt = nowIso();
   let next = updateProject(state, { ...project, status, updatedAt });
   next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, stopReason: status === "KILLED" ? detail : undefined });
@@ -522,6 +811,7 @@ function setRuntimeStatus(state: AppState, projectId: string, status: RuntimeSta
 export const pauseProject = (state: AppState, projectId: string) => setRuntimeStatus(state, projectId, "PAUSED", "sleep", "사용자가 실행을 일시 정지");
 export const resumeProject = (state: AppState, projectId: string) => setRuntimeStatus(state, projectId, "ACTIVE", "wake", "사용자가 runtime을 다시 시작");
 export const wakeProject = (state: AppState, projectId: string) => setRuntimeStatus(state, projectId, "ACTIVE", "wake", "새 signal에서 runtime wake");
+export const stallProject = (state: AppState, projectId: string, reason = "반복 실패 또는 진전 없음") => setRuntimeStatus(state, projectId, "STALLED", "sleep", reason);
 export const killProject = (state: AppState, projectId: string) => setRuntimeStatus(state, projectId, "KILLED", "sleep", "Run 강제 종료 · lease revoked");
 
 export function createArtifact(
@@ -564,9 +854,54 @@ export function runExperiment(state: AppState, experimentId: string): AppState {
     score: experiment.key === "H1" ? "78% recall" : experiment.key === "H3" ? "0.83 precision" : "0.91 utility",
     updatedAt,
   };
-  let next = { ...state, experiments: replaceById(state.experiments, updatedExperiment) };
+  const activePolicy = getActivePolicy(state, experiment.projectId);
+  const candidatePolicy: Policy = {
+    id: makeId("policy"),
+    projectId: experiment.projectId,
+    version: (activePolicy?.version ?? POLICY_VERSION) + 1,
+    representation: `${experiment.key} · ${experiment.variant} · evidence-gated candidate`,
+    status: "candidate",
+    parentPolicyId: activePolicy?.id,
+    evalRefs: [experiment.id],
+    createdAt: updatedAt,
+  };
+  let next = {
+    ...state,
+    experiments: replaceById(state.experiments, updatedExperiment),
+    policies: [...state.policies, candidatePolicy],
+  };
   next = appendEvent(next, { projectId: experiment.projectId, type: "EXPERIMENT_STARTED", actor: "human", summary: `${experiment.key} · ${experiment.title} experiment started`, detail: experiment.hypothesis, createdAt: updatedAt });
-  return appendEvent(next, { projectId: experiment.projectId, type: "POLICY_CHANGED", actor: "agent", summary: `${experiment.key} completed · ${updatedExperiment.score}`, detail: "deterministic evidence and independent evaluator hooks recorded", createdAt: updatedAt });
+  return appendEvent(next, { projectId: experiment.projectId, type: "POLICY_CHANGED", actor: "agent", summary: `${experiment.key} completed · ${updatedExperiment.score}`, detail: `policy candidate v${candidatePolicy.version} recorded; activation requires independent evidence`, createdAt: updatedAt, payload: { policyId: candidatePolicy.id, experimentId: experiment.id } });
+}
+
+export function createExperiment(
+  state: AppState,
+  projectId: string,
+  input: Pick<Experiment, "key" | "title" | "hypothesis" | "description" | "variant">,
+): AppState {
+  if (!getProject(state, projectId)) return state;
+  const createdAt = nowIso();
+  const experiment: Experiment = {
+    id: makeId("experiment"),
+    projectId,
+    key: input.key,
+    title: input.title,
+    hypothesis: input.hypothesis,
+    description: input.description,
+    variant: input.variant,
+    status: "ready",
+    score: "—",
+    updatedAt: createdAt,
+  };
+  const next = { ...state, experiments: [...state.experiments, experiment] };
+  return appendEvent(next, {
+    projectId,
+    type: "EXPERIMENT_CREATED",
+    actor: "human",
+    summary: `${experiment.key} · ${experiment.title} experiment created`,
+    detail: experiment.hypothesis,
+    createdAt,
+  });
 }
 
 export interface CreateIntentResult {
@@ -598,6 +933,7 @@ export function eventTone(type: EventType): string {
   if (type === "VERIFY" || type === "EVIDENCE_RECORDED") return "mint";
   if (type === "HUMAN_ITEM_CREATED" || type.startsWith("HUMAN_")) return "pink";
   if (type === "WORLD_CHANGED" || type === "OBSERVATION_REFRESHED") return "purple";
+  if (type === "EXPERIMENT_CREATED" || type === "EXPERIMENT_STARTED" || type === "POLICY_CHANGED") return "purple";
   if (type === "RUN_STATE_CHANGED") return "yellow";
   return "neutral";
 }
@@ -618,6 +954,9 @@ export function eventLabel(type: EventType): string {
     HUMAN_ANSWERED: "HUMAN",
     HUMAN_APPROVED: "HUMAN",
     HUMAN_REJECTED: "HUMAN",
+    HUMAN_ACKNOWLEDGED: "HUMAN",
+    EXPERIMENT_CREATED: "EXPERIMENT",
+    EXPERIMENT_STARTED: "EXPERIMENT",
     RUN_STATE_CHANGED: "STATE",
   };
   return labels[type] ?? type.replaceAll("_", " ");

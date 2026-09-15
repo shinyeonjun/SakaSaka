@@ -48,7 +48,9 @@ export type EventType =
   | "HUMAN_APPROVED"
   | "HUMAN_REJECTED"
   | "HUMAN_DEFERRED"
+  | "HUMAN_ACKNOWLEDGED"
   | "ARTIFACT_CREATED"
+  | "EXPERIMENT_CREATED"
   | "EXPERIMENT_STARTED"
   | "POLICY_CHANGED"
   | "OBSERVATION_REFRESHED";
@@ -124,6 +126,21 @@ export interface WorldSnapshot {
   sources: Record<WorldSourceKey, WorldSource>;
 }
 
+export type ObservationSource = WorldSourceKey | "shell";
+
+export interface Observation {
+  id: string;
+  projectId: string;
+  source: ObservationSource;
+  observedAt: string;
+  freshness: WorldSource["freshness"];
+  rawRef: string;
+  compactView: string;
+  trustLevel: WorldSource["trustLevel"];
+  confidence: number;
+  relatedEntities: string[];
+}
+
 export interface Evidence {
   id: string;
   projectId: string;
@@ -148,12 +165,36 @@ export interface ActionEnvelope {
   evidencePlan?: string[];
 }
 
+export type ActionForce = "closure" | "discovery" | "boundary" | "wait";
+
+export interface ActionScore {
+  goalGap: number;
+  informationGain: number;
+  evidenceGain: number;
+  cost: number;
+  risk: number;
+  total: number;
+}
+
+export interface ActionCandidate extends ActionEnvelope {
+  id: string;
+  projectId: string;
+  force: ActionForce;
+  score: ActionScore;
+  sourceRefs: string[];
+}
+
 export interface AgentAction extends ActionEnvelope {
   id: string;
   projectId: string;
   runId: string;
+  candidateId?: string;
   status: ActionStatus;
   cost: number;
+  modelVersion: string;
+  toolVersion?: string;
+  policyVersion: number;
+  contextId?: string;
   createdAt: string;
   completedAt?: string;
 }
@@ -172,6 +213,7 @@ export interface Run {
 
 export interface EventRecord {
   id: string;
+  sequence?: number;
   projectId: string;
   type: EventType;
   actor: EventActor;
@@ -182,7 +224,91 @@ export interface EventRecord {
   actionId?: string;
   evidenceIds?: string[];
   payload?: Record<string, string | number | boolean | string[]>;
+  modelVersion?: string;
+  toolVersion?: string;
+  policyVersion?: number;
   schemaVersion: 1;
+}
+
+export interface ContextPacket {
+  id: string;
+  projectId: string;
+  intentRef: string;
+  worldCursor: string;
+  rawIntent: string;
+  constraints: string[];
+  observationRefs: string[];
+  openHumanItemRefs: string[];
+  experienceRefs: string[];
+  boundary: {
+    remainingBudget: number;
+    maxHours: number;
+    networkPolicy: ProjectSettings["networkPolicy"];
+    productionBlocked: boolean;
+    openApprovalRefs: string[];
+  };
+  toolSurface: ToolCapability[];
+  assembledAt: string;
+  schemaVersion: 1;
+  modelVersion: string;
+  policyVersion: number;
+}
+
+export interface ToolCapability {
+  name: string;
+  description: string;
+  riskClass: RiskClass;
+  reversible: boolean;
+  requiresNetwork: boolean;
+  sideEffect: boolean;
+  enabled: boolean;
+  toolVersion: string;
+}
+
+export interface Policy {
+  id: string;
+  projectId: string;
+  version: number;
+  representation: string;
+  status: "active" | "candidate" | "retired";
+  parentPolicyId?: string;
+  evalRefs: string[];
+  createdAt: string;
+}
+
+export interface ResourceLedger {
+  id: string;
+  projectId: string;
+  runId: string;
+  tokens: number;
+  modelCost: number;
+  wallTimeMs: number;
+  toolCalls: number;
+  sandboxSeconds: number;
+  budgetLimit: number;
+  updatedAt: string;
+}
+
+export type RelationType = "supports" | "derived-from" | "verified-by" | "blocked-by" | "caused" | "contradicts" | "improves";
+
+export interface Relation {
+  id: string;
+  projectId: string;
+  fromId: string;
+  relationType: RelationType;
+  toId: string;
+  createdAt: string;
+}
+
+export interface RetrievalIndexEntry {
+  id: string;
+  projectId: string;
+  entityId: string;
+  sourceRef: string;
+  metadata: Record<string, string | number | boolean>;
+  recency: number;
+  outcomeQuality: number;
+  createdAt: string;
 }
 
 export interface HumanOption {
@@ -257,10 +383,16 @@ export interface AppState {
   runs: Run[];
   actions: AgentAction[];
   worldSnapshots: WorldSnapshot[];
+  observations: Observation[];
+  contexts: ContextPacket[];
   events: EventRecord[];
   evidence: Evidence[];
   humanItems: HumanItem[];
   artifacts: Artifact[];
   experiences: Experience[];
+  policies: Policy[];
+  resourceLedger: ResourceLedger[];
+  relations: Relation[];
+  retrievalIndex: RetrievalIndexEntry[];
   experiments: Experiment[];
 }

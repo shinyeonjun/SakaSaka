@@ -3,6 +3,7 @@ import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader } from "../components/ui";
 import { formatMoney, runtimeDescription } from "../format";
+import { EquilibriumPage } from "./EquilibriumPage";
 
 export function OverviewPage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
@@ -12,9 +13,16 @@ export function OverviewPage({ projectId }: { projectId: string }) {
   const run = getRun(state, projectId);
   const world = getWorldSnapshot(state, projectId);
   if (!project || !intent || !run || !world) return <MissingProject />;
+  if (project.status === "EQUILIBRIUM") return <EquilibriumPage projectId={projectId} />;
   const counts = getHumanCounts(state, projectId);
   const isPaused = project.status === "PAUSED";
-  const canRun = project.status !== "KILLED";
+  const canRun = project.status !== "KILLED" && project.status !== "PAUSED" && project.status !== "STALLED";
+  const canPause = project.status === "ACTIVE" || project.status === "WAITING";
+  const killProject = () => {
+    if (typeof window === "undefined" || window.confirm("현재 run을 강제 종료할까요? 종료 후에는 새 run으로 다시 시작해야 합니다.")) {
+      dispatch({ type: "KILL_PROJECT", projectId });
+    }
+  };
 
   return (
     <div className="screen">
@@ -24,10 +32,11 @@ export function OverviewPage({ projectId }: { projectId: string }) {
         status={project.status}
         actions={(
           <div className="heading-command-row">
-            <Button size="small" variant="primary" onClick={() => dispatch({ type: "RUN_CYCLE", projectId })} disabled={!canRun}>{project.status === "EQUILIBRIUM" ? "다시 관찰" : "Run cycle"}</Button>
-            {project.status === "EQUILIBRIUM" && <Button size="small" variant="subtle" onClick={() => navigate("/projects/new")}>새 Intent 추가</Button>}
-            {project.status === "ACTIVE" && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "PAUSE_PROJECT", projectId })}>Pause</Button>}
+            <Button size="small" variant="primary" onClick={() => dispatch({ type: "RUN_CYCLE", projectId })} disabled={!canRun}>Run cycle</Button>
+            {canPause && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "PAUSE_PROJECT", projectId })}>Pause</Button>}
             {isPaused && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "RESUME_PROJECT", projectId })}>Resume</Button>}
+            {project.status !== "KILLED" && <Button size="small" variant="danger" onClick={killProject}>Kill</Button>}
+            {project.status === "STALLED" && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "WAKE_PROJECT", projectId })}>재시작</Button>}
           </div>
         )}
       />
@@ -43,7 +52,8 @@ export function OverviewPage({ projectId }: { projectId: string }) {
           <Card className="work-card">
             <SectionHeader title="지금 AI가 하는 일" />
             <Pill tone="blue">OBSERVE → ACT → VERIFY</Pill>
-            <p className="work-title">{project.status === "EQUILIBRIUM" ? "현재 비용 대비 가치 높은 행동이 없음" : "Playwright로 초대 링크를 실제 브라우저에서 검증 중"}</p>
+            <p className="work-title">Playwright로 초대 링크를 실제 브라우저에서 검증 중</p>
+            <p className="work-discovery">방금 발견: 모바일 390px에서 초대 모달이 화면 밖으로 넘침</p>
             <p className="muted-copy">{runtimeDescription(project.status)} · {phaseLabel(run.phase)}</p>
             <p className="small-copy">다음 행동은 고정 workflow가 아니라 현재 World를 다시 보고 선택됩니다.</p>
           </Card>
@@ -79,7 +89,9 @@ export function OverviewPage({ projectId }: { projectId: string }) {
         </div>
 
         {project.status === "WAITING" && <InlineNotice tone="pink" title="Human boundary">영향받는 scope만 대기 중입니다. 일정 편집·알림·QA는 계속 진행할 수 있습니다.</InlineNotice>}
-        {project.status === "EQUILIBRIUM" && <InlineNotice tone="equilibrium" title="Equilibrium">새 signal이 들어오면 다시 World를 관찰합니다. 현재는 무리한 개선을 시작하지 않습니다.</InlineNotice>}
+        {project.status === "PAUSED" && <InlineNotice tone="yellow" title="Paused">World와 Memory는 보존됩니다. Resume을 누르면 새 wake에서 이어갑니다.</InlineNotice>}
+        {project.status === "STALLED" && <InlineNotice tone="orange" title="Stalled">반복 실패·lease·예산 경계로 run이 멈췄습니다. 원인을 확인한 뒤 재시작할 수 있습니다.</InlineNotice>}
+        {project.status === "KILLED" && <InlineNotice tone="red" title="Killed">Run이 종료됐고 lease가 revoke됐습니다. 보존된 World/Memory를 바탕으로 새 프로젝트에서 다시 시작하세요.</InlineNotice>}
       </div>
     </div>
   );

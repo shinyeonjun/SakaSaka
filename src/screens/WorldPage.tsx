@@ -1,4 +1,4 @@
-import { getProject, getWorldSnapshot, allWorldSources } from "../runtime";
+import { allWorldSources, getProject, getProjectContexts, getProjectObservations, getResourceLedger, getWorldSnapshot } from "../runtime";
 import { useApp } from "../store";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader, cn } from "../components/ui";
 import { formatDate } from "../format";
@@ -9,6 +9,10 @@ export function WorldPage({ projectId }: { projectId: string }) {
   const snapshot = getWorldSnapshot(state, projectId);
   if (!project || !snapshot) return <div className="screen"><Card className="empty-state"><h1>World를 표시할 수 없습니다.</h1></Card></div>;
   const sources = allWorldSources(snapshot);
+  const observations = getProjectObservations(state, projectId);
+  const latestObservationBySource = new Map(observations.map((observation) => [observation.source, observation]));
+  const context = getProjectContexts(state, projectId)[0];
+  const ledger = getResourceLedger(state, projectId);
 
   return (
     <div className="screen">
@@ -23,6 +27,7 @@ export function WorldPage({ projectId }: { projectId: string }) {
             <div className="source-card-head"><h2>{source.label}</h2><Pill tone={source.status === "healthy" ? "mint" : source.key === "human" ? "pink" : "yellow"}>{source.status}</Pill></div>
             <p className="source-summary">{source.summary}</p>
             <dl className="source-details"><div><dt>freshness</dt><dd>{source.freshness}</dd></div><div><dt>trust</dt><dd>{source.trustLevel}</dd></div><div><dt>observed</dt><dd>{formatDate(source.observedAt)}</dd></div></dl>
+            <p className="source-raw-ref">raw · {latestObservationBySource.get(source.key)?.rawRef ?? "not captured"}</p>
             <p className="source-refs">refs · {source.relatedEntities.length ? source.relatedEntities.join(" · ") : "none"}</p>
           </Card>)}
         </div>
@@ -37,6 +42,14 @@ export function WorldPage({ projectId }: { projectId: string }) {
             <div className="boundary-list"><div><span>Local sandbox</span><Pill tone="mint">allowed</Pill></div><div><span>Network</span><Pill tone="yellow">allowlist</Pill></div><div><span>Production</span><Pill tone="red">approval</Pill></div><div><span>Secrets</span><Pill tone="neutral">broker only</Pill></div></div>
           </Card>
         </div>
+        <Card className="world-runtime-card">
+          <SectionHeader title="Live Runtime Contract" />
+          <div className="contract-columns runtime-contract-columns">
+            <div><strong>Observations</strong><span>{observations.length} source observations · latest rawRef linked</span></div>
+            <div><strong>Context</strong><span>{context ? `${context.id} · ${context.observationRefs.length} refs · ${context.toolSurface.filter((tool) => tool.enabled).length} tools enabled` : "아직 context가 assembled되지 않음"}</span></div>
+            <div><strong>Resource Ledger</strong><span>{ledger ? `${ledger.tokens.toLocaleString()} tokens · ${ledger.toolCalls} tool calls · ${ledger.wallTimeMs}ms` : "아직 사용량이 기록되지 않음"}</span></div>
+          </div>
+        </Card>
         <InlineNotice tone="purple" title="World Snapshot">캐시·색인은 context를 구성하는 보조 수단입니다. 모델의 요약이 실제 상태보다 우선하지 않습니다.</InlineNotice>
       </div>
     </div>

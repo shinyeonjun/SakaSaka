@@ -1,8 +1,10 @@
+import { worldSourceKeys } from "./types";
 import type {
   ActionType,
   AgentAction,
   AppState,
   Artifact,
+  ContextPacket,
   EventActor,
   EventRecord,
   EventType,
@@ -11,6 +13,11 @@ import type {
   Evidence,
   HumanItem,
   Intent,
+  Observation,
+  Policy,
+  Relation,
+  ResourceLedger,
+  RetrievalIndexEntry,
   Project,
   Run,
   WorldSnapshot,
@@ -23,6 +30,7 @@ const time = (minutes: number) => `2026-09-16T14:${String(minutes).padStart(2, "
 const projectId = "project-trip-together";
 const intentId = "intent-trip-together";
 const runId = "run-trip-together-001";
+let seedEventSequence = 0;
 
 function event(
   id: string,
@@ -33,12 +41,16 @@ function event(
 ): EventRecord {
   return {
     id,
+    sequence: seedEventSequence++,
     projectId,
     type,
     actor: options.actor ?? "agent",
     summary,
     createdAt,
     schemaVersion: 1,
+    modelVersion: "local-deterministic-0.1",
+    toolVersion: "local-tool-gateway-0.1",
+    policyVersion: 1,
     ...options,
   };
 }
@@ -173,6 +185,9 @@ const action: AgentAction = {
   evidencePlan: ["browser", "screenshot", "test"],
   status: "VERIFIED",
   cost: 0.38,
+  modelVersion: "local-deterministic-0.1",
+  toolVersion: "local-tool-gateway-0.1",
+  policyVersion: 1,
   createdAt: time(33),
   completedAt: time(34),
 };
@@ -333,6 +348,91 @@ const worldSnapshot: WorldSnapshot = {
   sources,
 };
 
+const observations: Observation[] = worldSourceKeys.map((key) => ({
+  id: `observation-816-${key}`,
+  projectId,
+  source: key,
+  observedAt: sources[key].observedAt,
+  freshness: sources[key].freshness,
+  rawRef: `world://world-816/${key}`,
+  compactView: sources[key].summary,
+  trustLevel: sources[key].trustLevel,
+  confidence: sources[key].trustLevel === "verified" ? 0.98 : sources[key].trustLevel === "observed" ? 0.82 : 0.4,
+  relatedEntities: sources[key].relatedEntities,
+}));
+
+const policies: Policy[] = [{
+  id: "policy-default-v1",
+  projectId,
+  version: 1,
+  representation: "hard constraints → risk → required gap → information gain → opportunity → WAIT",
+  status: "active",
+  evalRefs: ["exp-h1", "exp-h2"],
+  createdAt: time(20),
+}];
+
+const resourceLedger: ResourceLedger[] = [{
+  id: "ledger-run-trip-together-001",
+  projectId,
+  runId,
+  tokens: 12480,
+  modelCost: 8.04,
+  wallTimeMs: 432000,
+  toolCalls: 18,
+  sandboxSeconds: 2400,
+  budgetLimit: 30,
+  updatedAt: time(35),
+}];
+
+const relations: Relation[] = [
+  { id: "relation-001", projectId, fromId: intentId, relationType: "supports", toId: "action-812", createdAt: time(32) },
+  { id: "relation-002", projectId, fromId: "action-812", relationType: "verified-by", toId: "evidence-814", createdAt: time(34) },
+  { id: "relation-003", projectId, fromId: "action-812", relationType: "verified-by", toId: "evidence-815", createdAt: time(34) },
+  { id: "relation-004", projectId, fromId: "Q-17", relationType: "blocked-by", toId: "evidence-815", createdAt: time(35) },
+  { id: "relation-005", projectId, fromId: "artifact-e2e", relationType: "supports", toId: "evidence-812", createdAt: time(34) },
+  { id: "relation-006", projectId, fromId: "IDEA-21", relationType: "derived-from", toId: "evidence-811", createdAt: time(31) },
+];
+
+const retrievalIndex: RetrievalIndexEntry[] = [{
+  id: "retrieval-mobile-overflow",
+  projectId,
+  entityId: "experience-mobile-overflow",
+  sourceRef: "experience-mobile-overflow",
+  metadata: { failureFamily: "responsive-layout", actionType: "ACT", verdict: "PASS" },
+  recency: 0.94,
+  outcomeQuality: 0.91,
+  createdAt: time(35),
+}];
+
+const contexts: ContextPacket[] = [{
+  id: "context-816",
+  projectId,
+  intentRef: intentId,
+  worldCursor: "event-816",
+  rawIntent: intent.rawText,
+  constraints: [...intent.constraints],
+  observationRefs: observations.map((observation) => observation.id),
+  openHumanItemRefs: humanItems.filter((item) => item.status === "OPEN").map((item) => item.id),
+  experienceRefs: experiences.map((experience) => experience.id),
+  boundary: {
+    remainingBudget: 21.58,
+    maxHours: 12,
+    networkPolicy: "allowlist",
+    productionBlocked: true,
+    openApprovalRefs: ["APPROVAL-12"],
+  },
+  toolSurface: [
+    { name: "repo.read", description: "git diff와 dependency/config를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: "local-tool-gateway-0.1" },
+    { name: "shell.sandbox", description: "격리 workspace에서 명령을 실행합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: true, toolVersion: "local-tool-gateway-0.1" },
+    { name: "browser.playwright", description: "브라우저와 DOM을 관찰·검증합니다.", riskClass: "P1", reversible: true, requiresNetwork: true, sideEffect: false, enabled: true, toolVersion: "local-tool-gateway-0.1" },
+    { name: "deploy.production", description: "production side effect를 실행합니다.", riskClass: "P3", reversible: false, requiresNetwork: true, sideEffect: true, enabled: false, toolVersion: "local-tool-gateway-0.1" },
+  ],
+  assembledAt: time(35),
+  schemaVersion: 1,
+  modelVersion: "local-deterministic-0.1",
+  policyVersion: 1,
+}];
+
 export function createSeedState(): AppState {
   return {
     schemaVersion: 1,
@@ -342,11 +442,17 @@ export function createSeedState(): AppState {
     runs: [run],
     actions: [action],
     worldSnapshots: [worldSnapshot],
+    observations,
+    contexts,
     events,
     evidence,
     humanItems,
     artifacts,
     experiences,
+    policies,
+    resourceLedger,
+    relations,
+    retrievalIndex,
     experiments,
   };
 }

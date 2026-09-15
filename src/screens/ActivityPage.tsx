@@ -58,6 +58,6 @@ function TimelineRow({ event, expanded, onToggle }: { event: EventRecord; expand
     <span className="timeline-time">{formatClock(event.createdAt)}</span>
     <Pill tone={eventTone(event.type)}>{eventLabel(event.type)}</Pill>
     <span className="timeline-summary">{event.summary}</span>
-    {expanded && <span className="timeline-detail">{event.detail ?? "source-linked event"}</span>}
+    {expanded && <><span className="timeline-detail">{event.detail ?? "source-linked event"}</span><span className="timeline-version-meta">schema {event.schemaVersion} · model {event.modelVersion ?? "legacy"} · tool {event.toolVersion ?? "legacy"} · policy v{event.policyVersion ?? "—"}</span></>}
   </button>;
 }

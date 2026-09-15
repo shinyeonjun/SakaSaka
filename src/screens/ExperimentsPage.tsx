@@ -1,4 +1,4 @@
-import { getProject } from "../runtime";
+import { getActivePolicy, getProject } from "../runtime";
 import { useApp } from "../store";
 import type { Experiment } from "../types";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader, cn } from "../components/ui";
@@ -9,6 +9,8 @@ export function ExperimentsPage({ projectId }: { projectId: string }) {
   const project = getProject(state, projectId);
   if (!project) return <div className="screen"><Card className="empty-state"><h1>Experiments를 표시할 수 없습니다.</h1></Card></div>;
   const experiments = state.experiments.filter((experiment) => experiment.projectId === projectId);
+  const policies = state.policies.filter((policy) => policy.projectId === projectId).sort((a, b) => b.version - a.version);
+  const activePolicy = getActivePolicy(state, projectId);
 
   return (
     <div className="screen">
@@ -20,6 +22,14 @@ export function ExperimentsPage({ projectId }: { projectId: string }) {
           <SectionHeader title="Ablation Ladder" />
           <div className="ablation-ladder"><AblationStep label="A" title="기존 Task Agent" detail="명시 task → completion" /><span className="ablation-arrow">→</span><AblationStep label="B" title="+ Persistent Closed Loop" detail="Intent + World + Actions" /><span className="ablation-arrow">→</span><AblationStep label="C" title="+ Discovery / Uncertainty" detail="숨은 Gap 탐색" /><span className="ablation-arrow">→</span><AblationStep label="D" title="+ Experience Memory" detail="transition memory" /><span className="ablation-arrow">→</span><AblationStep label="E" title="+ Meta Improvement" detail="policy update" /></div>
           <p className="muted-copy">RSI는 현재 시스템에서 실제 필요성이 증명된 뒤 선택적으로 엽니다. 먼저 baseline에서 실패를 관찰합니다.</p>
+        </Card>
+        <Card className="policy-card">
+          <SectionHeader title="Policy / Replay Contract" />
+          <div className="contract-columns policy-columns">
+            <div><strong>Active policy</strong><span>{activePolicy ? `v${activePolicy.version} · ${activePolicy.representation}` : "기본 정책 없음"}</span></div>
+            <div><strong>Candidate policies</strong><span>{policies.filter((policy) => policy.status === "candidate").length}개 · independent evidence 후에만 승격</span></div>
+            <div><strong>Source of truth</strong><span>experiment result · evaluator refs · raw event history</span></div>
+          </div>
         </Card>
       </div>
     </div>

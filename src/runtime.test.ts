@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createSeedState } from "./seed";
-import { createProject, getHumanCounts, getProject, getProjectEvents, getOpenHumanItems, resolveHumanItem, runCycle } from "./runtime";
+import { assembleContext, createProject, getActivePolicy, getHumanCounts, getProject, getProjectContexts, getProjectEvents, getOpenHumanItems, getProjectObservations, getResourceLedger, killProject, pauseProject, resolveHumanItem, resumeProject, runCycle, runExperiment } from "./runtime";
 
 describe("Intent World runtime", () => {
   it("keeps the seeded human boundary visible in the project state", () => {
@@ -19,6 +19,18 @@ describe("Intent World runtime", () => {
     expect(next.evidence.length).toBe(initial.evidence.length + 1);
     expect(getProjectEvents(next, "project-trip-together").some((event) => event.type === "VERIFY")).toBe(true);
     expect(getProjectEvents(next, "project-trip-together").some((event) => event.type === "WORLD_CHANGED")).toBe(true);
+    expect(getProjectContexts(next, "project-trip-together")).toHaveLength(2);
+    expect(getProjectObservations(next, "project-trip-together").length).toBeGreaterThan(6);
+    expect(getResourceLedger(next, "project-trip-together")?.toolCalls).toBe(19);
+  });
+
+  it("assembles a source-linked context with boundary and tool capabilities", () => {
+    const state = createSeedState();
+    const context = assembleContext(state, "project-trip-together");
+    expect(context?.rawIntent).toContain("여행 계획");
+    expect(context?.observationRefs).toHaveLength(6);
+    expect(context?.boundary.openApprovalRefs).toEqual(["APPROVAL-12"]);
+    expect(context?.toolSurface.find((tool) => tool.name === "deploy.production")?.enabled).toBe(false);
   });
 
   it("resumes the affected scope after a human answer and reaches equilibrium when blockers are gone", () => {
@@ -37,5 +49,35 @@ describe("Intent World runtime", () => {
     expect(next.projects).toHaveLength(2);
     expect(next.intents.find((intent) => intent.projectId === "project-new")?.rawText).toContain("제품 아이디어");
     expect(next.events.filter((event) => event.projectId === "project-trip-together")).toHaveLength(initial.events.filter((event) => event.projectId === "project-trip-together").length);
+    expect(next.observations.some((observation) => observation.projectId === "project-new")).toBe(true);
+    expect(next.policies.some((policy) => policy.projectId === "project-new" && policy.status === "active")).toBe(true);
+  });
+
+  it("preserves lifecycle boundaries and hard-stops a cycle over budget", () => {
+    let state = createSeedState();
+    state = pauseProject(state, "project-trip-together");
+    expect(getProject(state, "project-trip-together")?.status).toBe("PAUSED");
+    state = resumeProject(state, "project-trip-together");
+    expect(getProject(state, "project-trip-together")?.status).toBe("ACTIVE");
+    state = killProject(state, "project-trip-together");
+    expect(getProject(state, "project-trip-together")?.status).toBe("KILLED");
+    expect(getProject(runCycle(state, "project-trip-together"), "project-trip-together")?.status).toBe("KILLED");
+
+    const nearLimit = createSeedState();
+    const limited = { ...nearLimit, projects: nearLimit.projects.map((project) => ({ ...project, budgetSpent: 29.9 })) };
+    const stalled = runCycle(limited, "project-trip-together");
+    expect(getProject(stalled, "project-trip-together")?.status).toBe("STALLED");
+    expect(getProjectEvents(stalled, "project-trip-together").some((event) => event.summary.includes("STALLED"))).toBe(true);
+  });
+
+  it("records experiment results as a candidate policy until independent evidence promotes it", () => {
+    const initial = createSeedState();
+    const next = runExperiment(initial, "exp-h6");
+    const experiment = next.experiments.find((candidate) => candidate.id === "exp-h6");
+    const candidates = next.policies.filter((policy) => policy.projectId === "project-trip-together" && policy.status === "candidate");
+    expect(experiment?.status).toBe("passed");
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.parentPolicyId).toBe(getActivePolicy(initial, "project-trip-together")?.id);
+    expect(getProjectEvents(next, "project-trip-together").some((event) => event.type === "POLICY_CHANGED")).toBe(true);
   });
 });

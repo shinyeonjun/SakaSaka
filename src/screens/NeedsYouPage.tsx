@@ -36,13 +36,13 @@ export function NeedsYouPage({ projectId }: { projectId: string }) {
           {filters.map((item) => <button key={item.key} className={cn("filter-pill", `filter-${item.tone}`, filter === item.key && "filter-pill-active")} onClick={() => setFilter(item.key)} role="tab" aria-selected={filter === item.key}>{item.label} {counts[item.key]}</button>)}
         </div>
         {items.length === 0 && <Card className="empty-state"><h2>지금은 이 범위에 열린 항목이 없습니다.</h2><p>새 signal이 들어오면 여기로 올라옵니다.</p></Card>}
-        {items.map((item) => <HumanItemCard key={item.id} item={item} onOpen={() => navigate(`${projectPath(projectId)}/human-items/${encodeURIComponent(item.id)}`)} onDefer={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: item.id, action: "defer" })} />)}
+        {items.map((item) => <HumanItemCard key={item.id} item={item} onOpen={() => navigate(`${projectPath(projectId)}/human-items/${encodeURIComponent(item.id)}`)} onDefer={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: item.id, action: "defer" })} onApprove={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: item.id, action: "approve" })} onReject={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: item.id, action: "reject" })} />)}
       </div>
     </div>
   );
 }
 
-function HumanItemCard({ item, onOpen, onDefer }: { item: HumanItem; onOpen: () => void; onDefer: () => void }) {
+function HumanItemCard({ item, onOpen, onDefer, onApprove, onReject }: { item: HumanItem; onOpen: () => void; onDefer: () => void; onApprove: () => void; onReject: () => void }) {
   const isOpen = item.status === "OPEN";
   const tone = humanTone(item.kind);
   return (
@@ -51,10 +51,12 @@ function HumanItemCard({ item, onOpen, onDefer }: { item: HumanItem; onOpen: () 
       <h2>{item.title}</h2>
       <p className="muted-copy">{item.kind === "QUESTION" ? `왜 물어봄: ${item.summary}` : item.kind === "IDEA" ? `근거: ${item.summary}` : item.summary}</p>
       <p className="small-copy">{item.kind === "QUESTION" ? `답변 전: ${item.blockingScope.length ? `${item.blockingScope.join(" · ")} 관련 작업만 보류` : "영향 범위 확인 필요"}. ${item.continuingScope.join(" · ")}는 계속 진행 중.` : item.rationale}</p>
-      {!isOpen ? <Pill tone="neutral">{humanStatusLabel(item.status)}{item.answerLabel ? ` · ${item.answerLabel}` : ""}</Pill> : <div className="button-row">
-        <Button variant={item.kind === "QUESTION" || item.kind === "APPROVAL" ? "primary" : "neutral"} size="small" onClick={onOpen}>{item.kind === "QUESTION" ? "답변하기" : item.kind === "APPROVAL" ? "승인 검토" : item.kind === "CONCERN" ? "확인하기" : "자세히 보기"}</Button>
+      {!isOpen ? <Pill tone="neutral">{humanStatusLabel(item.status)}{item.answerLabel ? ` · ${item.answerLabel}` : ""}</Pill> : item.kind === "APPROVAL" ? <div className="button-row">
+        <Button variant="primary" size="small" onClick={onApprove}>승인</Button>
+        <Button variant="neutral" size="small" onClick={onReject}>거절</Button>
+      </div> : <div className="button-row">
+        <Button variant={item.kind === "QUESTION" ? "primary" : "neutral"} size="small" onClick={onOpen}>{item.kind === "QUESTION" ? "답변하기" : item.kind === "CONCERN" ? "확인하기" : "자세히 보기"}</Button>
         {item.kind === "QUESTION" && <Button variant="subtle" size="small" onClick={onDefer}>나중에</Button>}
-        {item.kind === "IDEA" && <Button variant="subtle" size="small" onClick={onDefer}>보류</Button>}
       </div>}
     </Card>
   );
