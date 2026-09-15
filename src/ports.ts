@@ -41,6 +41,8 @@ export interface SandboxContext {
   networkPolicy: "deny" | "allowlist";
   allowedDomains: string[];
   workspaceRef: string;
+  sandboxId?: string;
+  createdAt?: string;
 }
 
 export interface ToolResult {
@@ -52,6 +54,9 @@ export interface ToolResult {
   evidence: Evidence[];
   cost: number;
   wallTimeMs: number;
+  output?: string;
+  blockedReason?: string;
+  artifactRefs?: string[];
 }
 
 export interface ToolGateway {
@@ -94,6 +99,33 @@ export interface MemoryService {
 export interface ResourceLedgerStore {
   read(projectId: string, runId: string): Promise<ResourceLedger | undefined>;
   record(ledger: ResourceLedger): Promise<ResourceLedger>;
+}
+
+export interface SandboxManager {
+  create(project: Project, run: Run): Promise<SandboxContext>;
+  destroy(sandbox: SandboxContext): Promise<void>;
+  kill(sandbox: SandboxContext): Promise<void>;
+}
+
+/** Raw secret values never cross this interface into model context or tool output. */
+export interface SecretsBroker {
+  issue(scope: { projectId: string; runId: string; names: string[]; ttlSeconds: number }): Promise<{ leaseId: string; expiresAt: string }>;
+  revoke(leaseId: string): Promise<void>;
+}
+
+export interface ObservabilitySink {
+  span(name: string, attributes: Record<string, string | number | boolean>): { end(attributes?: Record<string, string | number | boolean>): void };
+  metric(name: string, value: number, attributes?: Record<string, string | number | boolean>): void;
+}
+
+export interface RuntimePorts {
+  model: ModelGateway;
+  tools: ToolGateway;
+  evaluator: Evaluator;
+  world: WorldAdapter[];
+  sandbox: SandboxManager;
+  memory: MemoryService;
+  ledger: ResourceLedgerStore;
 }
 
 export interface ControlPlane {

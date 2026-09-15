@@ -1,4 +1,5 @@
 import { worldSourceKeys } from "./types";
+import type { EvaluatorResult, ToolResult } from "./ports";
 import type {
   ActionStatus,
   ActionCandidate,
@@ -43,6 +44,13 @@ export const RUNTIME_SCHEMA_VERSION = 1 as const;
 export const MODEL_VERSION = "local-deterministic-0.1";
 export const TOOL_VERSION = "local-tool-gateway-0.1";
 export const POLICY_VERSION = 1;
+
+export interface RuntimeCycleInput {
+  observations?: Observation[];
+  action?: ActionEnvelope;
+  toolResult?: ToolResult;
+  evaluation?: EvaluatorResult;
+}
 
 export function makeId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -160,6 +168,42 @@ function updateRun(state: AppState, run: Run): AppState {
 function withWorldSnapshot(state: AppState, snapshot: WorldSnapshot): AppState {
   const remaining = state.worldSnapshots.filter((candidate) => candidate.projectId !== snapshot.projectId);
   return { ...state, worldSnapshots: [...remaining, snapshot] };
+}
+
+/**
+ * Commits fresh adapter observations without pretending that a summary is the
+ * source of truth. The event that caused the observation is attached later by
+ * the runtime cycle, while the raw observation references remain queryable.
+ */
+export function applyObservedWorld(state: AppState, projectId: string, observations: Observation[]): AppState {
+  const snapshot = getWorldSnapshot(state, projectId);
+  if (!snapshot || !observations.length) return state;
+  const relevant = observations.filter((item) => item.projectId === projectId && worldSourceKeys.includes(item.source as WorldSourceKey));
+  if (!relevant.length) return state;
+  const latest = relevant.reduce((current, item) => item.observedAt > current ? item.observedAt : current, snapshot.observedAt);
+  const sources = { ...snapshot.sources };
+  for (const item of relevant) {
+    const key = item.source as WorldSourceKey;
+    sources[key] = {
+      ...sources[key],
+      observedAt: item.observedAt,
+      summary: item.compactView,
+      freshness: item.freshness,
+      trustLevel: item.trustLevel,
+      relatedEntities: item.relatedEntities,
+    };
+  }
+  const updated: WorldSnapshot = {
+    ...snapshot,
+    id: makeId("world"),
+    observedAt: latest,
+    summary: "Direct source observations refreshed; event log and raw references remain the source of truth.",
+    sources,
+  };
+  return {
+    ...withWorldSnapshot(state, updated),
+    observations: [...state.observations, ...relevant],
+  };
 }
 
 export function observationsFromSnapshot(snapshot: WorldSnapshot, idPrefix = "observation"): Observation[] {
@@ -377,6 +421,11 @@ export function createProject(
       requireExternalApproval: settings.requireExternalApproval ?? true,
       productionBlocked: settings.productionBlocked ?? true,
       networkPolicy: settings.networkPolicy ?? "allowlist",
+      workspacePath: settings.workspacePath,
+      previewUrl: settings.previewUrl,
+      allowedDomains: settings.allowedDomains ? [...settings.allowedDomains] : undefined,
+      sandboxMode: settings.sandboxMode ?? "process",
+      modelProvider: settings.modelProvider ?? "deterministic",
     },
     metrics: {
       testsPassed: 0,
@@ -576,27 +625,75 @@ function updateWorldAfterCycle(snapshot: WorldSnapshot, actionId: string, observ
   };
 }
 
-export function runCycle(state: AppState, projectId: string): AppState {
-  const project = getProject(state, projectId);
-  const run = getRun(state, projectId);
-  const previousWorld = getWorldSnapshot(state, projectId);
-  if (!project || !run || !previousWorld || project.status === "PAUSED" || project.status === "STALLED" || project.status === "KILLED") return state;
+function updateWorldFromActualObservations(snapshot: WorldSnapshot, observations: Observation[], actionId: string, observedAt: string, openHumanCount: number, verdict: string): WorldSnapshot {
+  const sources = { ...snapshot.sources };
+  for (const item of observations) {
+    if (!worldSourceKeys.includes(item.source as WorldSourceKey)) continue;
+    const key = item.source as WorldSourceKey;
+    sources[key] = {
+      ...sources[key],
+      observedAt: item.observedAt,
+      summary: item.compactView,
+      freshness: item.freshness,
+      trustLevel: item.trustLevel,
+      relatedEntities: item.relatedEntities,
+    };
+  }
+  return {
+    ...snapshot,
+    id: makeId("world"),
+    cursorEventId: actionId,
+    observedAt,
+    summary: `Direct workspace observations committed · verification ${verdict.toLowerCase()} · ${observations.length} sources refreshed.`,
+    sources,
+  };
+}
+
+function testCountsForCycle(project: Project, toolResult: ToolResult | undefined, evidence: Evidence): { testsPassed: number; testsTotal: number } {
+  if (project.id === "project-trip-together") return { testsPassed: 42, testsTotal: 42 };
+  const output = toolResult?.output ?? evidence.summary;
+  const passed = output.match(/(\d+)\s+(?:tests?|specs?|passed|pass)/i)?.[1];
+  const count = passed ? Number(passed) : 0;
+  return count > 0 ? { testsPassed: count, testsTotal: count } : { testsPassed: project.metrics.testsPassed, testsTotal: project.metrics.testsTotal };
+}
+
+export function runCycle(state: AppState, projectId: string, input: RuntimeCycleInput = {}): AppState {
+  const observedState = input.observations?.length ? applyObservedWorld(state, projectId, input.observations) : state;
+  const project = getProject(observedState, projectId);
+  const run = getRun(observedState, projectId);
+  const previousWorld = getWorldSnapshot(observedState, projectId);
+  if (!project || !run || !previousWorld || project.status === "PAUSED" || project.status === "STALLED" || project.status === "KILLED") return observedState;
 
   const createdAt = nowIso();
-  const cost = 0.38;
+  const cost = input.toolResult?.cost ?? 0.38;
   if (project.budgetSpent + cost > project.settings.budgetLimit) {
-    return setRuntimeStatus(state, projectId, "STALLED", "sleep", "budget hard stop · 추가 실행 비용이 상한을 초과");
+    return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "budget hard stop · 추가 실행 비용이 상한을 초과");
   }
   if (Date.parse(run.leaseExpiresAt) <= Date.now()) {
-    return setRuntimeStatus(state, projectId, "STALLED", "sleep", "lease expired · 새 wake가 필요");
+    return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "lease expired · 새 wake가 필요");
   }
   const nextCycle = run.cycleCount + 1;
-  const context = assembleContext(state, projectId, createdAt);
-  if (!context) return state;
-  const selected = selectNextAction(state, projectId, context);
-  if (!selected) return state;
+  const context = assembleContext(observedState, projectId, createdAt);
+  if (!context) return observedState;
+  const defaultSelected = selectNextAction(observedState, projectId, context);
+  const selected = input.action ? {
+    ...(defaultSelected ?? {
+      id: makeId("candidate"),
+      projectId,
+      force: "closure" as const,
+      score: { goalGap: 0, informationGain: 0, evidenceGain: 0, cost, risk: 0, total: 0 },
+      sourceRefs: context.observationRefs,
+    }),
+    ...input.action,
+    id: defaultSelected?.id ?? makeId("candidate"),
+    projectId,
+  } : defaultSelected;
+  if (!selected) return observedState;
   const actionId = makeId("action");
-  const copy = actionDescription(run.cycleCount, project.name);
+  const copy = input.action ? { summary: input.action.rationaleSummary, detail: `actual tool dispatch · ${input.action.tool ?? "none"}`, tool: input.action.tool ?? "none" } : actionDescription(run.cycleCount, project.name);
+  const suppliedEvidence = input.toolResult?.evidence ?? [];
+  const firstEvidence = suppliedEvidence[0];
+  const evaluationVerdict = input.evaluation?.verdict ?? (input.toolResult?.status === "failed" ? "FAIL" : input.toolResult?.status === "blocked" ? "UNCERTAIN" : "PASS");
   const action: AgentAction = {
     id: actionId,
     projectId,
@@ -611,7 +708,7 @@ export function runCycle(state: AppState, projectId: string): AppState {
     expectedValue: selected.expectedValue,
     riskClass: selected.riskClass,
     evidencePlan: selected.evidencePlan,
-    status: "VERIFIED",
+    status: input.toolResult?.status === "blocked" ? "BLOCKED" : input.toolResult?.status === "failed" || evaluationVerdict === "FAIL" ? "FAILED" : "VERIFIED",
     cost,
     modelVersion: MODEL_VERSION,
     toolVersion: TOOL_VERSION,
@@ -619,33 +716,40 @@ export function runCycle(state: AppState, projectId: string): AppState {
     contextId: context.id,
     createdAt,
     completedAt: createdAt,
+    toolResultRef: input.toolResult?.outputRef,
+    boundaryDecision: input.toolResult?.status === "blocked" ? "blocked" : "allowed",
   };
-  const evidenceId = makeId("evidence");
+  const evidenceId = firstEvidence?.id ?? makeId("evidence");
   const cycleEvidence: Evidence = {
+    ...(firstEvidence ?? {}),
     id: evidenceId,
     projectId,
-    kind: "world",
-    verdict: "PASS",
-    summary: nextCycle === 1 ? "390px/430px browser verification passed" : "Fresh world observation completed with no new critical gap",
-    source: copy.tool,
+    kind: firstEvidence?.kind ?? "world",
+    verdict: evaluationVerdict,
+    summary: input.evaluation?.summary ?? firstEvidence?.summary ?? (nextCycle === 1 ? "390px/430px browser verification passed" : "Fresh world observation completed with no new critical gap"),
+    source: firstEvidence?.source ?? copy.tool,
     createdAt,
     actionId,
-    evaluator: "deterministic world adapter",
+    evaluator: input.evaluation ? "local-deterministic-evaluator" : firstEvidence?.evaluator ?? "deterministic world adapter",
+    evaluatorVersion: input.evaluation?.evaluatorVersion ?? firstEvidence?.evaluatorVersion,
   };
 
   let next: AppState = {
-    ...state,
-    actions: [...state.actions, action],
-    evidence: [...state.evidence, cycleEvidence],
-    contexts: [...state.contexts, context],
+    ...observedState,
+    actions: [...observedState.actions, action],
+    evidence: [...observedState.evidence, ...suppliedEvidence.filter((item) => item.id !== evidenceId), cycleEvidence],
+    contexts: [...observedState.contexts, context],
   };
   const eventSteps: Array<{ type: EventType; summary: string; detail?: string; actor?: EventActor }> = [
     { type: "WAKE_TRIGGERED", summary: `cycle ${nextCycle} · lease and budget checked`, detail: "project/world cursor fixed before context assembly" },
-    { type: "OBSERVE", summary: nextCycle === 1 ? "Playwright mobile viewport 관찰" : "repo · runtime · human signal 재관찰", detail: copy.detail },
+    { type: "OBSERVE", summary: input.observations?.length ? `${input.observations.length} direct source observations` : nextCycle === 1 ? "Playwright mobile viewport 관찰" : "repo · runtime · human signal 재관찰", detail: copy.detail },
     { type: "CONTEXT_ASSEMBLED", summary: "raw intent + fresh world + open human items + boundary", detail: "retrieved experience is evidence, not an instruction" },
     { type: "MODEL_TURN", summary: "행동 후보를 evidence 기반으로 비교", detail: "hard constraints → risk → required gap → information gain → opportunity" },
+    { type: "GAP_FOUND", summary: nextCycle === 1 ? "required evidence gap identified" : "남은 evidence gap 재평가", detail: copy.detail },
     { type: "ACTION_SELECTED", summary: copy.summary, detail: `ActionEnvelope ACT · ${copy.tool}` },
-    { type: "ACTION_EXECUTED", summary: "sandbox action dispatched", detail: "P1 local reversible action" },
+    { type: "TOOL_CALLED", summary: `${copy.tool} 호출`, detail: "capability surface와 sandbox boundary를 통과한 실행 요청" },
+    { type: "ACTION_EXECUTED", summary: "sandbox action dispatched", detail: input.toolResult ? `${input.toolResult.tool} · ${input.toolResult.status}` : "P1 local reversible action" },
+    { type: "TOOL_RESULT", summary: input.toolResult?.summary ?? "tool result returned", detail: input.toolResult ? `${input.toolResult.outputRef} · raw output은 untrusted evidence provenance와 함께 보존` : "raw output은 evidence provenance와 함께 보존" },
     { type: "VERIFY", summary: cycleEvidence.summary, detail: "deterministic evidence plan completed" },
     { type: "EVIDENCE_RECORDED", summary: "world evidence linked to action", detail: `${evidenceId} · evaluator=${cycleEvidence.evaluator}` },
   ];
@@ -659,11 +763,13 @@ export function runCycle(state: AppState, projectId: string): AppState {
       createdAt,
       runId: run.id,
       actionId,
-      evidenceIds: step.type === "EVIDENCE_RECORDED" || step.type === "VERIFY" ? [evidenceId] : undefined,
+      evidenceIds: step.type === "EVIDENCE_RECORDED" || step.type === "VERIFY" || step.type === "TOOL_RESULT" ? [evidenceId] : undefined,
     });
   }
 
-  const nextWorld = updateWorldAfterCycle(previousWorld, actionId, createdAt, nextCycle, getOpenHumanItems(next, projectId).length);
+  const nextWorld = input.observations?.length
+    ? updateWorldFromActualObservations(previousWorld, input.observations, actionId, createdAt, getOpenHumanItems(next, projectId).length, evaluationVerdict)
+    : updateWorldAfterCycle(previousWorld, actionId, createdAt, nextCycle, getOpenHumanItems(next, projectId).length);
   next = withWorldSnapshot(next, nextWorld);
   next = {
     ...next,
@@ -687,7 +793,7 @@ export function runCycle(state: AppState, projectId: string): AppState {
     evidenceIds: [evidenceId],
   });
 
-  const previousLedger = getResourceLedger(state, projectId, run.id);
+  const previousLedger = getResourceLedger(observedState, projectId, run.id);
   const updatedLedger: ResourceLedger = {
     id: previousLedger?.id ?? makeId("ledger"),
     projectId,
@@ -706,8 +812,9 @@ export function runCycle(state: AppState, projectId: string): AppState {
   };
 
   const hasBlockingHumanItem = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
-  const nextStatus: RuntimeStatus = hasBlockingHumanItem ? "WAITING" : "EQUILIBRIUM";
-  const nextPhase: RuntimePhase = nextStatus === "EQUILIBRIUM" || nextStatus === "WAITING" ? "sleep" : "govern";
+  const hasExecutionFailure = input.toolResult?.status === "failed" || evaluationVerdict === "FAIL";
+  const nextStatus: RuntimeStatus = hasBlockingHumanItem ? "WAITING" : hasExecutionFailure ? "STALLED" : "EQUILIBRIUM";
+  const nextPhase: RuntimePhase = "sleep";
   const updatedRun: Run = { ...run, status: nextStatus, phase: nextPhase, cycleCount: nextCycle, lastCycleAt: createdAt };
   const updatedProject: Project = {
     ...project,
@@ -717,8 +824,8 @@ export function runCycle(state: AppState, projectId: string): AppState {
     budgetSpent: Math.min(project.settings.budgetLimit, Number((project.budgetSpent + cost).toFixed(2))),
     metrics: {
       ...project.metrics,
-      testsPassed: Math.max(project.metrics.testsPassed, 42),
-      testsTotal: Math.max(project.metrics.testsTotal, 42),
+      testsPassed: Math.max(project.metrics.testsPassed, testCountsForCycle(project, input.toolResult, cycleEvidence).testsPassed),
+      testsTotal: Math.max(project.metrics.testsTotal, testCountsForCycle(project, input.toolResult, cycleEvidence).testsTotal),
       evidenceCoverage: Math.min(1, Number((project.metrics.evidenceCoverage + 0.02).toFixed(2))),
       initiativeRecall: Math.max(project.metrics.initiativeRecall, 0.71),
       initiativePrecision: Math.max(project.metrics.initiativePrecision, 0.86),
@@ -731,10 +838,21 @@ export function runCycle(state: AppState, projectId: string): AppState {
     type: "RUN_STATE_CHANGED",
     actor: "system",
     summary: `${nextStatus} · cycle ${nextCycle} complete`,
-    detail: nextStatus === "WAITING" ? "blocking scope는 human decision을 기다리고, 독립 작업은 보존됩니다." : "현재 비용 대비 가치 높은 행동이 없어 equilibrium에 진입합니다.",
+    detail: nextStatus === "WAITING" ? "blocking scope는 human decision을 기다리고, 독립 작업은 보존됩니다." : nextStatus === "STALLED" ? "실행 또는 검증 실패를 보존했습니다. 원인 확인 후 새 wake에서 재시도할 수 있습니다." : "현재 비용 대비 가치 높은 행동이 없어 equilibrium에 진입합니다.",
     createdAt,
     runId: run.id,
   });
+  if (nextStatus === "EQUILIBRIUM") {
+    next = appendEvent(next, {
+      projectId,
+      type: "EQUILIBRIUM_ENTERED",
+      actor: "system",
+      summary: "EQUILIBRIUM · meaningful next change not found",
+      detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.",
+      createdAt,
+      runId: run.id,
+    });
+  }
   const experience: Experience = {
     id: makeId("experience"),
     projectId,
@@ -744,9 +862,17 @@ export function runCycle(state: AppState, projectId: string): AppState {
     outcome: cycleEvidence.summary,
     evidenceIds: [evidenceId],
     cost,
-    risk: "P1",
+    risk: selected.riskClass ?? "P1",
     humanIntervention: false,
     createdAt,
+    worldBeforeRef: previousWorld.id,
+    worldAfterRef: nextWorld.id,
+    intentRef: context.intentRef,
+    actionType: selected.type,
+    actionPayloadRef: actionId,
+    modelVersion: action.modelVersion,
+    toolVersion: action.toolVersion,
+    policyVersion: context.policyVersion,
   };
   const retrievalEntry: RetrievalIndexEntry = {
     id: makeId("retrieval"),
@@ -769,6 +895,68 @@ export function runCycle(state: AppState, projectId: string): AppState {
     ],
   };
   return next;
+}
+
+export function recordBoundaryDecision(
+  state: AppState,
+  projectId: string,
+  actionEnvelope: ActionEnvelope,
+  decision: "blocked" | "human-approval",
+  reason: string,
+  contextId?: string,
+): AppState {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  const intent = getIntent(state, projectId);
+  const world = getWorldSnapshot(state, projectId);
+  if (!project || !run || !intent || !world) return state;
+  const createdAt = nowIso();
+  const actionId = makeId("action");
+  const action: AgentAction = {
+    ...actionEnvelope,
+    id: actionId,
+    projectId,
+    runId: run.id,
+    intentRef: actionEnvelope.intentRef || intent.id,
+    worldCursor: actionEnvelope.worldCursor || world.cursorEventId,
+    status: "BLOCKED",
+    cost: 0,
+    modelVersion: MODEL_VERSION,
+    toolVersion: TOOL_VERSION,
+    policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
+    contextId,
+    createdAt,
+    completedAt: createdAt,
+    boundaryDecision: decision,
+  };
+  let next: AppState = { ...state, actions: [...state.actions, action] };
+  next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${actionEnvelope.type} blocked at boundary`, detail: reason, actionId, runId: run.id, createdAt });
+  next = appendEvent(next, { projectId, type: "TOOL_RESULT", actor: "system", summary: `BLOCKED · ${actionEnvelope.tool ?? "side effect"}`, detail: reason, actionId, runId: run.id, createdAt });
+  let nextStatus: RuntimeStatus = "STALLED";
+  if (decision === "human-approval") {
+    const item: HumanItem = {
+      id: makeId("APPROVAL"),
+      projectId,
+      kind: "APPROVAL",
+      status: "OPEN",
+      title: `${actionEnvelope.tool ?? "외부 작업"} 실행 승인`,
+      summary: "실제 외부 영향이 있는 작업은 실행 전에 승인이 필요합니다.",
+      rationale: reason,
+      blockingScope: [actionEnvelope.tool ?? "external-side-effect"],
+      continuingScope: ["관찰", "검증 계획", "문서화"],
+      options: [],
+      priority: "high",
+      createdAt,
+      updatedAt: createdAt,
+      evidenceRefs: [],
+    };
+    next = { ...next, humanItems: [...next.humanItems, item] };
+    next = appendEvent(next, { projectId, type: "HUMAN_ITEM_CREATED", actor: "agent", summary: `Approval ${item.id} · boundary decision required`, detail: item.rationale, runId: run.id, createdAt });
+    nextStatus = "WAITING";
+  }
+  next = updateProject(next, { ...project, status: nextStatus, updatedAt: createdAt, currentActionId: actionId });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", lastCycleAt: createdAt, stopReason: decision === "blocked" ? reason : undefined });
+  return appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · boundary enforcement`, detail: reason, runId: run.id, createdAt });
 }
 
 export function refreshWorld(state: AppState, projectId: string): AppState {
@@ -938,9 +1126,11 @@ export function addIntent(state: AppState, projectId: string, rawText: string): 
 export function eventTone(type: EventType): string {
   if (type === "OBSERVE" || type === "CONTEXT_ASSEMBLED") return "blue";
   if (type === "ACTION_SELECTED" || type === "ACTION_EXECUTED") return "mint";
+  if (type === "TOOL_CALLED" || type === "TOOL_RESULT") return "mint";
   if (type === "VERIFY" || type === "EVIDENCE_RECORDED") return "mint";
   if (type === "HUMAN_ITEM_CREATED" || type.startsWith("HUMAN_")) return "pink";
   if (type === "WORLD_CHANGED" || type === "OBSERVATION_REFRESHED") return "purple";
+  if (type === "GAP_FOUND") return "orange";
   if (type === "EXPERIMENT_CREATED" || type === "EXPERIMENT_STARTED" || type === "POLICY_CHANGED") return "purple";
   if (type === "RUN_STATE_CHANGED") return "yellow";
   return "neutral";
@@ -952,6 +1142,9 @@ export function eventLabel(type: EventType): string {
     OBSERVE: "OBSERVE",
     CONTEXT_ASSEMBLED: "CONTEXT",
     MODEL_TURN: "DECIDE",
+    GAP_FOUND: "GAP",
+    TOOL_CALLED: "TOOL",
+    TOOL_RESULT: "TOOL",
     ACTION_SELECTED: "ACT",
     ACTION_EXECUTED: "ACT",
     VERIFY: "VERIFY",
@@ -966,6 +1159,7 @@ export function eventLabel(type: EventType): string {
     EXPERIMENT_CREATED: "EXPERIMENT",
     EXPERIMENT_STARTED: "EXPERIMENT",
     RUN_STATE_CHANGED: "STATE",
+    EQUILIBRIUM_ENTERED: "EQUILIBRIUM",
   };
   return labels[type] ?? type.replaceAll("_", " ");
 }

@@ -30,6 +30,7 @@ import {
   wakeProject,
 } from "../src/runtime";
 import type { AppState, ArtifactKind, Experiment, ProjectSettings } from "../src/types";
+import { executeLocalCycle, observeLocalWorld } from "./localRuntime";
 
 const port = Number(process.env.API_PORT ?? "8787");
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
@@ -190,7 +191,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : makeId("project");
-    const settings = body.settings && typeof body.settings === "object" ? body.settings as Partial<ProjectSettings> : undefined;
+    const settings = body.settings && typeof body.settings === "object"
+      ? { ...(body.settings as Partial<ProjectSettings>), workspacePath: (body.settings as Partial<ProjectSettings>).workspacePath ?? process.cwd(), sandboxMode: (body.settings as Partial<ProjectSettings>).sandboxMode ?? "process", modelProvider: (body.settings as Partial<ProjectSettings>).modelProvider ?? "deterministic" }
+      : { workspacePath: process.cwd(), sandboxMode: "process" as const, modelProvider: "deterministic" as const };
     commit(createProject(state, rawIntent, projectId, settings));
     sendJson(response, 201, projectPayload(projectId));
     return;
@@ -235,14 +238,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
     if (method === "POST" && parts[2] === "wake" && parts.length === 3) {
       let next = wakeProject(state, projectId);
-      if (getProject(next, projectId)?.status === "ACTIVE") next = runCycle(next, projectId);
+      if (getProject(next, projectId)?.status === "ACTIVE") next = getProject(next, projectId)?.settings.workspacePath ? await executeLocalCycle(next, projectId) : runCycle(next, projectId);
       commit(next);
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
 
     if (method === "POST" && parts[2] === "run" && parts.length === 3) {
-      commit(runCycle(state, projectId));
+      commit(getProject(state, projectId)?.settings.workspacePath ? await executeLocalCycle(state, projectId) : runCycle(state, projectId));
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
@@ -266,7 +269,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
 
     if (method === "POST" && parts[2] === "world" && parts[3] === "refresh" && parts.length === 4) {
-      commit(refreshWorld(state, projectId));
+      commit(getProject(state, projectId)?.settings.workspacePath ? await observeLocalWorld(state, projectId) : refreshWorld(state, projectId));
       sendJson(response, 200, projectPayload(projectId));
       return;
     }

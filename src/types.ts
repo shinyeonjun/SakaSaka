@@ -75,6 +75,12 @@ export interface ProjectSettings {
   requireExternalApproval: boolean;
   productionBlocked: boolean;
   networkPolicy: "deny" | "allowlist";
+  /** API-created projects may bind a local workspace; browser-only projects leave this unset. */
+  workspacePath?: string;
+  previewUrl?: string;
+  allowedDomains?: string[];
+  sandboxMode?: "process" | "docker";
+  modelProvider?: "deterministic" | "openai-compatible";
 }
 
 export interface ProjectMetrics {
@@ -155,6 +161,9 @@ export interface Evidence {
   createdAt: string;
   actionId?: string;
   evaluator?: string;
+  evaluatorVersion?: string;
+  rawRef?: string;
+  metadata?: Record<string, string | number | boolean>;
 }
 
 export interface ActionEnvelope {
@@ -201,6 +210,8 @@ export interface AgentAction extends ActionEnvelope {
   contextId?: string;
   createdAt: string;
   completedAt?: string;
+  toolResultRef?: string;
+  boundaryDecision?: "allowed" | "blocked" | "human-approval";
 }
 
 export interface Run {
@@ -256,6 +267,7 @@ export interface ContextPacket {
   schemaVersion: 1;
   modelVersion: string;
   policyVersion: number;
+  untrustedObservationRefs?: string[];
 }
 
 export interface ToolCapability {
@@ -366,6 +378,14 @@ export interface Experience {
   risk: RiskClass;
   humanIntervention: boolean;
   createdAt: string;
+  worldBeforeRef?: string;
+  worldAfterRef?: string;
+  intentRef?: string;
+  actionType?: ActionType;
+  actionPayloadRef?: string;
+  modelVersion?: string;
+  toolVersion?: string;
+  policyVersion?: number;
 }
 
 export interface Experiment {
@@ -379,6 +399,12 @@ export interface Experiment {
   status: ExperimentStatus;
   score: string;
   updatedAt: string;
+  benchmark?: string;
+  budgetLimit?: number;
+  hiddenCriteria?: string[];
+  evaluatorRefs?: string[];
+  variantConfig?: Record<string, string | number | boolean>;
+  runIds?: string[];
 }
 
 export interface AppState {
