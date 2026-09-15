@@ -1,0 +1,44 @@
+import { getProject, getWorldSnapshot, allWorldSources } from "../runtime";
+import { useApp } from "../store";
+import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader, cn } from "../components/ui";
+import { formatDate } from "../format";
+
+export function WorldPage({ projectId }: { projectId: string }) {
+  const { state, dispatch } = useApp();
+  const project = getProject(state, projectId);
+  const snapshot = getWorldSnapshot(state, projectId);
+  if (!project || !snapshot) return <div className="screen"><Card className="empty-state"><h1>World를 표시할 수 없습니다.</h1></Card></div>;
+  const sources = allWorldSources(snapshot);
+
+  return (
+    <div className="screen">
+      <PageHeading title="Current World" description="요약을 진실로 두지 않고, 필요한 순간 실제 source를 다시 관찰합니다." actions={<Button variant="primary" size="small" onClick={() => dispatch({ type: "REFRESH_WORLD", projectId })}>직접 관찰 새로고침</Button>} />
+      <div className="screen-stack">
+        <Card className="world-snapshot-banner">
+          <div><Pill tone="purple">SNAPSHOT · {snapshot.cursorEventId}</Pill><h2>{snapshot.summary}</h2><p className="muted-copy">Last observed {formatDate(snapshot.observedAt)} · source of truth는 실제 environment와 append-only event log입니다.</p></div>
+          <div className="snapshot-stat"><strong>{sources.filter((source) => source.status === "healthy").length}/{sources.length}</strong><span>sources healthy</span></div>
+        </Card>
+        <div className="world-source-grid">
+          {sources.map((source) => <Card key={source.key} className={cn("world-source-card", `source-${source.status}`)}>
+            <div className="source-card-head"><h2>{source.label}</h2><Pill tone={source.status === "healthy" ? "mint" : source.key === "human" ? "pink" : "yellow"}>{source.status}</Pill></div>
+            <p className="source-summary">{source.summary}</p>
+            <dl className="source-details"><div><dt>freshness</dt><dd>{source.freshness}</dd></div><div><dt>trust</dt><dd>{source.trustLevel}</dd></div><div><dt>observed</dt><dd>{formatDate(source.observedAt)}</dd></div></dl>
+            <p className="source-refs">refs · {source.relatedEntities.length ? source.relatedEntities.join(" · ") : "none"}</p>
+          </Card>)}
+        </div>
+        <div className="split-grid world-contract-grid">
+          <Card>
+            <SectionHeader title="Observation Adapter" />
+            <p className="muted-copy">각 세계를 모델이 읽을 수 있는 관찰로 변환합니다.</p>
+            <ul className="contract-list"><li><strong>rawRef</strong><span>source-linked 원본 보존</span></li><li><strong>observedAt</strong><span>freshness를 판단할 기준</span></li><li><strong>trustLevel</strong><span>untrusted 결과는 authority가 아님</span></li><li><strong>relatedEntities</strong><span>event · evidence · artifact 연결</span></li></ul>
+          </Card>
+          <Card>
+            <SectionHeader title="Runtime Boundary" />
+            <div className="boundary-list"><div><span>Local sandbox</span><Pill tone="mint">allowed</Pill></div><div><span>Network</span><Pill tone="yellow">allowlist</Pill></div><div><span>Production</span><Pill tone="red">approval</Pill></div><div><span>Secrets</span><Pill tone="neutral">broker only</Pill></div></div>
+          </Card>
+        </div>
+        <InlineNotice tone="purple" title="World Snapshot">캐시·색인은 context를 구성하는 보조 수단입니다. 모델의 요약이 실제 상태보다 우선하지 않습니다.</InlineNotice>
+      </div>
+    </div>
+  );
+}
