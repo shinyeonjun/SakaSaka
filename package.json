@@ -6,11 +6,16 @@
   "scripts": {
     "dev": "vite",
     "api": "tsx server/index.ts",
+    "worker": "tsx server/worker.ts",
     "build": "tsc -b && vite build",
     "build:api": "tsc --noEmit -p tsconfig.server.json",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "tsc -b --pretty false",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "acceptance": "tsx scripts/acceptance.ts",
+    "security:check": "npm audit --audit-level=high"
   },
   "dependencies": {
     "react": "^19.1.1",
@@ -21,9 +26,9 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
-    "vitest": "^3.2.4",
-    "tsx": "^4.20.5"
+    "vitest": "^5.0.1"
   }
 }

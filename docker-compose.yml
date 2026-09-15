@@ -1,0 +1,74 @@
+services:
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "4173:80"
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      API_PORT: 8787
+      INTENT_WORLD_STATE_FILE: /app/data/state.json
+      DATABASE_URL: ${DATABASE_URL:-postgres://intent:intent@postgres:5432/intent_world}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DEFAULT_RUN_BUDGET: ${DEFAULT_RUN_BUDGET:-30}
+    ports:
+      - "8787:8787"
+    volumes:
+      - intent-state:/app/data
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build:
+      context: .
+      target: worker
+    environment:
+      INTENT_WORLD_STATE_FILE: /app/data/state.json
+      DATABASE_URL: ${DATABASE_URL:-postgres://intent:intent@postgres:5432/intent_world}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DEFAULT_RUN_BUDGET: ${DEFAULT_RUN_BUDGET:-30}
+    volumes:
+      - intent-state:/app/data
+    depends_on:
+      - api
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: intent_world
+      POSTGRES_USER: intent
+      POSTGRES_PASSWORD: intent
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intent -d intent_world"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sandbox-runner:
+    image: node:22-alpine
+    command: ["node", "-e", "console.log('sandbox runner ready')"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  intent-state:
+  postgres-data:
