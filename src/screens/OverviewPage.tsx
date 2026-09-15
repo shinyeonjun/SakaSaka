@@ -15,6 +15,8 @@ export function OverviewPage({ projectId }: { projectId: string }) {
   if (!project || !intent || !run || !world) return <MissingProject />;
   if (project.status === "EQUILIBRIUM") return <EquilibriumPage projectId={projectId} />;
   const counts = getHumanCounts(state, projectId);
+  const isTripTogether = project.id === "project-trip-together";
+  const projectEvidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const isPaused = project.status === "PAUSED";
   const canRun = project.status !== "KILLED" && project.status !== "PAUSED" && project.status !== "STALLED";
   const canPause = project.status === "ACTIVE" || project.status === "WAITING";
@@ -52,8 +54,8 @@ export function OverviewPage({ projectId }: { projectId: string }) {
           <Card className="work-card">
             <SectionHeader title="지금 AI가 하는 일" />
             <Pill tone="blue">OBSERVE → ACT → VERIFY</Pill>
-            <p className="work-title">Playwright로 초대 링크를 실제 브라우저에서 검증 중</p>
-            <p className="work-discovery">방금 발견: 모바일 390px에서 초대 모달이 화면 밖으로 넘침</p>
+            <p className="work-title">{isTripTogether ? "Playwright로 초대 링크를 실제 브라우저에서 검증 중" : "Intent에 연결된 World source와 evidence를 검증 중"}</p>
+            <p className="work-discovery">{isTripTogether ? "방금 발견: 모바일 390px에서 초대 모달이 화면 밖으로 넘침" : "방금 확인: 현재 World를 기준으로 다음 가치 있는 gap을 비교하는 중"}</p>
             <p className="muted-copy">{runtimeDescription(project.status)} · {phaseLabel(run.phase)}</p>
             <p className="small-copy">다음 행동은 고정 workflow가 아니라 현재 World를 다시 보고 선택됩니다.</p>
           </Card>
@@ -68,18 +70,20 @@ export function OverviewPage({ projectId }: { projectId: string }) {
         <div className="split-grid overview-bottom-grid">
           <Card className="evidence-card">
             <SectionHeader title="Evidence" />
-            <ul className="check-list">
+            {isTripTogether ? <ul className="check-list">
               <li><span className="check-ok">✓</span> API E2E 42/42</li>
               <li><span className="check-ok">✓</span> Chrome desktop flow</li>
               <li><span className="check-warn">!</span> Mobile invite flow issue</li>
               <li><span className="check-ok">✓</span> DB migration dry-run</li>
-            </ul>
+            </ul> : projectEvidence.length ? <ul className="check-list">
+              {projectEvidence.slice(0, 4).map((evidence) => <li key={evidence.id}><span className={evidence.verdict === "PASS" ? "check-ok" : "check-warn"}>{evidence.verdict === "PASS" ? "✓" : "!"}</span> {evidence.summary}</li>)}
+            </ul> : <p className="muted-copy">아직 이 Intent에 연결된 evidence가 없습니다.</p>}
           </Card>
           <Card className="living-product-card">
             <SectionHeader title="Living Product" />
             <p className="muted-copy">Preview environment · healthy</p>
             <div className="preview-panel">
-              <div className="preview-topline"><span className="preview-dot" /> trip-together / preview</div>
+              <div className="preview-topline"><span className="preview-dot" /> {project.name.toLowerCase()} / preview</div>
               <div className="preview-line preview-line-wide" />
               <div className="preview-line" />
               <span className="preview-chip">{project.status}</span>

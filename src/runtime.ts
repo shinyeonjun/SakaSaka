@@ -234,20 +234,21 @@ export function selectActionCandidates(state: AppState, projectId: string, conte
   if (!project || !run) return [];
   const hasOpenQuestion = context.openHumanItemRefs.some((itemId) => state.humanItems.find((item) => item.id === itemId)?.kind === "QUESTION");
   const firstCycle = run.cycleCount === 0;
+  const tripTogetherFlow = project.name === "TripTogether";
   const closure: ActionCandidate = {
     id: makeId("candidate"),
     projectId,
     type: "ACT",
     intentRef: context.intentRef,
     worldCursor: context.worldCursor,
-    rationaleSummary: firstCycle ? "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증" : "현재 World의 evidence gap을 점검하고 다음 가치 있는 변화를 선택",
-    tool: firstCycle ? "playwright" : "world-adapter",
+    rationaleSummary: firstCycle && tripTogetherFlow ? "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증" : firstCycle ? "Intent에 연결된 World source를 관찰하고 첫 evidence를 확보" : "현재 World의 evidence gap을 점검하고 다음 가치 있는 변화를 선택",
+    tool: firstCycle && tripTogetherFlow ? "playwright" : "world-adapter",
     params: { cycle: run.cycleCount + 1, sandbox: true },
-    expectedValue: firstCycle ? 0.88 : 0.41,
+    expectedValue: firstCycle && tripTogetherFlow ? 0.88 : 0.41,
     riskClass: "P1",
-    evidencePlan: ["browser", "test", "world"],
+    evidencePlan: firstCycle && tripTogetherFlow ? ["browser", "test", "world"] : ["world", "test"],
     force: "closure",
-    score: { goalGap: firstCycle ? 0.88 : 0.44, informationGain: firstCycle ? 0.74 : 0.4, evidenceGain: 0.8, cost: 0.38, risk: 0.08, total: firstCycle ? 2.02 : 1.18 },
+    score: { goalGap: firstCycle && tripTogetherFlow ? 0.88 : 0.44, informationGain: firstCycle && tripTogetherFlow ? 0.74 : 0.4, evidenceGain: 0.8, cost: 0.38, risk: 0.08, total: firstCycle && tripTogetherFlow ? 2.02 : 1.18 },
     sourceRefs: context.observationRefs.slice(0, 3),
   };
   const discovery: ActionCandidate = {
@@ -533,12 +534,19 @@ export function resolveHumanItem(
   return next;
 }
 
-function actionDescription(cycleCount: number): { summary: string; detail: string; tool: string } {
-  if (cycleCount === 0) {
+function actionDescription(cycleCount: number, projectName: string): { summary: string; detail: string; tool: string } {
+  if (cycleCount === 0 && projectName === "TripTogether") {
     return {
       summary: "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증",
       detail: "fresh browser observation → CSS layout check → 390px/430px verify",
       tool: "playwright",
+    };
+  }
+  if (cycleCount === 0) {
+    return {
+      summary: "Intent에 연결된 World source를 관찰하고 첫 evidence를 확보",
+      detail: "repo + runtime + browser + human source observation → deterministic verification",
+      tool: "world-adapter",
     };
   }
   return {
@@ -588,7 +596,7 @@ export function runCycle(state: AppState, projectId: string): AppState {
   const selected = selectNextAction(state, projectId, context);
   if (!selected) return state;
   const actionId = makeId("action");
-  const copy = actionDescription(run.cycleCount);
+  const copy = actionDescription(run.cycleCount, project.name);
   const action: AgentAction = {
     id: actionId,
     projectId,

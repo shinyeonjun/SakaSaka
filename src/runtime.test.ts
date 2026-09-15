@@ -53,6 +53,14 @@ describe("Intent World runtime", () => {
     expect(next.policies.some((policy) => policy.projectId === "project-new" && policy.status === "active")).toBe(true);
   });
 
+  it("uses the new Intent context instead of seed-project copy when a new project runs", () => {
+    const initial = createSeedState();
+    const created = createProject(initial, "팀이 함께 제품 아이디어를 검증할 수 있는 공간", "project-new");
+    const next = runCycle(created, "project-new");
+    expect(next.actions.find((action) => action.projectId === "project-new")?.rationaleSummary).toContain("Intent에 연결된 World");
+    expect(next.experiences.find((experience) => experience.projectId === "project-new")?.situation).not.toContain("초대");
+  });
+
   it("preserves lifecycle boundaries and hard-stops a cycle over budget", () => {
     let state = createSeedState();
     state = pauseProject(state, "project-trip-together");

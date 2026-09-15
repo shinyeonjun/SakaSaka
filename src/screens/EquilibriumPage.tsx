@@ -22,6 +22,9 @@ export function EquilibriumPage({ projectId }: { projectId: string }) {
   const ideas = getProjectHumanItems(state, projectId).filter((item) => item.kind === "IDEA");
   const equilibriumEvent = getProjectEvents(state, projectId).find((event) => event.summary.startsWith("EQUILIBRIUM"));
   const reviewTime = equilibriumEvent ? `오늘 ${formatClock(equilibriumEvent.createdAt)}` : "오늘 02:10";
+  const isTripTogether = project.id === "project-trip-together";
+  const primaryFallback = isTripTogether ? "IDEA-21 · 이동시간 자동 계산 · 예상 가치 높음 / 제품 방향 승인 대기" : "현재 보류 중인 Idea 없음";
+  const secondaryFallback = isTripTogether ? "IDEA-18 · 여행 템플릿 공유 · 예상 가치 중간 / 사용자 evidence 부족" : "새로운 signal이 들어오면 추가 탐색을 다시 평가합니다.";
 
   return (
     <div className="screen">
@@ -50,8 +53,8 @@ export function EquilibriumPage({ projectId }: { projectId: string }) {
 
         <Card className="equilibrium-ideas-card">
           <SectionHeader title="보류 중 Ideas" />
-          <p className="idea-primary-line">{formatIdea(ideas[0], "IDEA-21 · 이동시간 자동 계산 · 예상 가치 높음 / 제품 방향 승인 대기")}</p>
-          <p className="muted-copy">{formatIdea(ideas[1], "IDEA-18 · 여행 템플릿 공유 · 예상 가치 중간 / 사용자 evidence 부족")}</p>
+          <p className="idea-primary-line">{formatIdea(ideas[0], primaryFallback)}</p>
+          <p className="muted-copy">{formatIdea(ideas[1], secondaryFallback)}</p>
           <div className="button-row">
             <Button variant="neutral" onClick={() => navigate(`${projectPath(projectId)}/needs-you`)}>Needs You 열기</Button>
             <Button variant="primary" onClick={() => navigate("/projects/new")}>새 Intent 추가</Button>
@@ -63,7 +66,9 @@ export function EquilibriumPage({ projectId }: { projectId: string }) {
 }
 
 function formatIdea(item: { id: string; title: string } | undefined, fallback: string): string {
-  if (!item || item.id === "IDEA-21" || item.id === "IDEA-18") return fallback;
+  if (!item) return fallback;
+  if (item.id === "IDEA-21") return "IDEA-21 · 이동시간 자동 계산 · 예상 가치 높음 / 제품 방향 승인 대기";
+  if (item.id === "IDEA-18") return "IDEA-18 · 여행 템플릿 공유 · 예상 가치 중간 / 사용자 evidence 부족";
   return `${item.id} · ${item.title}`;
 }
 
