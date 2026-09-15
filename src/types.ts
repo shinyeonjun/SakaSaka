@@ -37,6 +37,9 @@ export type EventType =
   | "OBSERVE"
   | "CONTEXT_ASSEMBLED"
   | "MODEL_TURN"
+  | "GAP_FOUND"
+  | "TOOL_CALLED"
+  | "TOOL_RESULT"
   | "ACTION_SELECTED"
   | "ACTION_EXECUTED"
   | "VERIFY"
@@ -52,6 +55,7 @@ export type EventType =
   | "ARTIFACT_CREATED"
   | "EXPERIMENT_CREATED"
   | "EXPERIMENT_STARTED"
+  | "EQUILIBRIUM_ENTERED"
   | "POLICY_CHANGED"
   | "OBSERVATION_REFRESHED";
 
@@ -324,6 +328,8 @@ export interface HumanItem {
   status: HumanItemStatus;
   title: string;
   summary: string;
+  /** Optional detail-page copy. Inbox summaries stay concise and source-specific. */
+  detailSummary?: string;
   rationale: string;
   blockingScope: string[];
   continuingScope: string[];

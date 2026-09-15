@@ -38,7 +38,7 @@ export function HumanItemDetailPage({ projectId, itemId }: { projectId: string; 
         <Card className="detail-intro-card">
           <Pill tone={humanTone(item.kind)}>{humanLabel(item.kind)} · {isQuestion ? "Human Intent Required" : "impact-aware decision"}</Pill>
           <h2>{item.title}</h2>
-          <p className="muted-copy">{item.summary}</p>
+          <p className="muted-copy">{item.detailSummary ?? item.summary}</p>
         </Card>
 
         <div className="split-grid detail-context-grid">

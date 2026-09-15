@@ -50,14 +50,15 @@ function HumanItemCard({ item, onOpen, onDefer, onApprove, onReject }: { item: H
       <div className="human-card-topline"><Pill tone={tone}>{humanLabel(item.kind)}{item.kind === "QUESTION" ? " · 제품 판단 필요" : item.kind === "IDEA" ? " · 기회 발견" : item.kind === "APPROVAL" ? " · 외부 영향" : " · 관찰 필요"}</Pill><span className="item-id">{item.id}</span></div>
       <h2>{item.title}</h2>
       <p className="muted-copy">{item.kind === "QUESTION" ? `왜 물어봄: ${item.summary}` : item.kind === "IDEA" ? `근거: ${item.summary}` : item.summary}</p>
-      <p className="small-copy">{item.kind === "QUESTION" ? `답변 전: ${item.blockingScope.length ? `${item.blockingScope.join(" · ")} 관련 작업만 보류` : "영향 범위 확인 필요"}. ${item.continuingScope.join(" · ")}는 계속 진행 중.` : item.rationale}</p>
+      {item.kind === "QUESTION" && <p className="small-copy">답변 전: {item.blockingScope.length ? `${item.blockingScope.join(" · ")} 관련 작업만 보류` : "영향 범위 확인 필요"}. {item.continuingScope.join(" · ")}는 계속 진행 중.</p>}
+      {item.kind === "IDEA" && <p className="small-copy">{item.rationale}</p>}
       {!isOpen ? <Pill tone="neutral">{humanStatusLabel(item.status)}{item.answerLabel ? ` · ${item.answerLabel}` : ""}</Pill> : item.kind === "APPROVAL" ? <div className="button-row">
         <Button variant="primary" size="small" onClick={onApprove}>승인</Button>
         <Button variant="neutral" size="small" onClick={onReject}>거절</Button>
-      </div> : <div className="button-row">
-        <Button variant={item.kind === "QUESTION" ? "primary" : "neutral"} size="small" onClick={onOpen}>{item.kind === "QUESTION" ? "답변하기" : item.kind === "CONCERN" ? "확인하기" : "자세히 보기"}</Button>
-        {item.kind === "QUESTION" && <Button variant="subtle" size="small" onClick={onDefer}>나중에</Button>}
-      </div>}
+      </div> : item.kind === "QUESTION" ? <div className="button-row">
+        <Button variant="primary" size="small" onClick={onOpen}>답변하기</Button>
+        <Button variant="subtle" size="small" onClick={onDefer}>나중에</Button>
+      </div> : item.kind === "CONCERN" ? <div className="button-row"><Button variant="neutral" size="small" onClick={onOpen}>확인하기</Button></div> : null}
     </Card>
   );
 }

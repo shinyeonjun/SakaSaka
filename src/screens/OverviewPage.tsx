@@ -17,14 +17,6 @@ export function OverviewPage({ projectId }: { projectId: string }) {
   const counts = getHumanCounts(state, projectId);
   const isTripTogether = project.id === "project-trip-together";
   const projectEvidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const isPaused = project.status === "PAUSED";
-  const canRun = project.status !== "KILLED" && project.status !== "PAUSED" && project.status !== "STALLED";
-  const canPause = project.status === "ACTIVE" || project.status === "WAITING";
-  const killProject = () => {
-    if (typeof window === "undefined" || window.confirm("현재 run을 강제 종료할까요? 종료 후에는 새 run으로 다시 시작해야 합니다.")) {
-      dispatch({ type: "KILL_PROJECT", projectId });
-    }
-  };
 
   return (
     <div className="screen">
@@ -32,15 +24,6 @@ export function OverviewPage({ projectId }: { projectId: string }) {
         title={project.name}
         description={project.subtitle}
         status={project.status}
-        actions={(
-          <div className="heading-command-row">
-            <Button size="small" variant="primary" onClick={() => dispatch({ type: "RUN_CYCLE", projectId })} disabled={!canRun}>Run cycle</Button>
-            {canPause && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "PAUSE_PROJECT", projectId })}>Pause</Button>}
-            {isPaused && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "RESUME_PROJECT", projectId })}>Resume</Button>}
-            {project.status !== "KILLED" && <Button size="small" variant="danger" onClick={killProject}>Kill</Button>}
-            {project.status === "STALLED" && <Button size="small" variant="subtle" onClick={() => dispatch({ type: "WAKE_PROJECT", projectId })}>재시작</Button>}
-          </div>
-        )}
       />
 
       <div className="screen-stack">
