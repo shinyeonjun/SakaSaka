@@ -1,6 +1,7 @@
+import { ModelGatewayError, modelFailure } from "./modelFailure";
 import { describe, expect, it } from "vitest";
 import { createEmptyState } from "./emptyState";
-import { assembleContext, createProject, deleteProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordNonToolAction, recoverTransientProviderFailures, resolveHumanItem, resumeProject, runCycle, updateProjectModelSettings } from "./runtime";
+import { assembleContext, createProject, deleteProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordModelFailure, recordNonToolAction, recoverTransientProviderFailures, resolveHumanItem, resumeProject, runCycle, updateProjectModelSettings } from "./runtime";
 import type { ActionEnvelope, AppState } from "./types";
 import type { ToolResult } from "./ports";
 
@@ -77,14 +78,7 @@ describe("Intent World runtime", () => {
   it("provider 실패는 한 번에 중단하지 않고 한도까지 재시도하며 이전 중단 상태를 복구한다", () => {
     const { state, projectId } = projectState("project-provider-recovery", "실제 모델 provider로 다음 행동을 선택해줘", { failureThreshold: 3 });
     const providerFailure = (current: AppState) => {
-      const project = getProject(current, projectId)!;
-      return recordNonToolAction(current, projectId, {
-        type: "WAIT",
-        intentRef: project.intentId,
-        worldCursor: getWorldSnapshot(current, projectId)!.cursorEventId,
-        rationaleSummary: "모델 게이트웨이를 사용할 수 없습니다 · Codex CLI 실행 실패: provider unavailable",
-        riskClass: "P0",
-      });
+      return recordModelFailure(current, projectId, new ModelGatewayError(modelFailure("PROVIDER_UNAVAILABLE", "모델 게이트웨이를 사용할 수 없습니다 · legacy fixture", true)));
     };
 
     const first = providerFailure(state);

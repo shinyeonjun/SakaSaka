@@ -1,3 +1,4 @@
+import { runCommand } from "./commandRunner";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, relative, resolve, sep } from "node:path";
@@ -278,10 +279,11 @@ function validPackageName(value: string): boolean {
   return value.length <= 214 && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@[a-z0-9._-]+)?$/i.test(value);
 }
 
-export async function executeWorkspaceTool(action: ActionEnvelope, sandbox: SandboxContext): Promise<ToolResult | undefined> {
+export async function executeWorkspaceTool(action: ActionEnvelope, sandbox: SandboxContext, options: { signal?: AbortSignal } = {}): Promise<ToolResult | undefined> {
   if (action.type !== "ACT" || !action.tool?.startsWith("workspace.") && action.tool !== "dependency.install") return undefined;
   const startedAt = Date.now();
   try {
+    options.signal?.throwIfAborted();
     const root = workspaceRoot(sandbox);
     if (action.tool === "workspace.list") {
       const depth = typeof action.params?.depth === "number" && Number.isFinite(action.params.depth) ? Math.max(0, Math.min(8, Math.floor(action.params.depth))) : 2;
@@ -394,14 +396,15 @@ export async function executeWorkspaceTool(action: ActionEnvelope, sandbox: Sand
       let stderr = "";
       try {
         const dockerInvocation = sandbox.mode === "docker" ? dockerDependencyInvocation(sandbox, manager, args) : undefined;
-        const output = await execFileAsync(dockerInvocation?.file ?? invocation.file, dockerInvocation?.args ?? [...invocation.prefix, ...args], { cwd: root, timeout: commandTimeoutMs, maxBuffer: maxOutputBytes, windowsHide: true, shell: false, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|DATABASE_URL|REDIS_URL)/i.test(key))) });
-        stdout = String(output.stdout ?? "");
-        stderr = String(output.stderr ?? "");
+        const output = await runCommand(dockerInvocation?.file ?? invocation.file, dockerInvocation?.args ?? [...invocation.prefix, ...args], { cwd: root, signal: options.signal, timeoutMs: commandTimeoutMs, maxBytes: maxOutputBytes, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|DATABASE_URL|REDIS_URL)/i.test(key))) });
+        code = output.code;
+        stdout = output.stdout;
+        stderr = output.stderr;
       } catch (error: unknown) {
         const candidate = error as { code?: number; stdout?: string; stderr?: string };
         code = typeof candidate.code === "number" ? candidate.code : 1;
         stdout = String(candidate.stdout ?? "");
-        stderr = String(candidate.stderr ?? "");
+        stderr = String(candidate.stderr ?? (error instanceof Error ? error.message : "설치 명령 실패"));
       }
       const output = redactSecretLikeText([stdout, stderr].filter(Boolean).join("\n"));
       const changedPaths = dependencyFiles.filter((file) => {

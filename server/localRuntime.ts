@@ -1,7 +1,9 @@
-import { applyObservedWorld, assembleContextAsync, getMatchingApprovalGrant, getProject, getToolSurface, getWorldSnapshot, recordBoundaryDecision, recordNonToolAction, recordObservedWorldRefresh, recordRuntimeFailure, runCycle } from "../src/runtime";
+import { accountModelUsage, applyObservedWorld, assembleContextAsync, executionBlockReason, getMatchingApprovalGrant, getProject, getRun, getToolSurface, getWorldSnapshot, recordBoundaryDecision, recordModelFailure, recordNonToolAction, recordObservedWorldRefresh, recordRuntimeFailure, runCycle, stallProject } from "../src/runtime";
 import { isActiveProcessReference, redactSecretLikeText, validateActionBoundary } from "../src/security";
-import type { AppState, ContextPacket, Observation } from "../src/types";
-import type { ModelGateway } from "../src/ports";
+import { validateActionInput } from "../src/toolContracts";
+import { ModelGatewayError, modelFailure } from "../src/modelFailure";
+import type { ActionEnvelope, AppState, ContextPacket, Observation, RuntimePhase } from "../src/types";
+import type { ModelGateway, ModelUsage, SandboxContext } from "../src/ports";
 import { DeterministicEvaluator, DockerSandboxManager, LocalSandboxManager, LocalToolGateway, createLocalWorldAdapters, createModelGateway, estimateLocalActionCost } from "./localAdapters";
 import { hydrateManagedProcesses } from "./processManager";
 import { JsonlObservabilitySink } from "./observability";
@@ -9,127 +11,106 @@ import { JsonlObservabilitySink } from "./observability";
 export interface LocalCycleOptions {
   workspacePath?: string;
   previewUrl?: string;
-  /** Research harnesses may inject the same provider across isolated variants. */
   modelGateway?: ModelGateway;
-  /** Optional projection used by an explicit ablation; the persisted packet is what the model received. */
   contextProjection?: (context: ContextPacket) => ContextPacket;
+  signal?: AbortSignal;
+  /** Durable runtime hooks. No model/tool work is performed while committing these. */
+  onPhase?: (phase: RuntimePhase, state: AppState) => Promise<void>;
+  beforeDispatch?: (state: AppState, action: ActionEnvelope) => Promise<void>;
 }
 
 async function observeProject(state: AppState, projectId: string): Promise<{ state: AppState; observations: Observation[] }> {
-  const project = getProject(state, projectId);
-  const run = project ? state.runs.find((candidate) => candidate.id === project.activeRunId) : undefined;
+  const project = getProject(state, projectId), run = getRun(state, projectId);
   if (!project || !run) return { state, observations: [] };
   const adapters = createLocalWorldAdapters();
   const results = await Promise.allSettled(adapters.map((adapter) => adapter.observe({ project, run, previousWorld: getWorldSnapshot(state, projectId), state })));
-  const observations = results.map((result, index) => {
-    if (result.status === "fulfilled") return result.value;
-    const reason = redactSecretLikeText(result.reason instanceof Error ? result.reason.message : "adapter failed");
-    return {
-      id: `${projectId}-${adapters[index].source}-error-${Date.now().toString(36)}`,
-      projectId,
-      source: adapters[index].source,
-      status: "warning",
-      observedAt: new Date().toISOString(),
-      freshness: "stale" as const,
-      rawRef: `adapter://${adapters[index].source}/error`,
-      compactView: `${adapters[index].source} observation failed · ${reason.replace(/\s+/g, " ").slice(0, 240)}`,
-      trustLevel: "untrusted" as const,
-      confidence: 0.1,
-      relatedEntities: [run.id],
-    } satisfies Observation;
+  const observations = results.map((result, index): Observation => result.status === "fulfilled" ? result.value : {
+    id: `${projectId}-${adapters[index].source}-error-${crypto.randomUUID()}`, projectId, source: adapters[index].source, status: "warning",
+    observedAt: new Date().toISOString(), freshness: "stale", rawRef: `adapter://${adapters[index].source}/error`,
+    compactView: `${adapters[index].source} 관찰 실패 · ${redactSecretLikeText(result.reason instanceof Error ? result.reason.message : "adapter failed").slice(0, 240)}`,
+    trustLevel: "untrusted", confidence: 0.1, relatedEntities: [run.id],
   });
   return { state: applyObservedWorld(state, projectId, observations), observations };
 }
 
-/** Executes one real local closed-loop cycle for API-created workspace projects. */
+/** One cognition cycle. The coordinator owns durable reservation/commit and cancellation. */
 export async function executeLocalCycle(state: AppState, projectId: string, options: LocalCycleOptions = {}): Promise<AppState> {
-  const observability = new JsonlObservabilitySink();
-  const cycleSpan = observability.span("runtime.cycle", { projectId, mode: "local" });
-  let spanStatus = "unknown";
-  let currentState = state;
-  let sandboxManager: LocalSandboxManager | DockerSandboxManager | undefined;
-  let sandbox: Awaited<ReturnType<LocalSandboxManager["create"]>> | undefined;
+  const span = new JsonlObservabilitySink().span("runtime.cycle", { projectId });
+  let current = state;
+  let phase: RuntimePhase = "wake";
+  let modelUsage: ModelUsage | undefined;
+  let context: ContextPacket | undefined;
+  let sandbox: SandboxContext | undefined;
+  let manager: LocalSandboxManager | undefined;
+  const checkpoint = async (next: RuntimePhase) => {
+    if (options.signal?.aborted) throw new ModelGatewayError(modelFailure("CANCELLED", "사용자 변경으로 실행이 취소되었습니다.", false), modelUsage);
+    phase = next;
+    await options.onPhase?.(next, current);
+  };
   try {
-    const observed = await observeProject(state, projectId);
-    currentState = observed.state;
-    const project = getProject(observed.state, projectId);
-    const run = project ? observed.state.runs.find((candidate) => candidate.id === project.activeRunId) : undefined;
-    if (!project || !run) {
-      spanStatus = "missing-project";
-      return observed.state;
-    }
-    if (project.status !== "ACTIVE" && project.status !== "WAITING") {
-      spanStatus = `not-active:${project.status}`;
-      return observed.state;
-    }
-    const assembledContext = await assembleContextAsync(observed.state, projectId);
-    if (!assembledContext) {
-      spanStatus = "missing-context";
-      return observed.state;
-    }
-
-    const projectedContext = options.contextProjection?.(assembledContext) ?? assembledContext;
-    const context = projectedContext.projectId === projectId && projectedContext.intentRef === assembledContext.intentRef && projectedContext.worldCursor === assembledContext.worldCursor
-      ? projectedContext
-      : assembledContext;
+    const initialProject = getProject(state, projectId);
+    if (!initialProject || !["ACTIVE", "WAITING"].includes(initialProject.status)) return state;
+    const blocked = executionBlockReason(state, projectId);
+    if (blocked) return stallProject(state, projectId, blocked);
+    const initialRun = getRun(state, projectId);
+    if (initialRun?.retryAfter && Date.parse(initialRun.retryAfter) > Date.now()) return state;
+    await checkpoint("observe");
+    const observed = await observeProject(current, projectId);
+    current = observed.state;
+    const project = getProject(current, projectId)!, run = getRun(current, projectId)!;
+    await checkpoint("assemble");
+    const assembled = await assembleContextAsync(current, projectId);
+    if (!assembled) throw new Error("모델 컨텍스트를 구성하지 못했습니다.");
+    const projected = options.contextProjection?.(assembled) ?? assembled;
+    context = projected.projectId === projectId && projected.intentRef === assembled.intentRef && projected.worldCursor === assembled.worldCursor ? projected : assembled;
     const model = options.modelGateway ?? createModelGateway(project);
     const capabilities = await model.capabilities();
-    // The packet sent to the provider must identify the provider that will
-    // actually decide. Keeping the default local value here would make a
-    // remote turn look deterministic in the context/evidence lineage.
-    const modelContext = context.modelVersion === capabilities.modelVersion
-      ? context
-      : { ...context, modelVersion: capabilities.modelVersion };
-    const action = await model.decide(modelContext);
-    const modelUsage = await model.usage(run.id);
-    if (action.intentRef !== modelContext.intentRef || action.worldCursor !== modelContext.worldCursor) {
-      spanStatus = "invalid-action-reference";
-      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
-      return recordBoundaryDecision(contextState, projectId, action, "blocked", "model action references a stale intent or world cursor", modelContext.id, modelUsage);
-    }
-    if (!isActiveProcessReference(action, modelContext.activeProcessViews?.map((process) => process.id) ?? [])) {
-      spanStatus = "invalid-process-reference";
-      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
-      return recordBoundaryDecision(contextState, projectId, action, "blocked", "process lifecycle action must reference an active process from the current context", modelContext.id, modelUsage);
-    }
+    context = { ...context, modelVersion: capabilities.modelVersion };
+    current = { ...current, contexts: [...current.contexts, context] };
+    await checkpoint("decide");
+    const action = await model.decide(context, { signal: options.signal });
+    modelUsage = await model.usage(run.id);
+    if (options.signal?.aborted) throw new ModelGatewayError(modelFailure("CANCELLED", "새로운 사용자 상태로 이전 결정을 취소했습니다.", false), modelUsage);
+    const contractError = validateActionInput(action);
+    if (contractError) throw new ModelGatewayError(modelFailure("INVALID_OUTPUT", contractError, true), modelUsage);
+    if (action.intentRef !== context.intentRef || action.worldCursor !== context.worldCursor) throw new ModelGatewayError(modelFailure("INVALID_OUTPUT", "모델이 현재 Intent 또는 World 커서를 잘못 반환했습니다.", true), modelUsage);
+    if (!isActiveProcessReference(action, context.activeProcessViews?.map((process) => process.id) ?? [])) throw new ModelGatewayError(modelFailure("INVALID_OUTPUT", "프로세스 ID가 현재 activeProcessViews에 없습니다.", true), modelUsage);
     if (action.type !== "ACT") {
-      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
-      const next = recordNonToolAction(contextState, projectId, action, modelContext.id, modelUsage);
-      spanStatus = `non-tool-action:${action.type}`;
-      return next;
+      await checkpoint("govern");
+      const next = recordNonToolAction(current, projectId, action, context.id, modelUsage);
+      return getProject(next, projectId)!.budgetSpent >= project.settings.budgetLimit ? stallProject(next, projectId, "모델 사용 후 실행 예산이 소진되었습니다.") : next;
     }
-    const boundary = validateActionBoundary(project, action, getToolSurface(project), estimateLocalActionCost(action) + modelUsage.cost, getMatchingApprovalGrant(observed.state, projectId, action));
-    if (boundary.status !== "allowed") {
-      spanStatus = boundary.status;
-      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
-      return recordBoundaryDecision(contextState, projectId, action, boundary.status, boundary.reason, modelContext.id, modelUsage);
-    }
-
-    sandboxManager = project.settings.sandboxMode === "docker" ? new DockerSandboxManager() : new LocalSandboxManager();
-    sandbox = await sandboxManager.create(project, run);
-    hydrateManagedProcesses(observed.state.processes);
-    const toolGateway = new LocalToolGateway();
+    const limit = executionBlockReason(current, projectId);
+    if (limit) return stallProject(accountModelUsage(current, projectId, modelUsage), projectId, limit);
+    const boundary = validateActionBoundary(project, action, getToolSurface(project), estimateLocalActionCost(action) + modelUsage.cost, getMatchingApprovalGrant(current, projectId, action));
+    if (boundary.status !== "allowed") return recordBoundaryDecision(current, projectId, action, boundary.status, boundary.reason, context.id, modelUsage);
+    await checkpoint("dispatch");
+    await options.beforeDispatch?.(current, action);
+    if (options.signal?.aborted) throw new ModelGatewayError(modelFailure("CANCELLED", "도구 실행 전에 취소되었습니다.", false), modelUsage);
+    manager = project.settings.sandboxMode === "docker" ? new DockerSandboxManager() : new LocalSandboxManager();
+    sandbox = await manager.create(project, run);
+    hydrateManagedProcesses(current.processes);
     const normalizedAction = { ...action, tool: boundary.normalizedTool ?? action.tool };
-    const toolResult = await toolGateway.execute(normalizedAction, sandbox);
-    const world = getWorldSnapshot(observed.state, projectId);
-    const evaluation = world ? await new DeterministicEvaluator().evaluate(action.rationaleSummary, toolResult.evidence, world) : undefined;
-    const next = runCycle(observed.state, projectId, { action: normalizedAction, toolResult, evaluation, modelUsage, context: modelContext });
-    observability.metric("runtime.cost", toolResult.cost + modelUsage.cost, { projectId, tool: toolResult.tool, status: toolResult.status });
-    observability.metric("runtime.evidence", toolResult.evidence.length, { projectId, verdict: evaluation?.verdict ?? "UNCERTAIN" });
-    spanStatus = toolResult.status;
-    return next;
-  } catch (error: unknown) {
-    const reason = redactSecretLikeText(error instanceof Error ? error.message : "unknown local runtime failure");
-    spanStatus = "failed";
-    if (sandbox && sandboxManager) {
-      try { await sandboxManager.kill(sandbox); } catch { spanStatus = "kill-cleanup-failed"; }
+    const toolResult = await new LocalToolGateway().execute(normalizedAction, sandbox, { signal: options.signal });
+    // Even if cancelled while a tool ran, preserve its actual result. The coordinator
+    // prevents old work from overwriting newer human state and cleans up new processes.
+    phase = "verify";
+    if (!options.signal?.aborted) {
+      try { await options.onPhase?.(phase, current); }
+      catch (error) {
+        // A completed side effect is evidence even when a human changes state
+        // just before verification. Let the coordinator retain it as stale.
+        if (!(error instanceof ModelGatewayError) || error.failure.code !== "CANCELLED") throw error;
+      }
     }
-    return recordRuntimeFailure(currentState, projectId, "dispatch", reason);
+    const evaluation = await new DeterministicEvaluator().evaluate(action.rationaleSummary, toolResult.evidence, getWorldSnapshot(current, projectId)!);
+    return runCycle(current, projectId, { action: normalizedAction, toolResult, evaluation, modelUsage, context, dispatchAuthorized: true });
+  } catch (error) {
+    if (error instanceof ModelGatewayError) return recordModelFailure(current, projectId, error, context?.id);
+    return recordRuntimeFailure(accountModelUsage(current, projectId, modelUsage), projectId, phase, redactSecretLikeText(error instanceof Error ? error.message : "실행 오류"));
   } finally {
-    if (sandbox && sandboxManager) {
-      try { await sandboxManager.destroy(sandbox); } catch { spanStatus = "cleanup-failed"; }
-    }
-    cycleSpan.end({ status: spanStatus });
+    if (sandbox && manager) await manager.destroy(sandbox);
+    span.end({ phase });
   }
 }
 

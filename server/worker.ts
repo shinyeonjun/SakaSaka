@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createEmptyState } from "../src/emptyState";
-import { executeLocalCycle } from "./localRuntime";
+import { runDurableCycle } from "./cycleCoordinator";
 import { recoverTransientProviderFailures, wakeProject } from "../src/runtime";
 import { JsonlEventStore } from "./jsonlEventStore";
 import { JsonJobQueue } from "./jobQueue";
@@ -20,7 +20,7 @@ const configuredConcurrency = Number(process.env.WORKER_MAX_CONCURRENCY ?? "1");
 const maxJobsPerTick = Number.isFinite(configuredConcurrency) ? Math.max(1, Math.min(32, Math.floor(configuredConcurrency))) : 1;
 
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
-  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
+  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
 }
 
 function normalizeProjectMetrics(raw: Partial<ProjectMetrics> | undefined): ProjectMetrics {
@@ -81,72 +81,67 @@ function loadState(): AppState {
 }
 
 function persistState(state: AppState): void {
+  state.revision = Math.max(state.revision ?? 0, loadState().revision ?? 0) + 1;
   writeJsonAtomically(statePath, state, isRecoverableState);
   for (const event of state.events) eventJournal.appendSync(event);
 }
 
+let inFlight = false;
+const workerStop = new AbortController();
+
 export async function runWorkerOnce(): Promise<{ processed: string[] }> {
+  if (inFlight || workerStop.signal.aborted) return { processed: [] };
+  inFlight = true;
+  const processed: string[] = [];
+  const transact = (update: (state: AppState) => AppState): Promise<AppState> => withFileLock(lockPath, () => {
+    const before = loadState(), next = update(before);
+    if (next !== before) persistState(next);
+    return next;
+  });
   try {
-    return await withFileLock(lockPath, async () => {
-      const loadedState = loadState();
-      const state = recoverTransientProviderFailures(loadedState);
-      if (state !== loadedState) persistState(state);
-      hydrateManagedProcesses(state.processes);
-      let next = state;
-      const processed: string[] = [];
-      for (const project of state.projects.filter((candidate) => candidate.settings.workspacePath && candidate.status === "ACTIVE")) {
-        await queue.enqueue({ projectId: project.id, runId: project.activeRunId, trigger: "signal", availableAt: new Date(Date.now() + Math.max(0, Number(project.settings.cycleDelayMs ?? 250))).toISOString() });
+    await withFileLock(lockPath, async () => {
+      const loaded = loadState(), state = recoverTransientProviderFailures(loaded);
+      if (state !== loaded) persistState(state);
+      for (const project of state.projects.filter((item) => item.settings.workspacePath)) {
+        const run = state.runs.find((item) => item.id === project.activeRunId);
+        if (project.status === "ACTIVE") await queue.enqueue({ projectId: project.id, runId: project.activeRunId, trigger: "signal", availableAt: new Date(Math.max(Date.now() + Math.max(0, Number(project.settings.cycleDelayMs ?? 250)), Date.parse(run?.retryAfter ?? "") || 0)).toISOString() });
+        if (project.status === "EQUILIBRIUM" && project.nextReviewAt && Date.parse(project.nextReviewAt) <= Date.now()) await queue.enqueue({ projectId: project.id, runId: project.activeRunId, trigger: "scheduled-review" });
       }
-      for (const project of state.projects.filter((candidate) => candidate.settings.workspacePath && candidate.status === "EQUILIBRIUM" && candidate.nextReviewAt && Date.parse(candidate.nextReviewAt) <= Date.now())) {
-        await queue.enqueue({ projectId: project.id, runId: project.activeRunId, trigger: "scheduled-review" });
-      }
-      const workerId = `worker-${process.pid}`;
-      for (let jobIndex = 0; jobIndex < maxJobsPerTick; jobIndex += 1) {
-        const job = await queue.lease(workerId, 120_000);
-        if (!job) break;
-        try {
-          const queuedProject = next.projects.find((candidate) => candidate.id === job.projectId);
-          if (queuedProject?.activeRunId !== job.runId) {
-            await queue.ack(job.id, workerId);
-            continue;
-          }
-          if (queuedProject?.status === "EQUILIBRIUM") next = wakeProject(next, job.projectId, job.trigger);
-          let continuation: AppState["projects"][number] | undefined;
-          if (next.projects.find((candidate) => candidate.id === job.projectId)?.status === "ACTIVE") {
-            next = await executeLocalCycle(next, job.projectId);
-            processed.push(job.projectId);
-            continuation = next.projects.find((candidate) => candidate.id === job.projectId);
-          } else if (queuedProject) {
-            const queuedRun = next.runs.find((run) => run.id === queuedProject.activeRunId);
-            if (queuedRun) {
-              await stopProcessesForRun(next.processes, queuedRun.id);
-              next = { ...next, runs: next.runs.map((candidate) => candidate.id === queuedRun.id ? { ...candidate, activeProcessIds: [] } : candidate) };
-            }
-          }
-          await queue.ack(job.id, workerId);
-          if (continuation?.status === "ACTIVE" && continuation.settings.workspacePath) {
-            await queue.enqueue({ projectId: continuation.id, runId: continuation.activeRunId, trigger: "signal", availableAt: new Date(Date.now() + Math.max(0, Number(continuation.settings.cycleDelayMs ?? 250))).toISOString() });
-          }
-        } catch (error) {
-          await queue.retry(job.id, Math.min(60_000, 2_000 * job.attempts), workerId);
-          console.error(`worker job ${job.id} failed`, error);
-        }
-      }
-      if (next !== state) persistState(next);
-      return { processed };
     });
-  } catch (error) {
-    console.error("worker state lock unavailable", error);
-    return { processed: [] };
-  }
+    const workerId = `worker-${process.pid}`;
+    for (let index = 0; index < maxJobsPerTick; index++) {
+      const job = await withFileLock(lockPath, () => queue.lease(workerId, 600_000));
+      if (!job) break;
+      try {
+        await transact((state) => {
+          const project = state.projects.find((item) => item.id === job.projectId);
+          return project?.activeRunId === job.runId && project.status === "EQUILIBRIUM" ? wakeProject(state, job.projectId, job.trigger) : state;
+        });
+        const candidate = loadState().projects.find((item) => item.id === job.projectId);
+        if (candidate?.activeRunId === job.runId && await runDurableCycle({ read: loadState, transact }, job.projectId, { signal: workerStop.signal })) processed.push(job.projectId);
+        await withFileLock(lockPath, async () => {
+          await queue.ack(job.id, workerId);
+          const state = loadState();
+          const project = state.projects.find((item) => item.id === job.projectId);
+          const run = state.runs.find((item) => item.id === project?.activeRunId);
+          if (project?.status === "ACTIVE" && project.settings.workspacePath) await queue.enqueue({ projectId: project.id, runId: project.activeRunId, trigger: "signal", availableAt: new Date(Math.max(Date.now() + (project.settings.cycleDelayMs ?? 250), Date.parse(run?.retryAfter ?? "") || 0)).toISOString() });
+        });
+      } catch (error) {
+        await withFileLock(lockPath, () => queue.retry(job.id, Math.min(60_000, 2_000 * job.attempts), workerId));
+        console.error(`worker job ${job.id} failed`, error);
+      }
+    }
+    return { processed };
+  } finally { inFlight = false; }
 }
 
 export function startWorker(): void {
   console.log(`Intent World worker polling every ${intervalMs}ms`);
-  void runWorkerOnce();
-  const timer = setInterval(() => { void runWorkerOnce(); }, intervalMs);
+  void runWorkerOnce().catch((error) => console.error("worker tick failed", error));
+  const timer = setInterval(() => { void runWorkerOnce().catch((error) => console.error("worker tick failed", error)); }, intervalMs);
   const stop = () => {
     clearInterval(timer);
+    workerStop.abort();
     void withFileLock(lockPath, async () => {
       const current = loadState();
       hydrateManagedProcesses(current.processes);

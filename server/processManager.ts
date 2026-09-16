@@ -1,3 +1,4 @@
+import { executableInvocation, stopProcessTree } from "./commandRunner";
 import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
@@ -75,20 +76,16 @@ function actionArgv(action: ActionEnvelope): string[] {
 
 async function terminatePid(pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) return;
-  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  stopProcessTree(pid);
   await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  try { process.kill(pid, 0); } catch { return; }
-  if (process.platform === "win32") {
-    try { await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, shell: false, timeout: 5_000 }); } catch { /* process may have exited */ }
-  } else {
-    try { process.kill(pid, "SIGKILL"); } catch { /* process may have exited */ }
-  }
+  stopProcessTree(pid, true);
 }
 
-export async function executeProcessTool(action: ActionEnvelope, sandbox: SandboxContext, maxLifetimeMs = defaultLifetimeMs): Promise<ToolResult | undefined> {
+export async function executeProcessTool(action: ActionEnvelope, sandbox: SandboxContext, maxLifetimeMs = defaultLifetimeMs, options: { signal?: AbortSignal } = {}): Promise<ToolResult | undefined> {
   if (action.type !== "ACT" || !action.tool?.startsWith("process.")) return undefined;
   const startedAt = Date.now();
   try {
+    options.signal?.throwIfAborted();
     if (action.tool === "process.start") {
       const argv = actionArgv(action);
       const validArgv = sandbox.mode === "docker" ? isDeveloperArgv(argv) : isManagedProcessArgv(argv);
@@ -117,12 +114,15 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
       const record: ManagedProcess = { id: `process-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`, projectId: sandbox.projectId, runId: sandbox.runId, argv: [...argv], cwd: sandbox.workspaceRef, port: requestedPort, previewUrl: requestedPort ? `http://127.0.0.1:${requestedPort}` : undefined, status: "starting", startedAt: new Date().toISOString(), stdoutRawRef: stdout.rawRef, stderrRawRef: stderr.rawRef };
       try {
         const dockerArgs = sandbox.mode === "docker" ? [
-          "run", "--rm", "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--cpus", "1", "--pids-limit", "128", "--memory", "1g", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+          "run", "--rm", "--init", "--name", record.id, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "1000:1000", "--cpus", "1", "--pids-limit", "128", "--memory", "1g", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
           ...(requestedPort ? ["-e", `PORT=${requestedPort}`] : []),
           ...(requestedPort ? ["--network", "bridge", "-p", `127.0.0.1:${requestedPort}:${requestedPort}`] : ["--network", "none"]),
           "-v", `${resolve(sandbox.workspaceRef)}:/workspace:rw`, "-w", "/workspace", sandbox.image ?? process.env.SANDBOX_IMAGE ?? "node:22-alpine", ...argv,
         ] : undefined;
-        const child = spawn(sandbox.mode === "docker" ? "docker" : argv[0], dockerArgs ?? argv.slice(1), { cwd: resolve(sandbox.workspaceRef), shell: false, windowsHide: true, env: childEnv(requestedPort), stdio: ["ignore", "pipe", "pipe"] });
+        options.signal?.throwIfAborted();
+        if (sandbox.mode === "docker") record.containerId = record.id;
+        const invocation = executableInvocation(sandbox.mode === "docker" ? "docker" : argv[0], dockerArgs ?? argv.slice(1));
+        const child = spawn(invocation.file, invocation.args, { cwd: resolve(sandbox.workspaceRef), shell: false, windowsHide: true, detached: process.platform !== "win32", env: childEnv(requestedPort), stdio: ["ignore", "pipe", "pipe"] });
         record.pid = child.pid;
         record.status = "running";
         children.set(record.id, child);
@@ -131,6 +131,8 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
         child.stderr?.on("data", (chunk: Buffer) => appendLog(stderr.path, chunk.toString()));
         child.once("error", (error) => { record.status = "failed"; record.error = redactSecretLikeText(error.message); record.endedAt = new Date().toISOString(); });
         child.once("close", (code) => { record.exitCode = code ?? undefined; record.status = record.status === "stopped" ? "stopped" : code === 0 ? "exited" : "failed"; record.endedAt = new Date().toISOString(); children.delete(record.id); });
+        await new Promise<void>((resolveSpawn, rejectSpawn) => { child.once("spawn", resolveSpawn); child.once("error", rejectSpawn); });
+        if (options.signal?.aborted) { await stopManagedProcess(record.id); throw new Error("프로세스 시작이 취소되었습니다."); }
         const timer = setTimeout(() => { void stopManagedProcess(record.id); }, Math.max(1_000, maxLifetimeMs));
         timer.unref?.();
         const ev = evidence(sandbox.projectId, "PASS", `process.start · ${argv.join(" ")} · pid ${record.pid ?? "unknown"}`, "process.start", record);
@@ -160,6 +162,7 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
     }
     if (action.tool === "process.stop") {
       record.status = "stopped";
+      if (record.containerId) await stopContainer(record.containerId);
       await terminatePid(record.pid ?? 0);
       children.get(record.id)?.kill();
       children.delete(record.id);
@@ -180,6 +183,7 @@ export async function stopManagedProcess(processId: string): Promise<void> {
   const record = records.get(processId);
   if (!record || record.status === "exited" || record.status === "stopped" || record.status === "failed") return;
   record.status = "stopped";
+  if (record.containerId) await stopContainer(record.containerId);
   await terminatePid(record.pid ?? 0);
   children.get(processId)?.kill();
   children.delete(processId);
@@ -224,4 +228,9 @@ export async function stopAllManagedProcesses(): Promise<void> {
 export function getManagedProcess(processId: string): ManagedProcess | undefined {
   const record = records.get(processId);
   return record ? { ...record, argv: [...record.argv] } : undefined;
+}
+
+async function stopContainer(name: string): Promise<void> {
+  if (!/^process-[a-zA-Z0-9-]+$/.test(name)) return;
+  try { await execFileAsync("docker", ["rm", "-f", name], { shell: false, windowsHide: true, timeout: 5_000 }); } catch { /* may already have exited */ }
 }

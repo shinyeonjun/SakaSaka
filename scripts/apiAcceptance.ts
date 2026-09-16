@@ -92,6 +92,7 @@ async function main(): Promise<void> {
     env: {
       ...process.env,
       API_PORT: String(port),
+      CODEX_CLI_MODELS: "configured-test-model",
       INTENT_WORLD_STATE_FILE: statePath,
       INTENT_WORLD_RAW_DIR: rawDirectory,
       WORKSPACE_ROOT: repoRoot,
@@ -104,11 +105,15 @@ async function main(): Promise<void> {
 
   try {
     await waitForHealth(baseUrl, child, logs);
+    const crossOrigin = await request(baseUrl, "/state", { headers: { Origin: "https://untrusted.example" } });
+    assert.equal(crossOrigin.response.status, 403);
+    const localOrigin = await request(baseUrl, "/state", { headers: { Origin: "http://localhost:5173" } });
+    assert.equal(localOrigin.response.headers.get("Access-Control-Allow-Origin"), "http://localhost:5173");
     const modelCatalog = await request(baseUrl, "/runtime/model-catalog");
     assert.equal(modelCatalog.response.status, 200);
     assert.ok(Array.isArray(modelCatalog.body.models));
     assert.ok(Array.isArray(modelCatalog.body.entries));
-    assert.ok(modelCatalog.body.entries.some((entry: { id?: string; label?: string }) => entry.id === "gpt-5.6-luna" && entry.label === "GPT-5.6 Luna"));
+    assert.ok(modelCatalog.body.entries.some((entry: { id?: string; label?: string }) => entry.id === "configured-test-model" && entry.label === "configured-test-model"));
     const modelStatus = await request(baseUrl, "/runtime/model-status?provider=deterministic&model=offline-model");
     assert.equal(modelStatus.response.status, 200, JSON.stringify(modelStatus.body));
     assert.equal(modelStatus.body.requested, "deterministic");
@@ -146,8 +151,18 @@ async function main(): Promise<void> {
     assert.ok(typeof provisionedWorkspace === "string" && existsSync(provisionedWorkspace));
     assert.ok(provisionedWorkspace.startsWith(join(repoRoot, ".intent-world", "workspaces")));
 
-    const run = await post(baseUrl, `/projects/${encodeURIComponent(projectId)}/run`);
-    assert.equal(run.response.status, 200, JSON.stringify(run.body));
+    const queued = await post(baseUrl, `/projects/${encodeURIComponent(projectId)}/run`);
+    assert.equal(queued.response.status, 202, JSON.stringify(queued.body));
+    process.env.INTENT_WORLD_STATE_FILE = statePath;
+    process.env.INTENT_WORLD_RAW_DIR = rawDirectory;
+    process.env.WORKSPACE_ROOT = repoRoot;
+    const firstWorker = await import("../server/worker");
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const processed = await firstWorker.runWorkerOnce();
+      if (processed.processed.includes(projectId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const run = { body: await waitForProject(baseUrl, projectId, (body) => body.actions.some((action: any) => action.status === "VERIFIED")) };
     assert.equal(run.body.project.status, "ACTIVE");
     assert.ok(run.body.actions.some((action: any) => action.projectId === projectId && action.status === "VERIFIED"));
     const passEvidence = run.body.evidence.find((item: any) => item.projectId === projectId && item.verdict === "PASS");

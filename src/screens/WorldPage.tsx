@@ -12,7 +12,7 @@ export function WorldPage({ projectId }: { projectId: string }) {
   if (!project || !snapshot || !run) return <div className="screen"><Card className="empty-state"><h1>월드를 표시할 수 없습니다.</h1></Card></div>;
   const sources = allWorldSources(snapshot);
   const observations = getProjectObservations(state, projectId);
-  const latestObservationBySource = new Map(observations.map((observation) => [observation.source, observation]));
+  const latestObservationBySource = new Map([...observations].reverse().map((observation) => [observation.source, observation]));
   const context = getProjectContexts(state, projectId)[0];
   const ledger = getResourceLedger(state, projectId);
 

@@ -1,9 +1,10 @@
+import { ModelGatewayError, modelFailure } from "../src/modelFailure";
 import { readFileSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEmptyState } from "../src/emptyState";
-import { createProject, getProject, getRun, getWorldSnapshot, recordNonToolAction } from "../src/runtime";
+import { createProject, getProject, getRun, getWorldSnapshot, recordModelFailure, recordNonToolAction } from "../src/runtime";
 import type { AppState } from "../src/types";
 
 const originalStatePath = process.env.INTENT_WORLD_STATE_FILE;
@@ -19,14 +20,7 @@ afterEach(() => {
 });
 
 function providerFailure(state: AppState, projectId: string): AppState {
-  const project = getProject(state, projectId)!;
-  return recordNonToolAction(state, projectId, {
-    type: "WAIT",
-    intentRef: project.intentId,
-    worldCursor: getWorldSnapshot(state, projectId)!.cursorEventId,
-    rationaleSummary: "모델 게이트웨이를 사용할 수 없습니다 · Codex CLI 실행 실패: provider unavailable",
-    riskClass: "P0",
-  });
+  return recordModelFailure(state, projectId, new ModelGatewayError(modelFailure("PROVIDER_UNAVAILABLE", "모델 게이트웨이를 사용할 수 없습니다 · legacy fixture", true)));
 }
 
 describe("worker provider recovery", () => {

@@ -1,3 +1,5 @@
+import type { InputSchema } from "./toolContracts";
+import type { ModelFailure } from "./modelFailure";
 export type RuntimeStatus =
   | "ACTIVE"
   | "WAITING"
@@ -37,6 +39,9 @@ export type EventType =
   | "OBSERVE"
   | "CONTEXT_ASSEMBLED"
   | "MODEL_TURN"
+  | "MODEL_FAILED"
+  | "CYCLE_PHASE"
+  | "CYCLE_DISCARDED"
   | "RUNTIME_ERROR"
   | "GAP_FOUND"
   | "QUESTION_CREATED"
@@ -79,6 +84,8 @@ export type WorldSourceKey = (typeof worldSourceKeys)[number];
 export interface ProjectSettings {
   budgetLimit: number;
   maxHours: number;
+  /** Hard cap even when CLI billing cannot be measured. */
+  maxModelCalls?: number;
   localActions: boolean;
   requireExternalApproval: boolean;
   productionBlocked: boolean;
@@ -184,7 +191,7 @@ export interface Intent {
 export interface WorldSource {
   key: WorldSourceKey;
   label: string;
-  status: "healthy" | "warning" | "blocked";
+  status: "healthy" | "warning" | "blocked" | "absent" | "not-configured";
   summary: string;
   observedAt: string;
   freshness: "fresh" | "aging" | "stale";
@@ -193,6 +200,8 @@ export interface WorldSource {
 }
 
 export interface WorldSnapshot {
+  /** Evidence-only snapshot from work superseded by a newer human decision. */
+  superseded?: boolean;
   id: string;
   projectId: string;
   cursorEventId: string;
@@ -299,6 +308,9 @@ export interface Run {
   lastFailureSignature?: string;
   activeProcessIds: string[];
   stopReason?: string;
+  lastModelFailure?: ModelFailure;
+  retryAfter?: string;
+  execution?: { id: string; owner: string; expiresAt: string; stage: RuntimePhase; dispatchStarted?: boolean; action?: ActionEnvelope };
 }
 
 export interface EventRecord {
@@ -332,6 +344,7 @@ export interface ContextPacket {
   experienceRefs: string[];
   boundary: {
     remainingBudget: number;
+    remainingModelCalls?: number;
     maxHours: number;
     networkPolicy: ProjectSettings["networkPolicy"];
     productionBlocked: boolean;
@@ -342,6 +355,8 @@ export interface ContextPacket {
   schemaVersion: 1;
   modelVersion: string;
   policyVersion: number;
+  humanDecisionViews?: Array<{ id: string; kind: HumanItemKind; status: HumanItemStatus; title: string; answer?: string; updatedAt: string; blockingScope: string[] }>;
+  lastModelFailure?: ModelFailure;
   /** The active run is part of provenance, but is optional for legacy snapshots. */
   runId?: string;
   /** Compact, source-linked views are safe to pass to a model; raw output stays behind rawRef. */
@@ -428,6 +443,7 @@ export interface ToolCapability {
   sideEffect: boolean;
   enabled: boolean;
   toolVersion: string;
+  inputSchema?: InputSchema;
 }
 
 export interface Policy {
@@ -513,6 +529,8 @@ export interface ApprovalGrant {
   projectId: string;
   approvalItemId: string;
   originalActionRef: string;
+  /** Legacy grants without the exact Intent binding must be reapproved. */
+  intentRef?: string;
   actionFingerprint: string;
   tool?: string;
   paramsFingerprint: string;
@@ -598,6 +616,7 @@ export interface Experiment {
 
 export interface AppState {
   schemaVersion: 1;
+  revision?: number;
   activeProjectId: string;
   projects: Project[];
   intents: Intent[];

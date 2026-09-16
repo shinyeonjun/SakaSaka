@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   assert.equal(hardBlock.status, "blocked");
   const approvalState = createProject(createEmptyState(), "승인이 필요한 외부 작업을 확인해줘", "approval-project", { productionBlocked: false });
   const approvalProject = getProject(approvalState, "approval-project")!;
-  const approval = validateActionBoundary(approvalProject, { ...externalAction, intentRef: approvalProject.intentId, worldCursor: getWorldSnapshot(approvalState, approvalProject.id)!.cursorEventId }, getToolSurface(approvalProject));
+  const approval = validateActionBoundary(approvalProject, { ...externalAction, tool: "workspace.delete", params: { path: "obsolete.txt" }, riskClass: "P2", intentRef: approvalProject.intentId, worldCursor: getWorldSnapshot(approvalState, approvalProject.id)!.cursorEventId }, getToolSurface(approvalProject));
   assert.equal(approval.status, "human-approval");
 
   console.log("Acceptance passed: empty bootstrap, real local cycle, active continuation, WAIT stop, human defer/answer, and production boundary");

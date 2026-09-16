@@ -35,7 +35,7 @@ export interface ModelUsage {
 }
 
 export interface ModelGateway {
-  decide(context: ContextPacket): Promise<ActionEnvelope>;
+  decide(context: ContextPacket, options?: { signal?: AbortSignal }): Promise<ActionEnvelope>;
   capabilities(): Promise<ModelCapabilities>;
   usage(runId: string): Promise<ModelUsage>;
 }
@@ -74,7 +74,7 @@ export interface ToolResult {
 }
 
 export interface ToolGateway {
-  execute(action: ActionEnvelope, sandbox: SandboxContext): Promise<ToolResult>;
+  execute(action: ActionEnvelope, sandbox: SandboxContext, options?: { signal?: AbortSignal }): Promise<ToolResult>;
 }
 
 export interface EvaluatorResult {

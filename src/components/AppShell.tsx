@@ -2,7 +2,7 @@ import { useState, type PropsWithChildren } from "react";
 import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
-import { Button, cn, Divider } from "./ui";
+import { Button, cn, Divider, InlineNotice } from "./ui";
 import { isDesktopApp } from "../desktop";
 
 const navItems = [
@@ -26,7 +26,7 @@ function selectedNav(key: NavKey, kind: string): boolean {
 }
 
 export function AppShell({ children }: PropsWithChildren) {
-  const { state } = useApp();
+  const { state, syncError, pendingCommands } = useApp();
   const { route, navigate } = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const projectId = "projectId" in route ? route.projectId : state.activeProjectId;
@@ -72,7 +72,11 @@ export function AppShell({ children }: PropsWithChildren) {
           <span>런타임&nbsp; {statusLabel(runtimeStatus)}</span>
         </div>
       </aside>
-      <main className="main-content">{children}</main>
+      <main className="main-content">
+        {syncError && <InlineNotice tone="red" title="서버 동기화 실패">{syncError} 서버에 반영되었다고 간주하지 마십시오.</InlineNotice>}
+        {pendingCommands > 0 && <InlineNotice tone="blue" title="서버 확인 중">{pendingCommands}개 명령의 처리 결과를 기다리고 있습니다.</InlineNotice>}
+        {children}
+      </main>
     </div>
   );
 }

@@ -71,9 +71,16 @@ for await (const chunk of process.stdin) stdin += chunk;
 const args = process.argv.slice(2);
 const schemaPath = args[args.indexOf("--output-schema") + 1];
 const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
-const properties = Object.keys(schema.properties ?? {});
-const required = new Set(schema.required ?? []);
-const missing = properties.find((property) => !required.has(property));
+function invalid(node) {
+  if (!node || typeof node !== "object") return undefined;
+  if (node.type === "object") {
+    if (node.additionalProperties !== false) return "additionalProperties";
+    const keys = Object.keys(node.properties ?? {});
+    if (keys.some(key => !(node.required ?? []).includes(key))) return "required";
+  }
+  return Object.values(node).map(value => Array.isArray(value) ? value.map(invalid).find(Boolean) : invalid(value)).find(Boolean);
+}
+const missing = invalid(schema);
 if (missing) {
   process.stdout.write(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_json_schema", message: "Missing '" + missing + "'." } }) + "\\n");
   process.exit(1);
@@ -114,19 +121,14 @@ describe("Codex CLI ModelGateway", () => {
     await expect(gateway.usage(usageKey)).resolves.toHaveProperty("rawRef", expect.stringMatching(/^local-raw:\/\//));
   });
 
-  it("malformed output 또는 실행 불가 CLI는 fake ACT가 아닌 명확한 WAIT로 끝난다", async () => {
+  it("malformed output 또는 실행 불가 CLI는 모델 행동 대신 typed failure로 기록한다", async () => {
     const context = contextFixture();
     const malformed = writeCliFixture(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "not-json" } }));
     process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
     const gateway = new CodexCliModelGateway({ binary: malformed.binary, commandPrefix: malformed.prefix, timeoutMs: 5_000 });
-    const malformedAction = await gateway.decide(context);
-    expect(malformedAction.type).toBe("WAIT");
-    expect(malformedAction.rationaleSummary).toMatch(/모델 게이트웨이를 사용할 수 없습니다/);
-
+    await expect(gateway.decide(context)).rejects.toMatchObject({ failure: { code: "INVALID_OUTPUT", rawRef: expect.stringMatching(/^local-raw:/) } });
     const unavailable = new CodexCliModelGateway({ binary: join(temporaryDirectories[0], "missing-codex"), timeoutMs: 1_000 });
-    const unavailableAction = await unavailable.decide(context);
-    expect(unavailableAction.type).toBe("WAIT");
-    expect(unavailableAction.rationaleSummary).toMatch(/Codex CLI를 실행할 수 없습니다|모델 게이트웨이를 사용할 수 없습니다/);
+    await expect(unavailable.decide(context)).rejects.toMatchObject({ failure: { code: "PROVIDER_UNAVAILABLE" } });
   });
 
   it("모델 지시문과 ContextPacket을 하나의 stdin 입력으로 전달한다", async () => {
@@ -186,9 +188,6 @@ describe("Codex CLI ModelGateway", () => {
     process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
     const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, timeoutMs: 5_000 });
 
-    const action = await gateway.decide(context);
-    expect(action.type).toBe("WAIT");
-    expect(action.rationaleSummary).toContain("schema rejected");
-    expect(action.rationaleSummary).not.toContain("Reading additional input from stdin");
+    await expect(gateway.decide(context)).rejects.toMatchObject({ failure: { code: "SCHEMA_REJECTED", message: expect.stringContaining("schema rejected"), retryable: false } });
   });
 });

@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   const contexts: BrowserContext[] = [];
   try {
     await waitForVite(baseUrl, child, logs);
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, ...(process.env.SAKASAKA_BROWSER_EXECUTABLE ? { executablePath: process.env.SAKASAKA_BROWSER_EXECUTABLE } : {}) });
 
     const newContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     contexts.push(newContext);
@@ -93,17 +93,17 @@ async function main(): Promise<void> {
     assert.equal(await newPage.getByRole("heading", { name: "환경 설정", exact: true }).count(), 1, "프로젝트 전 환경 설정이 없습니다.");
     await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
     assert.equal(await newPage.getByLabel("Codex 모델 목록").count(), 1, "프로젝트 전 Codex 모델 드롭다운이 없습니다.");
-    await newPage.getByLabel("Codex 모델 목록").selectOption("gpt-5.6-luna");
+    await newPage.getByPlaceholder("목록에 없는 모델 ID 직접 입력").fill("configured-test-model");
     await newPage.getByRole("button", { name: "기본 모델 저장" }).click();
     assert.equal(await newPage.getByText("다음 프로젝트에 적용됩니다").count(), 1, "프로젝트 전 모델 설정 저장이 없습니다.");
     await newPage.getByRole("button", { name: "새 프로젝트 시작" }).click();
     await newPage.waitForURL(/\/projects\/new$/);
     await newPage.getByRole("button", { name: "고급 설정" }).click();
     assert.equal(await newPage.getByLabel("모델 연결 방식").inputValue(), "codex-cli", "프로젝트 전 기본 provider가 새 프로젝트에 적용되지 않았습니다.");
-    assert.equal(await newPage.getByLabel("Codex 모델 목록").inputValue(), "gpt-5.6-luna", "프로젝트 전 기본 모델이 새 프로젝트에 적용되지 않았습니다.");
+    assert.equal(await newPage.getByLabel("모델 ID", { exact: true }).inputValue(), "configured-test-model", "프로젝트 전 기본 모델이 새 프로젝트에 적용되지 않았습니다.");
     await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
     assert.equal(await newPage.getByLabel("Codex 모델 목록").count(), 1, "Codex 모델 드롭다운이 없습니다.");
-    await newPage.getByLabel("Codex 모델 목록").selectOption("gpt-5.6-sol");
+    await newPage.getByLabel("모델 ID", { exact: true }).fill("configured-other-model");
     await newPage.getByLabel("의도").fill("팀이 함께 사용할 수 있는 품질 검증 workspace를 만들어줘");
     await newPage.getByRole("button", { name: "시작하기" }).click();
     await newPage.waitForURL(/\/projects\/[^/]+$/);
@@ -149,7 +149,7 @@ async function main(): Promise<void> {
     await open(newPage, baseUrl, `${newPage.url().replace(baseUrl, "")}/settings`);
     await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
     assert.equal(await newPage.getByLabel("Codex 모델 목록").count(), 1, "기존 프로젝트 Codex 모델 드롭다운이 없습니다.");
-    await newPage.getByLabel("Codex 모델 목록").selectOption("gpt-5.6-terra");
+    await newPage.getByPlaceholder("목록에 없는 모델 ID 직접 입력").fill("configured-third-model");
     await newPage.getByRole("button", { name: "모델 설정 저장" }).click();
     assert.equal(await newPage.getByText("저장 요청됨").count(), 1, "기존 프로젝트 모델 설정 저장 UI가 없습니다.");
     newPage.once("dialog", (dialog) => { void dialog.accept(); });

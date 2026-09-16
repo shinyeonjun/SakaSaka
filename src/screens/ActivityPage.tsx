@@ -21,11 +21,12 @@ export function ActivityPage({ projectId }: { projectId: string }) {
   const project = getProject(state, projectId);
   const world = getWorldSnapshot(state, projectId);
   const run = state.runs.find((candidate) => candidate.id === project?.activeRunId);
+  const [visibleCount, setVisibleCount] = useState(40);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   if (!project || !world || !run) return <div className="screen"><Card className="empty-state"><h1>활동을 표시할 수 없습니다.</h1></Card></div>;
   const events = getProjectEvents(state, projectId);
   const evidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
-  const timelineEvents = events.slice(0, 12);
+  const timelineEvents = events.slice(0, visibleCount);
   const actionableHumanCount = state.humanItems.filter((item) => item.projectId === projectId && (item.status === "OPEN" || item.status === "DEFERRED")).length;
   const humanSummary = actionableHumanCount ? `도움이 필요한 항목 ${actionableHumanCount}개` : world.sources.human.summary;
   const worldRows = worldInspectorRows(world, project.metrics.testsPassed, project.metrics.testsTotal, humanSummary);
@@ -40,6 +41,7 @@ export function ActivityPage({ projectId }: { projectId: string }) {
             <div className="timeline-list">
               {timelineEvents.map((event) => <TimelineRow key={event.id} event={event} expanded={selectedEvent === event.id} onToggle={() => setSelectedEvent((current) => current === event.id ? null : event.id)} />)}
             </div>
+            {visibleCount < events.length && <button onClick={() => setVisibleCount((count) => count + 40)}>이전 이벤트 더 보기</button>}
           </Card>
           <Card className="world-card">
             <SectionHeader title="현재 월드" />
@@ -64,6 +66,6 @@ function TimelineRow({ event, expanded, onToggle }: { event: EventRecord; expand
     <span className="timeline-time">{formatClock(event.createdAt)}</span>
     <Pill tone={eventTone(event.type)}>{eventLabel(event.type)}</Pill>
     <span className="timeline-summary">{event.summary}</span>
-    {expanded && <><span className="timeline-detail">{event.detail ?? "원본 연결 이벤트"}</span><span className="timeline-version-meta">스키마 {event.schemaVersion} · 모델 {event.modelVersion ?? "이전 버전"} · 도구 {event.toolVersion ?? "이전 버전"} · 정책 v{event.policyVersion ?? "—"}</span></>}
+    {expanded && <><span className="timeline-detail">{event.detail ?? "원본 연결 이벤트"}{event.payload && <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{JSON.stringify(event.payload, null, 2)}</pre>}</span><span className="timeline-version-meta">스키마 {event.schemaVersion} · 모델 {event.modelVersion ?? "이전 버전"} · 도구 {event.toolVersion ?? "이전 버전"} · 정책 v{event.policyVersion ?? "—"}</span></>}
   </button>;
 }

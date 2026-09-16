@@ -19,6 +19,8 @@ export interface AcceptanceGateResult {
 }
 
 export interface ProjectEvaluation {
+  /** Instrumentation proxies only; no independent product-quality or hypothesis verdict. */
+  evaluationKind: "instrumentation-proxy";
   projectId: string;
   metrics: EvaluationMetrics;
   gates: AcceptanceGateResult[];
@@ -98,7 +100,7 @@ export function evaluateProject(state: AppState, projectId: string, groundTruth:
   const failureEvents = events.filter((event) => event.type === "RUNTIME_ERROR");
   const uniqueFailureSignatures = new Set(failureEvents.map((event) => (event.detail ?? event.summary).toLowerCase().replace(/\d+/g, "#").slice(0, 180)));
   const equilibriumEvents = events.filter((event) => event.type === "EQUILIBRIUM_ENTERED");
-  const lastAction = actions.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id))[0];
+  const lastAction = actions.at(-1);
   const initiative = initiativeMetrics(state, projectId, groundTruth);
   const metrics: EvaluationMetrics = {
     testsPassed: testCounts.passed,
@@ -126,5 +128,5 @@ export function evaluateProject(state: AppState, projectId: string, groundTruth:
     { key: "H", title: "Model Swap", passed: actions.every((action) => Boolean(action.contextId)) && actions.length > 0, evidenceRefs: actions.map((action) => action.id), reason: "memory/world/event가 model version과 독립적으로 연결되어야 합니다." },
   ];
   const verdict: Verdict = gates.filter((gate) => gate.passed).length >= 4 && metrics.outcomeQuality > 0 ? "PASS" : gates.some((gate) => gate.passed) ? "UNCERTAIN" : "FAIL";
-  return { projectId, metrics, gates, verdict };
+  return { projectId, metrics, gates, verdict, evaluationKind: "instrumentation-proxy" };
 }
