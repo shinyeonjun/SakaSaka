@@ -14,7 +14,7 @@ import type { AppState } from "../src/types";
 // Keep the fixture workspace outside /tmp: Native turn/start deliberately
 // excludes /tmp, so putting the writable root there would test the wrong
 // boundary on Linux runners.
-const acceptanceParent = process.env.RUNNER_TEMP?.trim() || process.env.GITHUB_WORKSPACE?.trim() || process.cwd();
+const acceptanceParent = process.env.GITHUB_WORKSPACE?.trim() || process.cwd();
 const root = mkdtempSync(join(acceptanceParent, ".sakasaka-native-acceptance-"));
 const workspace = join(root, "workspace"), home = join(root, "codex-home");
 mkdirSync(workspace); mkdirSync(home);
