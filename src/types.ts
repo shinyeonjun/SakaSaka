@@ -89,6 +89,8 @@ export interface ProjectSettings {
   allowedDomains?: string[];
   sandboxMode?: "process" | "docker";
   modelProvider?: "auto" | "deterministic" | "openai-compatible" | "codex-cli";
+  /** Optional provider-specific model id; an empty value delegates to provider defaults. */
+  modelName?: string;
   reviewIntervalMinutes?: number;
   failureThreshold?: number;
   noProgressThreshold?: number;
@@ -108,10 +110,17 @@ export interface ModelProviderStatus {
   state: ProviderConnectionState;
   displayName: string;
   detail: string;
+  selectedModel?: string;
+  availableModels: string[];
   binary?: string;
   version?: string;
   authentication: "not-applicable" | "configured" | "verified" | "unverified" | "missing";
   checkedAt: string;
+}
+
+export interface ModelCatalog {
+  models: string[];
+  defaultModel?: string;
 }
 
 export type WorkspaceBindingState = "bound" | "missing" | "inaccessible" | "unbound" | "rejected";

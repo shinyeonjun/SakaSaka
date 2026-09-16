@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
-import { isControlPlaneEnabled } from "../apiClient";
+import { fetchModelCatalog, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, Label, PageHeading } from "../components/ui";
 import type { ProjectSettings } from "../types";
 
@@ -13,9 +13,22 @@ export function NewProjectPage() {
   const [budget, setBudget] = useState(30);
   const [maxHours, setMaxHours] = useState(12);
   const [modelProvider, setModelProvider] = useState<"auto" | "deterministic" | "openai-compatible" | "codex-cli">(isControlPlaneEnabled ? "auto" : "deterministic");
+  const [modelName, setModelName] = useState("");
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
   const [workspacePath, setWorkspacePath] = useState("");
   const [showError, setShowError] = useState(false);
+
+  useEffect(() => {
+    if (!isControlPlaneEnabled) return;
+    let cancelled = false;
+    void fetchModelCatalog().then((catalog) => {
+      if (!cancelled) setAvailableModels(catalog.models);
+    }).catch(() => {
+      // The model id remains editable when the API is still starting or has no catalog.
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -23,7 +36,7 @@ export function NewProjectPage() {
       setShowError(true);
       return;
     }
-    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, modelProvider, sandboxMode };
+    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
     if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
     const id = createProject(intent, settings);
     navigate(projectPath(id));
@@ -112,6 +125,24 @@ export function NewProjectPage() {
               <div><strong>모델 연결 방식</strong><span>auto는 설정된 실제 모델을 우선 사용하고 없으면 명확한 오류로 대기합니다.</span></div>
               <select value={modelProvider} onChange={(event) => setModelProvider(event.target.value as typeof modelProvider)} aria-label="모델 연결 방식"><option value="auto">자동 선택</option><option value="codex-cli">Codex CLI</option><option value="openai-compatible">OpenAI 호환 API</option><option value="deterministic">결정론적 연구 기준선</option></select>
             </div>
+            {modelProvider !== "deterministic" && (
+              <div className="advanced-setting-row model-setting-row">
+                <div><strong>{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</strong><span>{modelProvider === "codex-cli" ? "목록은 서버의 CODEX_CLI_MODELS 설정에서 읽습니다." : "선택한 provider가 지원하는 모델 ID를 입력합니다."} 비워두면 provider 기본 모델을 사용합니다.</span></div>
+                <div className="model-picker">
+                  <input
+                    list="codex-model-options"
+                    value={modelName}
+                    onChange={(event) => setModelName(event.target.value)}
+                    maxLength={128}
+                    pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
+                    placeholder="provider 기본 모델"
+                    aria-label="모델 ID"
+                  />
+                  <datalist id="codex-model-options">{availableModels.map((model) => <option key={model} value={model} />)}</datalist>
+                  <span>{availableModels.length ? `서버 선택 목록 ${availableModels.length}개 · 직접 입력 가능` : "서버 선택 목록 없음 · 직접 입력 가능"}</span>
+                </div>
+              </div>
+            )}
             <div className="advanced-setting-row">
               <div><strong>샌드박스</strong><span>개발 명령을 격리할 실행 모드입니다.</span></div>
               <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as typeof sandboxMode)} aria-label="샌드박스 모드"><option value="docker">Docker 격리</option><option value="process">프로세스(허용 목록)</option></select>

@@ -7,11 +7,11 @@ import { chromium } from "playwright";
 import { isAllowedNetworkHost, isAllowedNetworkUrl, isDeveloperArgv, parseActionEnvelope, redactSecretLikeText, safeCommandIds, type SafeCommandId } from "../src/security";
 import { MODEL_VERSION, TOOL_VERSION } from "../src/runtime";
 import type { Evaluator, EvaluatorResult, ModelCapabilities, ModelGateway, ModelUsage, SandboxContext, SandboxManager, ToolGateway, ToolResult, WorldAdapter, WorldAdapterInput } from "../src/ports";
-import type { ActionEnvelope, ContextPacket, Evidence, ModelProviderStatus, Observation, ObservationSource, Project, ResolvedModelProvider, WorldSnapshot } from "../src/types";
+import type { ActionEnvelope, ContextPacket, Evidence, ModelCatalog, ModelProviderStatus, Observation, ObservationSource, Project, ResolvedModelProvider, WorldSnapshot } from "../src/types";
 import { normalizeWorkspacePath } from "./pathPolicy";
 import { executeProcessTool } from "./processManager";
 import { executeWorkspaceTool } from "./workspaceTools";
-import { CodexCliModelGateway, inspectCodexCli } from "./codexCliGateway";
+import { CodexCliModelGateway, configuredCodexModel, inspectCodexCli } from "./codexCliGateway";
 
 const execFileAsync = promisify(execFile);
 const commandTimeoutMs = 120_000;
@@ -574,6 +574,24 @@ export class UnavailableModelGateway implements ModelGateway {
   }
 }
 
+const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+
+export function getCodexModelCatalog(): ModelCatalog {
+  const configured = (process.env.CODEX_CLI_MODELS ?? "")
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter((value) => modelIdPattern.test(value));
+  const configuredDefault = configuredCodexModel();
+  const defaultModel = configuredDefault && modelIdPattern.test(configuredDefault) ? configuredDefault : undefined;
+  const models = [...new Set(defaultModel ? [defaultModel, ...configured] : configured)].slice(0, 64);
+  return { models, defaultModel };
+}
+
+function projectModelName(project: Project): string | undefined {
+  const value = project.settings.modelName?.trim();
+  return value && modelIdPattern.test(value) ? value : undefined;
+}
+
 export function resolveModelProvider(project: Project): ResolvedModelProvider {
   const requested = project.settings.modelProvider ?? "auto";
   const configuredEndpoint = process.env.MODEL_API_URL?.trim();
@@ -591,21 +609,27 @@ export async function inspectModelProvider(project: Project): Promise<ModelProvi
   const requested = project.settings.modelProvider ?? "auto";
   const effective = resolveModelProvider(project);
   const checkedAt = new Date().toISOString();
+  const projectModel = projectModelName(project);
   if (effective === "deterministic") {
-    return { requested, effective, state: "connected", displayName: "결정론적 연구 기준선", detail: "외부 AI가 아닌 로컬 결정론적 게이트웨이입니다. 실제 AI 연결로 표시하지 않습니다.", authentication: "not-applicable", checkedAt };
+    return { requested, effective, state: "connected", displayName: "결정론적 연구 기준선", detail: "외부 AI가 아닌 로컬 결정론적 게이트웨이입니다. 실제 AI 연결로 표시하지 않습니다.", availableModels: [], authentication: "not-applicable", checkedAt };
   }
   if (effective === "openai-compatible") {
     const endpoint = process.env.MODEL_API_URL?.trim() ?? "";
-    return { requested, effective, state: "configured", displayName: requested === "auto" ? "OpenAI 호환 API · 자동 선택" : "OpenAI 호환 API", detail: `엔드포인트와 API 키 설정을 확인했습니다. 실제 인증·응답은 첫 인지 주기에서 검증됩니다. (${endpoint})`, authentication: "configured", checkedAt };
+    return { requested, effective, state: "configured", displayName: requested === "auto" ? "OpenAI 호환 API · 자동 선택" : "OpenAI 호환 API", detail: `엔드포인트와 API 키 설정을 확인했습니다. 실제 인증·응답은 첫 인지 주기에서 검증됩니다. (${endpoint})`, selectedModel: projectModel ?? (process.env.MODEL_NAME?.trim() || undefined), availableModels: [], authentication: "configured", checkedAt };
   }
   if (effective === "codex-cli") {
     const diagnostics = await inspectCodexCli();
+    const catalog = getCodexModelCatalog();
+    const selectedModel = projectModel ?? catalog.defaultModel;
+    const availableModels = selectedModel && !catalog.models.includes(selectedModel) ? [selectedModel, ...catalog.models] : catalog.models;
     return {
       requested,
       effective,
       state: !diagnostics.installed ? "unavailable" : diagnostics.authentication === "verified" ? "connected" : "unknown",
       displayName: requested === "auto" ? "Codex CLI · 자동 선택" : "Codex CLI",
       detail: diagnostics.detail,
+      selectedModel,
+      availableModels,
       binary: diagnostics.binary,
       version: diagnostics.version,
       authentication: diagnostics.authentication,
@@ -616,7 +640,7 @@ export async function inspectModelProvider(project: Project): Promise<ModelProvi
   const detail = requested === "openai-compatible" && configuredEndpoint && !isSafeModelEndpoint(configuredEndpoint)
     ? "MODEL_API_URL은 사용자명·비밀번호가 없는 http/https URL이어야 합니다."
     : "실제 모델 provider가 설정되지 않았습니다. OpenAI 호환 API 또는 Codex CLI를 설정하세요.";
-  return { requested, effective, state: "needs-setup", displayName: "사용 가능한 모델 없음", detail, authentication: "missing", checkedAt };
+  return { requested, effective, state: "needs-setup", displayName: "사용 가능한 모델 없음", detail, availableModels: [], authentication: "missing", checkedAt };
 }
 
 export function createModelGateway(project: Project): ModelGateway {
@@ -627,9 +651,9 @@ export function createModelGateway(project: Project): ModelGateway {
     case "deterministic":
       return new DeterministicLocalModelGateway();
     case "codex-cli":
-      return new CodexCliModelGateway();
+      return new CodexCliModelGateway({ model: projectModelName(project) });
     case "openai-compatible":
-      return new OpenAICompatibleModelGateway(endpoint as string, apiKey as string);
+      return new OpenAICompatibleModelGateway(endpoint as string, apiKey as string, projectModelName(project));
     case "unavailable":
     default:
       return new UnavailableModelGateway(configuredEndpoint && !endpoint ? "MODEL_API_URL은 http/https URL이며 사용자명·비밀번호를 포함하지 않아야 합니다." : "MODEL_API_URL과 MODEL_API_KEY가 설정되지 않았습니다.");

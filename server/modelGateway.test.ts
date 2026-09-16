@@ -48,6 +48,7 @@ describe("OpenAI-compatible model gateway", () => {
     expect(usage).toMatchObject({ modelVersion: "openai-compatible:test-model", tokens: 12, inputTokens: 5, outputTokens: 7, usageKnown: true });
     expect(response.requests).toHaveLength(1);
     const payload = JSON.parse(response.requests[0]!) as { messages?: Array<{ role?: string; content?: string }> };
+    expect(payload).toMatchObject({ model: "test-model" });
     const user = payload.messages?.find((message) => message.role === "user")?.content ?? "";
     expect(JSON.parse(user)).toMatchObject({ projectId: packet.projectId, intentRef: packet.intentRef, worldCursor: packet.worldCursor });
   });

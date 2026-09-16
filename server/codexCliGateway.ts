@@ -65,6 +65,11 @@ function configuredBinary(): string {
   return process.env.CODEX_CLI_BIN?.trim() || (process.platform === "win32" ? "codex.exe" : "codex");
 }
 
+export function configuredCodexModel(): string | undefined {
+  const configured = process.env.CODEX_CLI_MODEL?.trim() || process.env.MODEL_NAME?.trim();
+  return configured || undefined;
+}
+
 export interface CodexCliDiagnostics {
   binary: string;
   installed: boolean;
@@ -256,7 +261,7 @@ export class CodexCliModelGateway implements ModelGateway {
 
   constructor(options: CodexCliGatewayOptions = {}) {
     this.binary = options.binary ?? configuredBinary();
-    this.model = options.model ?? (process.env.CODEX_CLI_MODEL?.trim() || process.env.MODEL_NAME?.trim());
+    this.model = options.model ?? configuredCodexModel();
     this.timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1_000, Math.min(300_000, options.timeoutMs as number)) : configuredTimeoutMs();
     this.cwd = options.cwd ?? tmpdir();
     this.commandPrefix = (options.commandPrefix ?? []).filter((arg) => typeof arg === "string" && arg.length <= 512).slice(0, 8);

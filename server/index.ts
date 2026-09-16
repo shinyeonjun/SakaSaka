@@ -42,7 +42,7 @@ import { withFileLock } from "./fileLock";
 import { JsonJobQueue } from "./jobQueue";
 import { provisionProjectWorkspace } from "./workspaceProvisioner";
 import { hydrateManagedProcesses, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
-import { inspectRuntimeConnection } from "./runtimeStatus";
+import { inspectRuntimeConnection, runtimeModelCatalog } from "./runtimeStatus";
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
@@ -66,6 +66,7 @@ function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): Pr
     allowedDomains: raw?.allowedDomains,
     sandboxMode: raw?.sandboxMode ?? "process",
     modelProvider: raw?.modelProvider ?? "auto",
+    modelName: raw?.modelName,
     reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360,
     failureThreshold: raw?.failureThreshold ?? 3,
     noProgressThreshold: raw?.noProgressThreshold ?? 5,
@@ -390,6 +391,8 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
   const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
   if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible" && modelProvider !== "codex-cli") return { error: "modelProvider is not supported" };
+  const modelName = body.modelName === undefined ? undefined : body.modelName;
+  if (modelName !== undefined && (typeof modelName !== "string" || (modelName.trim() && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(modelName.trim())))) return { error: "modelName must be a model id with at most 128 safe characters" };
   const previewUrl = body.previewUrl === undefined ? undefined : body.previewUrl;
   let previewHost: string | undefined;
   if (previewUrl !== undefined) {
@@ -419,7 +422,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
   const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
   if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
-  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, workspacePath, previewUrl, allowedDomains } };
+  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
 }
 
 function isSafeProjectId(value: string): boolean {
@@ -489,6 +492,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === "GET" && parsedUrl.pathname === "/projects") {
     sendJson(response, 200, { projects: state.projects });
+    return;
+  }
+
+  if (method === "GET" && parsedUrl.pathname === "/runtime/model-catalog") {
+    sendJson(response, 200, runtimeModelCatalog());
     return;
   }
 

@@ -27,13 +27,14 @@ function contextFixture() {
   return context;
 }
 
-function writeCliFixture(output: string, exitCode = 0): { binary: string; prefix: string[] } {
+function writeCliFixture(output: string, exitCode = 0, requiredArgs: string[] = []): { binary: string; prefix: string[] } {
   const directory = mkdtempSync(join(tmpdir(), "sakasaka-codex-cli-test-"));
   temporaryDirectories.push(directory);
   const script = join(directory, "fixture.mjs");
   writeFileSync(script, `
 const action = process.env.CODEX_GATEWAY_ACTION;
 if (!process.argv.slice(2).includes("exec")) process.exit(41);
+if (!${JSON.stringify(requiredArgs)}.every((argument) => process.argv.slice(2).includes(argument))) process.exit(42);
 process.stdout.write(${JSON.stringify(output)});
 if (${exitCode} !== 0) process.exit(${exitCode});
 `, "utf8");
@@ -60,7 +61,7 @@ describe("Codex CLI ModelGateway", () => {
       JSON.stringify({ type: "turn.completed", usage: { input_tokens: 13, output_tokens: 9, total_tokens: 22 } }),
       "",
     ].join("\n");
-    const fixture = writeCliFixture(output);
+    const fixture = writeCliFixture(output, 0, ["--model", "codex-test"]);
     process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
     process.env.CODEX_GATEWAY_ACTION = JSON.stringify(action);
     const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, model: "codex-test", timeoutMs: 5_000 });

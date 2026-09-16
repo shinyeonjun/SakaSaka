@@ -58,6 +58,8 @@ function localStatus(project: Project): RuntimeConnectionStatus {
         ? "브라우저 상태에서 동작하는 결정론적 기준선입니다. 실제 AI 연결로 표시하지 않습니다."
         : "브라우저 전용 모드에서는 Codex CLI와 OpenAI 호환 API를 실행할 수 없습니다. API와 worker를 연결하면 서버에서 확인합니다.",
       authentication: deterministic ? "not-applicable" : "missing",
+      selectedModel: project.settings.modelName,
+      availableModels: [],
       checkedAt: new Date().toISOString(),
     },
     workspace: {
@@ -145,9 +147,11 @@ export function SettingsPage({ projectId }: { projectId: string }) {
             <dl className="settings-definition-list">
               <div><dt>프로젝트 선택</dt><dd>{providerLabel(model.requested)}</dd></div>
               <div><dt>실제 사용 경로</dt><dd>{resolvedProviderLabel(model.effective)}</dd></div>
+              <div><dt>선택 모델</dt><dd>{model.selectedModel ? <code>{model.selectedModel}</code> : "provider 기본 모델"}</dd></div>
               <div><dt>인증 상태</dt><dd>{authenticationLabel(model.authentication)}</dd></div>
               {model.binary && <div><dt>실행 파일</dt><dd><code>{model.binary}</code></dd></div>}
               {model.version && <div><dt>CLI 버전</dt><dd><code>{model.version}</code></dd></div>}
+              {model.availableModels.length > 0 && <div><dt>서버 목록</dt><dd className="settings-model-list">{model.availableModels.join(" · ")}</dd></div>}
             </dl>
             <p className="muted-copy">{model.detail}</p>
           </Card>

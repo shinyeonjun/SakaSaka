@@ -88,6 +88,10 @@ async function main(): Promise<void> {
     await open(newPage, baseUrl, "/projects/new");
     await assertNoHorizontalOverflow(newPage, "신규 프로젝트 데스크톱");
     assert.equal(await newPage.getByLabel("작업 폴더 경로").isDisabled(), true, "브라우저 전용 모드가 OS 폴더를 연결하면 안 됩니다.");
+    await newPage.getByRole("button", { name: "고급 설정" }).click();
+    await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
+    assert.equal(await newPage.getByLabel("모델 ID").count(), 1, "Codex 모델 선택 입력이 없습니다.");
+    await newPage.getByLabel("모델 ID").fill("configured-codex-model");
     await newPage.getByLabel("의도").fill("팀이 함께 사용할 수 있는 품질 검증 workspace를 만들어줘");
     await newPage.getByRole("button", { name: "시작하기" }).click();
     await newPage.waitForURL(/\/projects\/[^/]+$/);

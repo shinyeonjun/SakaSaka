@@ -104,16 +104,20 @@ async function main(): Promise<void> {
 
   try {
     await waitForHealth(baseUrl, child, logs);
+    const modelCatalog = await request(baseUrl, "/runtime/model-catalog");
+    assert.equal(modelCatalog.response.status, 200);
+    assert.ok(Array.isArray(modelCatalog.body.models));
     const projectId = `api-contract-${Date.now().toString(36)}`;
     const created = await post(baseUrl, "/projects", {
       projectId,
       rawIntent: "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘",
-      settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, allowedDomains: [], modelProvider: "deterministic" },
+      settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, allowedDomains: [], modelProvider: "deterministic", modelName: "offline-model" },
     });
     assert.equal(created.response.status, 201, JSON.stringify(created.body));
     assert.equal(created.body.project.id, projectId);
     assert.equal(created.body.project.status, "ACTIVE");
     assert.equal(created.body.intent.rawText, "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘");
+    assert.equal(created.body.project.settings.modelName, "offline-model");
     const runtimeStatus = await request(baseUrl, `/projects/${encodeURIComponent(projectId)}/runtime-status`);
     assert.equal(runtimeStatus.response.status, 200, JSON.stringify(runtimeStatus.body));
     assert.equal(runtimeStatus.body.model.effective, "deterministic");

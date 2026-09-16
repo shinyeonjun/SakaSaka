@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
-import type { Project, RuntimeConnectionStatus, WorkspaceBindingStatus } from "../src/types";
-import { inspectModelProvider } from "./localAdapters";
+import type { ModelCatalog, Project, RuntimeConnectionStatus, WorkspaceBindingStatus } from "../src/types";
+import { getCodexModelCatalog, inspectModelProvider } from "./localAdapters";
 import { normalizeWorkspacePath, workspaceRootPath } from "./pathPolicy";
 
 function workspaceStatus(project: Project): WorkspaceBindingStatus {
@@ -72,4 +72,8 @@ export async function inspectRuntimeConnection(project: Project): Promise<Runtim
     model: await inspectModelProvider(project),
     workspace: workspaceStatus(project),
   };
+}
+
+export function runtimeModelCatalog(): ModelCatalog {
+  return getCodexModelCatalog();
 }

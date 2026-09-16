@@ -1,6 +1,6 @@
 import { getRun } from "./runtime";
 import type { AppAction } from "./store";
-import type { AppState, RuntimeConnectionStatus } from "./types";
+import type { AppState, ModelCatalog, RuntimeConnectionStatus } from "./types";
 
 const baseUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
 
@@ -34,6 +34,10 @@ export function fetchServerState(): Promise<AppState> {
 
 export function fetchRuntimeConnectionStatus(projectId: string): Promise<RuntimeConnectionStatus> {
   return request<RuntimeConnectionStatus>(`/projects/${encodeURIComponent(projectId)}/runtime-status`);
+}
+
+export function fetchModelCatalog(): Promise<ModelCatalog> {
+  return request<ModelCatalog>("/runtime/model-catalog");
 }
 
 export async function mirrorAction(action: AppAction, state: AppState): Promise<void> {

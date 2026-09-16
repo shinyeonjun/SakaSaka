@@ -694,6 +694,7 @@ export function createProject(
       allowedDomains: [...new Set([...(settings.allowedDomains ?? []), "registry.npmjs.org", "localhost", "127.0.0.1"])],
       sandboxMode: settings.sandboxMode ?? "process",
       modelProvider: settings.modelProvider ?? "auto",
+      modelName: settings.modelName?.trim() || undefined,
       reviewIntervalMinutes: positiveSetting(settings.reviewIntervalMinutes, 360, 10_080),
       failureThreshold: positiveSetting(settings.failureThreshold, 3, 32),
       noProgressThreshold: positiveSetting(settings.noProgressThreshold, 5, 128),

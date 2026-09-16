@@ -128,6 +128,11 @@ ul { padding: 0; list-style: none; }
 .advanced-setting-row strong { font-size: 14px; }
 .advanced-setting-row span { color: var(--muted); font-size: 12px; }
 .advanced-setting-row input { width: 110px; padding: 8px 10px; border: 1px solid var(--input-border); border-radius: 8px; background: #fff; text-align: right; }
+.model-setting-row { align-items: flex-start; }
+.model-setting-row > div:first-child { flex: 1 1 auto; }
+.model-picker { display: flex; flex: 0 1 300px; flex-direction: column; align-items: stretch; gap: 4px; }
+.model-picker input { width: 100%; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.model-picker > span { font-size: 11px; line-height: 1.35; }
 .workspace-binding-card { display: flex; flex-direction: column; gap: 14px; padding: 22px; }
 .workspace-binding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .workspace-binding-heading > div { display: flex; flex-direction: column; gap: 5px; }
@@ -154,6 +159,7 @@ ul { padding: 0; list-style: none; }
 .settings-definition-list dt { color: var(--muted); }
 .settings-definition-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .settings-definition-list code { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.settings-model-list { overflow-wrap: anywhere; color: var(--muted-strong); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .settings-boundary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .settings-boundary-grid > div { display: flex; flex-direction: column; gap: 5px; min-height: 70px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 .settings-boundary-grid span { color: var(--muted); font-size: 11px; }

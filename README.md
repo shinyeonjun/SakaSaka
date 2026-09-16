@@ -44,11 +44,12 @@ Codex CLI는 SakaSaka의 도구가 아니라 `ModelGateway`입니다. CLI는 현
 codex login
 $env:CODEX_CLI_ENABLED = "true"
 $env:CODEX_CLI_BIN = "codex.exe" # PATH에 codex가 있으면 생략 가능
-$env:CODEX_CLI_MODEL = ""         # 선택 사항
+$env:CODEX_CLI_MODEL = ""         # 선택 사항 · 비워두면 Codex 기본 모델
+$env:CODEX_CLI_MODELS = ""        # 선택 사항 · UI 선택 목록, 쉼표/공백 구분
 npm run api
 ```
 
-프로젝트 생성 API에서 `"modelProvider":"codex-cli"`를 지정하면 환경 자동 선택과 관계없이 Codex CLI를 사용합니다. 응답이 malformed이거나 CLI가 설치되지 않았거나 시간이 초과되면 ACT로 위장하지 않고 WAIT와 원본 오류 참조를 남깁니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
+프로젝트 생성 화면의 `모델 ID` 입력은 선택한 값을 프로젝트 설정에 저장하고, Codex를 선택하면 실제 `codex exec --model <선택값>`으로 전달합니다. `CODEX_CLI_MODELS`를 설정하면 화면에서 선택 목록을 제공하며, 목록이 없어도 유효한 모델 ID를 직접 입력할 수 있습니다. 모델 ID를 비워두면 Codex 기본 모델을 사용합니다. 프로젝트 생성 API에서는 `"modelProvider":"codex-cli","modelName":"<model-id>"`처럼 지정할 수 있습니다. 응답이 malformed이거나 CLI가 설치되지 않았거나 시간이 초과되면 ACT로 위장하지 않고 WAIT와 원본 오류 참조를 남깁니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
 
 브라우저 binary가 설치되어 있지 않은 환경에서는 Playwright가 설치된 뒤 다음을 한 번 실행합니다.
 
@@ -85,6 +86,7 @@ Context에는 원문 Intent/constraints, fresh source-linked compact observation
 - `POST /projects`, `GET /projects/:id`
 - `POST /projects/:id/wake`, `/run`, `/world/refresh`, `/stall`
 - `GET /projects/:id/runtime-status` — 실제 선택 provider, Codex CLI 설치 확인, 작업 폴더 존재·쓰기 권한
+- `GET /runtime/model-catalog` — 서버에 설정한 Codex 모델 선택 목록
 - `POST /runs/:runId/pause|resume|kill`
 - `POST /human-items/:itemId/answer|approve|reject|defer|acknowledge`
 - `GET /projects/:id/events?after=...`, `/stream`, `/actions`, `/contexts`, `/relations`, `/retrieval-index`, `/evaluation`
