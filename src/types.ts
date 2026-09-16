@@ -1,3 +1,4 @@
+import type { NativeSession } from "./nativeSession";
 import type { InputSchema } from "./toolContracts";
 import type { ModelFailure } from "./modelFailure";
 export type RuntimeStatus =
@@ -82,6 +83,11 @@ export const worldSourceKeys = ["repo", "runtime", "browser", "db", "logs", "hum
 export type WorldSourceKey = (typeof worldSourceKeys)[number];
 
 export interface ProjectSettings {
+  /** Explicit migration: absent on existing projects means the legacy atomic engine. */
+  executionMode?: "atomic" | "native";
+  maxNativeTurns?: number;
+  maxNativeTokens?: number;
+  nativeTurnTimeoutMs?: number;
   budgetLimit: number;
   maxHours: number;
   /** Hard cap even when CLI billing cannot be measured. */
@@ -294,6 +300,7 @@ export interface AgentAction extends ActionEnvelope {
 }
 
 export interface Run {
+  nativeSession?: NativeSession;
   id: string;
   projectId: string;
   status: RuntimeStatus;
@@ -510,6 +517,8 @@ export interface HumanOption {
 }
 
 export interface HumanItem {
+  /** Stable, intent-scoped deduplication key for the asynchronous native inbox. */
+  missionKey?: string;
   id: string;
   projectId: string;
   kind: HumanItemKind;

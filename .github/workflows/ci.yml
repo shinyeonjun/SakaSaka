@@ -45,3 +45,24 @@ jobs:
       - run: npm run security:check
       - run: npm test -- --run src/security.test.ts
       - run: git diff --check
+
+  native-codex-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Install pinned public Codex binary (no login)
+        run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
+      - name: Native agent and sandbox integration with local scripted model
+        run: |
+          export SAKASAKA_TEST_CODEX_BIN="$RUNNER_TEMP/native-codex/node_modules/.bin/codex"
+          "$SAKASAKA_TEST_CODEX_BIN" --version
+          npm run acceptance:native

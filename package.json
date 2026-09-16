@@ -26,7 +26,10 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
     "build:desktop:assets": "npm run build && tsx scripts/buildDesktopServer.ts",
-    "smoke:codex": "tsx scripts/smokeCodex.ts"
+    "smoke:codex": "tsx scripts/smokeCodex.ts",
+    "smoke:native": "tsx scripts/smokeNative.ts",
+    "acceptance:native": "tsx scripts/nativeAcceptance.ts",
+    "acceptance:native:core": "tsx scripts/nativeAcceptance.ts --core"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

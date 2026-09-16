@@ -49,3 +49,32 @@ PM/CTO/Coder/QA 조직도, PRD→설계→구현 같은 단계, 무조건 수행
 - 공식 보안 문서: https://developers.openai.com/codex/security — sandbox/approval은 명시적인 실행 정책이며 '자유로운 AI'를 이유로 끄지 않는다.
 
 구현·실험 범위와 검증 결과는 이 문서와 PR에 후속 기록한다. 실제 Codex 인증이 없는 환경의 모의 테스트를 실제 모델 능력 검증이라고 표현하지 않는다.
+
+## PR #2 실제 구현 (선언과 구분)
+
+구현은 `server/nativeRuntime.ts`의 `runNativeEpisode`이며 worker가 `settings.executionMode === "native"`일 때 실제로 호출한다. `server/codexAppServer.ts`는 stdio JSON-RPC transport다. `src/nativeSession.ts`는 질문함/상태 보고의 계약이고 `server/nativeEvidence.ts`가 실제 native 이벤트와 도구 결과를 저장한다. 기존 원자적 실행기는 유지한다. 새 프로젝트 또는 프로젝트 설정에서 명시적으로 선택해야 하며, 엔진 변경은 실행을 일시 정지한다. 과거 파일/질문/경험은 지우지 않는다.
+
+설계와 구현의 대응, 기존 ActionEnvelope 계약을 대체한 이유, 미입증 연구 항목은 [Figma 구현 추적표](figma-implementation-map.md)를 본다.
+
+### 실행
+
+```bash
+npm ci
+npm run smoke:native
+# 아래 명령은 실제 모델 사용량이 발생하고, 별도 임시 폴더에 테스트 파일을 쓴다.
+npm run smoke:native -- --run
+npm run desktop:dev
+```
+
+앱의 신규 프로젝트에서 `지속형 Codex 세션 · App Server`를 선택한다. 기존 프로젝트는 설정에서 실행 방식을 저장한 뒤 모델 연결을 Codex CLI로 확인하고 재개한다. 기존 설치 앱에는 코드 변경이 자동 반영되지 않는다. 설치 앱은 새 소스로 다시 빌드해야 한다.
+
+### 경계와 제한
+
+- Native 파일/셸 실행은 Codex workspace-write sandbox와 네트워크 차단, 자동 권한 확대 금지로 실행한다. 호스트 전체 read 격리/비밀 유출 완전 방어를 보장하지 않는다. 중요한 파일·계정이 없는 전용 환경에서 시험한다.
+- 외부 MCP가 활성화된 설정/외부 hooks는 조용히 상속하지 않고 setup 오류로 거절한다. apps/plugins/hooks/native subagents 기능도 이번 경로에서는 끈다. 하위 agent의 비용·이벤트 범위를 아직 통합하지 않았기 때문이다. 필요하면 별도 `SAKASAKA_CODEX_HOME`에 로그인한 전용 Codex 설정을 사용한다.
+- SakaSaka 미리보기·설치·브라우저 도구는 별도 환경 기능이다. host `process`는 보안 sandbox가 아니다. Docker preview/install의 bridge 네트워크는 완전한 egress allowlist가 아니다. native 셸 네트워크가 차단되어 있다고 이 외부 기능의 권한까지 같은 것으로 표현하지 않는다.
+- 외부 패키지 다운로드는 해당 요청의 승인으로만 실행한다. 범용 native shell의 sandbox 밖 권한을 승인해 주는 기능은 없다. 승인 거절은 도구 피드백이며 전체 프로젝트를 곧바로 실패 처리하지 않는다.
+- 정상적인 작업 구간 사이와 재시작 후에는 저장한 thread를 resume한다. 진행 중 효과가 불명확한 lease 만료는 자동 재실행하지 않는다. 분산 exactly-once를 보장하지 않는다.
+- 토큰/시간/작업 구간을 제한한다. 누적 토큰은 중복 알림을 차감한다. in-flight 모델 호출 하나가 한도를 넘길 수 있으며, 실제 청구 금액은 API의 사용량·설정 단가와 다를 수 있다. native에서 `maxModelCalls`는 SakaSaka 작업 구간 단위 이벤트이므로 내부 모델 호출 수의 정확한 상한으로 설명하지 않는다.
+- 실제 명령 실패는 Codex가 같은 turn에서 읽고 복구한다. 환경 기능의 잘못된 입력/프로세스 ID는 recoverable tool result이다. 프로토콜·인증·강제 중단은 별도 runtime failure다.
+- 실제 Codex 바이너리 + 모의 모델 검사와 실제 유료 모델에 의한 제품 제작 검증은 다르다. CI가 초록이라고 후자가 입증되는 것은 아니다. 실사용 실패 원문 없이는 사용자가 보여준 특정 STALLED의 직접 원인을 하나로 확정하지 않는다.

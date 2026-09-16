@@ -86,12 +86,18 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const [modelName, setModelName] = useState(project?.settings.modelName ?? "");
   const [modelSaved, setModelSaved] = useState(false);
   const [modelError, setModelError] = useState<string | undefined>();
+  const [executionMode, setExecutionMode] = useState<"native" | "atomic">(project?.settings.executionMode ?? "atomic");
+  const [nativeTurns, setNativeTurns] = useState(project?.settings.maxNativeTurns ?? 40);
+  const [nativeTokens, setNativeTokens] = useState(project?.settings.maxNativeTokens ?? 250000);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
+    setExecutionMode(project?.settings.executionMode ?? "atomic");
+    setNativeTurns(project?.settings.maxNativeTurns ?? 40);
+    setNativeTokens(project?.settings.maxNativeTokens ?? 250000);
     setModelProvider(project?.settings.modelProvider ?? "auto");
     setModelName(project?.settings.modelName ?? "");
-  }, [project?.id, project?.settings.modelProvider, project?.settings.modelName]);
+  }, [project?.id, project?.settings.modelProvider, project?.settings.modelName, project?.settings.executionMode, project?.settings.maxNativeTokens, project?.settings.maxNativeTurns]);
 
   const loadStatus = useCallback(async () => {
     if (!project) return;
@@ -167,6 +173,22 @@ export function SettingsPage({ projectId }: { projectId: string }) {
 
       <div className="screen-stack settings-stack">
         {error && <InlineNotice tone="red" title="상태 확인 실패">{error} API 서버가 실행 중인지 확인한 뒤 다시 시도해 주세요.</InlineNotice>}
+
+        <Card className="settings-panel">
+          <SectionHeader title="프로젝트 실행 방식" />
+          <label htmlFor="project-execution-mode">기존 기록을 유지한 채 실행기 선택</label>
+          <select id="project-execution-mode" value={executionMode} onChange={(e) => setExecutionMode(e.target.value as "native" | "atomic")}>
+            <option value="native">지속형 Codex App Server</option><option value="atomic">원자적 ModelGateway 호환</option>
+          </select>
+          <div className="split-grid split-grid-2">
+            <label>최대 Native 작업 구간<input type="number" min="1" max="1000" value={nativeTurns} onChange={(e) => setNativeTurns(Number(e.target.value))} /></label>
+            <label>Native 토큰 상한<input type="number" min="1" max="10000000" value={nativeTokens} onChange={(e) => setNativeTokens(Number(e.target.value))} /></label>
+          </div>
+          <p className="muted-copy">Native 모드는 아래 모델 연결을 Codex CLI로 설정해야 합니다. 저장하면 현재 실행을 일시 정지합니다. 파일·질문·경험·기존 세션은 삭제하지 않습니다.</p>
+          <p className="small-copy">Native 파일·명령은 Codex workspace-write/네트워크 차단으로 실행합니다. 프로젝트의 Docker/process 선택은 미리보기·패키지 환경 도구에 적용되며, Native 세션 전체가 Docker 안에서 도는 것은 아닙니다.</p>
+          <Button disabled={!isControlPlaneEnabled || project.status === "KILLED"} variant="neutral" onClick={() => dispatch({ type: "UPDATE_PROJECT_EXECUTION", projectId, executionMode, maxNativeTurns: nativeTurns, maxNativeTokens: nativeTokens })}>실행 방식 저장 · 일시 정지</Button>
+          {project.status === "PAUSED" && <Button variant="primary" onClick={() => dispatch({ type: "RESUME_PROJECT", projectId })}>설정 확인 후 재개</Button>}
+        </Card>
 
         <Card className="settings-hero-card">
           <div>

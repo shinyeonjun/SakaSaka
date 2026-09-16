@@ -81,6 +81,9 @@ export async function mirrorAction(action: AppAction, state: AppState): Promise<
   if (!isControlPlaneEnabled) return;
 
   switch (action.type) {
+    case "UPDATE_PROJECT_EXECUTION":
+      await post(`/projects/${encodeURIComponent(action.projectId)}/execution`, { executionMode: action.executionMode, maxNativeTurns: action.maxNativeTurns, maxNativeTokens: action.maxNativeTokens });
+      return;
     case "CREATE_PROJECT":
       await post("/projects", {
         rawIntent: action.rawIntent,

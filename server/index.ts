@@ -1,3 +1,4 @@
+import { updateExecutionSettings } from "../src/nativeSession";
 import { mergeCycleResult } from "./cycleCoordinator";
 import { checkHttpBoundary, isLoopbackHost } from "./httpBoundary";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -70,7 +71,7 @@ function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): Pr
     workspacePath: raw?.workspacePath,
     previewUrl: raw?.previewUrl,
     allowedDomains: raw?.allowedDomains,
-    sandboxMode: raw?.sandboxMode ?? "process",
+    sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: raw?.maxNativeTokens, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs,
     modelProvider: raw?.modelProvider ?? "auto",
     modelName: raw?.modelName,
     reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360,
@@ -396,6 +397,12 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (typeof productionBlocked === "string") return { error: productionBlocked };
   const networkPolicy = body.networkPolicy === undefined ? "allowlist" : body.networkPolicy;
   if (networkPolicy !== "deny" && networkPolicy !== "allowlist") return { error: "networkPolicy must be deny or allowlist" };
+  const executionMode = body.executionMode ?? "atomic";
+  if (executionMode !== "atomic" && executionMode !== "native") return { error: "executionMode must be atomic or native" };
+  const maxNativeTurns = optionalPositive("maxNativeTurns", 40, 1000);
+  const maxNativeTokens = optionalPositive("maxNativeTokens", 250000, 10000000);
+  const nativeTurnTimeoutMs = optionalPositive("nativeTurnTimeoutMs", 300000, 540000);
+  for (const limit of [maxNativeTurns, maxNativeTokens, nativeTurnTimeoutMs]) if (typeof limit === "string") return { error: limit };
   const sandboxMode = body.sandboxMode === undefined ? "process" : body.sandboxMode;
   if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
   const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
@@ -431,7 +438,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
   const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
   if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
-  return { settings: { budgetLimit, maxHours, maxModelCalls, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
+  return { settings: { budgetLimit, maxHours, maxModelCalls, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, executionMode, maxNativeTurns: maxNativeTurns as number, maxNativeTokens: maxNativeTokens as number, nativeTurnTimeoutMs: nativeTurnTimeoutMs as number, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
 }
 
 function parseModelSettings(body: Record<string, unknown>): { settings?: Pick<ProjectSettings, "modelProvider" | "modelName">; error?: string } {
@@ -661,6 +668,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
     if (method === "GET" && parts[2] === "runtime-status" && parts.length === 3) {
       sendJson(response, 200, await inspectRuntimeConnection(project));
+      return;
+    }
+
+    if (method === "POST" && parts[2] === "execution" && parts.length === 3) {
+      const body = await readJson(request);
+      if (body.executionMode !== "atomic" && body.executionMode !== "native") { sendError(response, 400, "executionMode must be atomic or native"); return; }
+      for (const [key, maximum] of [["maxNativeTurns", 1000], ["maxNativeTokens", 10000000]] as const) {
+        const value = body[key];
+        if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > maximum)) { sendError(response, 400, `${key} is out of range`); return; }
+      }
+      if (project.status === "KILLED") { sendError(response, 409, "killed project cannot change execution mode"); return; }
+      const executionMode = body.executionMode;
+      await commitMutation((current) => updateExecutionSettings(current, projectId, { executionMode, maxNativeTurns: body.maxNativeTurns as number | undefined, maxNativeTokens: body.maxNativeTokens as number | undefined }));
+      sendJson(response, 200, projectPayload(projectId));
       return;
     }
 

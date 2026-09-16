@@ -1,3 +1,4 @@
+import { updateExecutionSettings } from "./nativeSession";
 import { acceptServerState } from "./stateSync";
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type Dispatch, type PropsWithChildren } from "react";
 import { fetchServerState, fetchServerStateWithRetry, isControlPlaneEnabled, mirrorAction, subscribeToProject } from "./apiClient";
@@ -83,6 +84,7 @@ function loadState(): AppState {
 }
 
 export type AppAction =
+  | { type: "UPDATE_PROJECT_EXECUTION"; projectId: string; executionMode: "native" | "atomic"; maxNativeTurns?: number; maxNativeTokens?: number }
   | { type: "CREATE_PROJECT"; rawIntent: string; projectId: string; settings?: Partial<ProjectSettings> }
   | { type: "UPDATE_PROJECT_MODEL"; projectId: string; modelProvider: NonNullable<ProjectSettings["modelProvider"]>; modelName?: string }
   | { type: "DELETE_PROJECT"; projectId: string }
@@ -103,6 +105,8 @@ export type AppAction =
 
 export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
+    case "UPDATE_PROJECT_EXECUTION":
+      return updateExecutionSettings(state, action.projectId, action);
     case "CREATE_PROJECT":
       return createProject(state, action.rawIntent, action.projectId, action.settings);
     case "UPDATE_PROJECT_MODEL":
