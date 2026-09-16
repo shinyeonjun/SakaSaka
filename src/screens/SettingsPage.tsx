@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { fetchModelCatalog, fetchRuntimeConnectionStatus, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader } from "../components/ui";
+import { getRecommendedCodexModels } from "../modelCatalog";
 import { getProject } from "../runtime";
 import { useApp } from "../store";
-import type { ModelProvider, Project, ResolvedModelProvider, RuntimeConnectionStatus } from "../types";
+import type { ModelCatalogEntry, ModelProvider, Project, ResolvedModelProvider, RuntimeConnectionStatus } from "../types";
 import { projectPath, useRouter } from "../router";
 
 function providerLabel(provider: ModelProvider): string {
@@ -77,7 +78,8 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const { navigate } = useRouter();
   const project = getProject(state, projectId);
   const [status, setStatus] = useState<RuntimeConnectionStatus | undefined>();
-  const [catalogModels, setCatalogModels] = useState<string[]>([]);
+  const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>(() => project?.settings.modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
+  const [catalogDefaultModel, setCatalogDefaultModel] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [modelProvider, setModelProvider] = useState<ModelProvider>(project?.settings.modelProvider ?? "auto");
@@ -95,6 +97,8 @@ export function SettingsPage({ projectId }: { projectId: string }) {
     if (!project) return;
     if (!isControlPlaneEnabled) {
       setStatus(localStatus(project));
+      setCatalogModels(modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
+      setCatalogDefaultModel("");
       setError(undefined);
       return;
     }
@@ -103,7 +107,14 @@ export function SettingsPage({ projectId }: { projectId: string }) {
     try {
       const connection = await fetchRuntimeConnectionStatus(projectId);
       setStatus(connection);
-      try { setCatalogModels((await fetchModelCatalog()).models); } catch { setCatalogModels(connection.model.availableModels); }
+      try {
+        const catalog = await fetchModelCatalog();
+        setCatalogModels(catalog.entries ?? catalog.models.map((id) => ({ id, label: id, group: "configured" as const })));
+        setCatalogDefaultModel(catalog.defaultModel ?? "");
+      } catch {
+        setCatalogModels(connection.model.availableModels.map((id) => ({ id, label: id, group: "configured" as const })));
+        setCatalogDefaultModel(connection.model.selectedModel ?? "");
+      }
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "런타임 연결 상태를 확인하지 못했습니다.");
     } finally {
@@ -143,7 +154,9 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const model = current.model;
   const workspace = current.workspace;
   const workspacePath = workspace.resolvedPath ?? workspace.configuredPath ?? "API가 프로젝트 전용 폴더를 자동 생성합니다.";
-  const modelOptions = [...new Set([...catalogModels, ...model.availableModels])];
+  const modelOptions = [...catalogModels, ...model.availableModels.filter((id) => !catalogModels.some((entry) => entry.id === id)).map((id) => ({ id, label: id, group: "configured" as const }))];
+  const selectedDropdownModel = modelName || model.selectedModel || catalogDefaultModel;
+  const showDirectModelInput = modelOptions.length === 0 || (Boolean(modelName) && !modelOptions.some((entry) => entry.id === modelName));
 
   return (
     <div className="screen">
@@ -203,11 +216,16 @@ export function SettingsPage({ projectId }: { projectId: string }) {
               {modelProvider !== "deterministic" && (
                 <div className="settings-form-field">
                   <label htmlFor="settings-model-name">{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</label>
-                  <select id="settings-model-options" value={modelOptions.includes(modelName) ? modelName : ""} onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }} aria-label={modelProvider === "codex-cli" ? "Codex 모델 목록" : "모델 목록"}>
+                  <select id="settings-model-options" value={modelOptions.some((entry) => entry.id === selectedDropdownModel) ? selectedDropdownModel : ""} onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }} aria-label={modelProvider === "codex-cli" ? "Codex 모델 목록" : "모델 목록"}>
                     <option value="">provider 기본 모델</option>
-                    {modelOptions.map((availableModel) => <option key={availableModel} value={availableModel}>{availableModel}</option>)}
+                    {modelOptions.some((entry) => entry.group === "recommended") && <optgroup label="기본 · 추천 모델 세트">
+                      {modelOptions.filter((entry) => entry.group === "recommended").map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                    </optgroup>}
+                    {modelOptions.some((entry) => entry.group === "configured") && <optgroup label="서버 설정 모델">
+                      {modelOptions.filter((entry) => entry.group === "configured").map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                    </optgroup>}
                   </select>
-                  <input
+                  {showDirectModelInput && <input
                     id="settings-model-name"
                     value={modelName}
                     onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }}
@@ -215,8 +233,8 @@ export function SettingsPage({ projectId }: { projectId: string }) {
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
                     placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-describedby="settings-model-help"
-                  />
-                  <span id="settings-model-help" className="field-help">{modelOptions.length ? `서버가 제공한 선택 목록 ${modelOptions.length}개 · 직접 입력도 가능` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
+                  />}
+                  <span id="settings-model-help" className="field-help">{modelOptions.length && !showDirectModelInput ? `서버가 제공한 선택 목록 ${modelOptions.length}개에서 선택` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
                 </div>
               )}
               <div className="button-row">

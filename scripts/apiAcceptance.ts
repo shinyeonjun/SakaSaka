@@ -107,6 +107,13 @@ async function main(): Promise<void> {
     const modelCatalog = await request(baseUrl, "/runtime/model-catalog");
     assert.equal(modelCatalog.response.status, 200);
     assert.ok(Array.isArray(modelCatalog.body.models));
+    assert.ok(Array.isArray(modelCatalog.body.entries));
+    assert.ok(modelCatalog.body.entries.some((entry: { id?: string; label?: string }) => entry.id === "gpt-5.6-luna" && entry.label === "GPT-5.6 Luna"));
+    const modelStatus = await request(baseUrl, "/runtime/model-status?provider=deterministic&model=offline-model");
+    assert.equal(modelStatus.response.status, 200, JSON.stringify(modelStatus.body));
+    assert.equal(modelStatus.body.requested, "deterministic");
+    assert.equal(modelStatus.body.effective, "deterministic");
+    assert.equal(modelStatus.body.selectedModel, "offline-model");
     const projectId = `api-contract-${Date.now().toString(36)}`;
     const created = await post(baseUrl, "/projects", {
       projectId,

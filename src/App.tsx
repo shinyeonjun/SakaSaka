@@ -9,6 +9,7 @@ import { NeedsYouPage } from "./screens/NeedsYouPage";
 import { NewProjectPage } from "./screens/NewProjectPage";
 import { OverviewPage } from "./screens/OverviewPage";
 import { SettingsPage } from "./screens/SettingsPage";
+import { GlobalSettingsPage } from "./screens/GlobalSettingsPage";
 import { WorldPage } from "./screens/WorldPage";
 import { Button, Card } from "./components/ui";
 
@@ -21,6 +22,7 @@ export function App() {
   const content = (() => {
     switch (route.kind) {
       case "new": return <NewProjectPage />;
+      case "global-settings": return <GlobalSettingsPage />;
       case "overview": return <OverviewPage projectId={route.projectId} />;
       case "needs-you": return <NeedsYouPage projectId={route.projectId} />;
       case "human-item": return <HumanItemDetailPage projectId={route.projectId} itemId={route.itemId} />;

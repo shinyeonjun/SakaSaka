@@ -7,10 +7,11 @@ import { chromium } from "playwright";
 import { isAllowedNetworkHost, isAllowedNetworkUrl, isDeveloperArgv, parseActionEnvelope, redactSecretLikeText, safeCommandIds, type SafeCommandId } from "../src/security";
 import { MODEL_VERSION, TOOL_VERSION } from "../src/runtime";
 import type { Evaluator, EvaluatorResult, ModelCapabilities, ModelGateway, ModelUsage, SandboxContext, SandboxManager, ToolGateway, ToolResult, WorldAdapter, WorldAdapterInput } from "../src/ports";
-import type { ActionEnvelope, ContextPacket, Evidence, ModelCatalog, ModelProviderStatus, Observation, ObservationSource, Project, ResolvedModelProvider, WorldSnapshot } from "../src/types";
+import type { ActionEnvelope, ContextPacket, Evidence, ModelCatalog, ModelCatalogEntry, ModelProviderStatus, Observation, ObservationSource, Project, ProjectSettings, ResolvedModelProvider, WorldSnapshot } from "../src/types";
 import { normalizeWorkspacePath } from "./pathPolicy";
 import { executeProcessTool } from "./processManager";
 import { executeWorkspaceTool } from "./workspaceTools";
+import { getRecommendedCodexModels } from "../src/modelCatalog";
 import { CodexCliModelGateway, configuredCodexModel, inspectCodexCli } from "./codexCliGateway";
 
 const execFileAsync = promisify(execFile);
@@ -583,16 +584,22 @@ export function getCodexModelCatalog(): ModelCatalog {
     .filter((value) => modelIdPattern.test(value));
   const configuredDefault = configuredCodexModel();
   const defaultModel = configuredDefault && modelIdPattern.test(configuredDefault) ? configuredDefault : undefined;
-  const models = [...new Set(defaultModel ? [defaultModel, ...configured] : configured)].slice(0, 64);
-  return { models, defaultModel };
+  const recommended = getRecommendedCodexModels();
+  const configuredEntries: ModelCatalogEntry[] = configured.map((id) => ({ id, label: recommended.find((model) => model.id === id)?.label ?? id, group: recommended.some((model) => model.id === id) ? "recommended" : "configured" }));
+  const baseEntries = configured.length > 0 ? configuredEntries : recommended;
+  const models = [...new Set([...baseEntries.map((entry) => entry.id), ...(defaultModel && !baseEntries.some((entry) => entry.id === defaultModel) ? [defaultModel] : [])])].slice(0, 64);
+  const entries = models.map((id) => baseEntries.find((entry) => entry.id === id) ?? recommended.find((entry) => entry.id === id) ?? { id, label: id, group: "configured" as const });
+  return { models, defaultModel, entries };
 }
 
-function projectModelName(project: Project): string | undefined {
-  const value = project.settings.modelName?.trim();
+type ModelSettingsSource = { settings: Pick<ProjectSettings, "modelProvider" | "modelName"> };
+
+function projectModelName(project: ModelSettingsSource | undefined): string | undefined {
+  const value = project?.settings.modelName?.trim();
   return value && modelIdPattern.test(value) ? value : undefined;
 }
 
-export function resolveModelProvider(project: Project): ResolvedModelProvider {
+export function resolveModelProvider(project: ModelSettingsSource): ResolvedModelProvider {
   const requested = project.settings.modelProvider ?? "auto";
   const configuredEndpoint = process.env.MODEL_API_URL?.trim();
   const endpoint = configuredEndpoint && isSafeModelEndpoint(configuredEndpoint) ? configuredEndpoint : undefined;
@@ -605,13 +612,13 @@ export function resolveModelProvider(project: Project): ResolvedModelProvider {
   return "unavailable";
 }
 
-export async function inspectModelProvider(project: Project): Promise<ModelProviderStatus> {
-  const requested = project.settings.modelProvider ?? "auto";
-  const effective = resolveModelProvider(project);
+export async function inspectModelProvider(project?: ModelSettingsSource): Promise<ModelProviderStatus> {
+  const requested = project?.settings.modelProvider ?? "auto";
+  const effective = resolveModelProvider(project ?? { settings: { modelProvider: requested } });
   const checkedAt = new Date().toISOString();
   const projectModel = projectModelName(project);
   if (effective === "deterministic") {
-    return { requested, effective, state: "connected", displayName: "결정론적 연구 기준선", detail: "외부 AI가 아닌 로컬 결정론적 게이트웨이입니다. 실제 AI 연결로 표시하지 않습니다.", availableModels: [], authentication: "not-applicable", checkedAt };
+    return { requested, effective, state: "connected", displayName: "결정론적 연구 기준선", detail: "외부 AI가 아닌 로컬 결정론적 게이트웨이입니다. 실제 AI 연결로 표시하지 않습니다.", selectedModel: projectModel, availableModels: [], authentication: "not-applicable", checkedAt };
   }
   if (effective === "openai-compatible") {
     const endpoint = process.env.MODEL_API_URL?.trim() ?? "";
@@ -640,7 +647,7 @@ export async function inspectModelProvider(project: Project): Promise<ModelProvi
   const detail = requested === "openai-compatible" && configuredEndpoint && !isSafeModelEndpoint(configuredEndpoint)
     ? "MODEL_API_URL은 사용자명·비밀번호가 없는 http/https URL이어야 합니다."
     : "실제 모델 provider가 설정되지 않았습니다. OpenAI 호환 API 또는 Codex CLI를 설정하세요.";
-  return { requested, effective, state: "needs-setup", displayName: "사용 가능한 모델 없음", detail, availableModels: [], authentication: "missing", checkedAt };
+  return { requested, effective, state: "needs-setup", displayName: "사용 가능한 모델 없음", detail, selectedModel: projectModel, availableModels: [], authentication: "missing", checkedAt };
 }
 
 export function createModelGateway(project: Project): ModelGateway {

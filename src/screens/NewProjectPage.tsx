@@ -3,7 +3,9 @@ import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { fetchModelCatalog, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, Label, PageHeading } from "../components/ui";
-import type { ProjectSettings } from "../types";
+import { getRecommendedCodexModels } from "../modelCatalog";
+import { loadUserPreferences, saveUserPreferences } from "../preferences";
+import type { ModelCatalogEntry, ProjectSettings } from "../types";
 
 export function NewProjectPage() {
   const { createProject } = useApp();
@@ -12,23 +14,31 @@ export function NewProjectPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [budget, setBudget] = useState(30);
   const [maxHours, setMaxHours] = useState(12);
-  const [modelProvider, setModelProvider] = useState<"auto" | "deterministic" | "openai-compatible" | "codex-cli">(isControlPlaneEnabled ? "auto" : "deterministic");
-  const [modelName, setModelName] = useState("");
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelProvider, setModelProvider] = useState<NonNullable<ProjectSettings["modelProvider"]>>(() => loadUserPreferences().modelProvider);
+  const [modelName, setModelName] = useState(() => loadUserPreferences().modelName ?? "");
+  const [availableModels, setAvailableModels] = useState<ModelCatalogEntry[]>(() => modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
+  const [defaultModel, setDefaultModel] = useState("");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
   const [workspacePath, setWorkspacePath] = useState("");
   const [showError, setShowError] = useState(false);
 
   useEffect(() => {
-    if (!isControlPlaneEnabled) return;
+    if (!isControlPlaneEnabled) {
+      setAvailableModels(modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
+      setDefaultModel("");
+      return;
+    }
     let cancelled = false;
     void fetchModelCatalog().then((catalog) => {
-      if (!cancelled) setAvailableModels(catalog.models);
+      if (!cancelled) {
+        setAvailableModels(catalog.entries ?? catalog.models.map((id) => ({ id, label: id, group: "configured" as const })));
+        setDefaultModel(catalog.defaultModel ?? "");
+      }
     }).catch(() => {
       // The model id remains editable when the API is still starting or has no catalog.
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [modelProvider]);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -36,15 +46,18 @@ export function NewProjectPage() {
       setShowError(true);
       return;
     }
+    saveUserPreferences({ modelProvider, modelName: modelName.trim() || undefined });
     const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
     if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
     const id = createProject(intent, settings);
     navigate(projectPath(id));
   };
 
+  const showDirectModelInput = availableModels.length === 0 || (Boolean(modelName) && !availableModels.some((model) => model.id === modelName));
+
   return (
     <div className="screen screen-new-project">
-      <PageHeading title="무엇을 원하나요?" description="방법은 정하지 않아도 됩니다. 원하는 결과와 꼭 지켜야 할 것만 남겨주세요." />
+      <PageHeading title="무엇을 원하나요?" description="방법은 정하지 않아도 됩니다. 원하는 결과와 꼭 지켜야 할 것만 남겨주세요." actions={<Button variant="neutral" size="small" onClick={() => navigate("/settings")}>시작 전 환경 설정</Button>} />
       <form onSubmit={onSubmit} className="screen-stack">
         <Card className="intent-card">
           <Label htmlFor="intent">의도</Label>
@@ -130,22 +143,27 @@ export function NewProjectPage() {
                 <div><strong>{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</strong><span>{modelProvider === "codex-cli" ? "목록은 서버의 CODEX_CLI_MODELS 설정에서 읽습니다." : "선택한 provider가 지원하는 모델 ID를 입력합니다."} 비워두면 provider 기본 모델을 사용합니다.</span></div>
                 <div className="model-picker">
                   <select
-                    value={availableModels.includes(modelName) ? modelName : ""}
+                    value={availableModels.some((model) => model.id === (modelName || defaultModel)) ? modelName || defaultModel : ""}
                     onChange={(event) => setModelName(event.target.value)}
                     aria-label={modelProvider === "codex-cli" ? "Codex 모델 목록" : "모델 목록"}
                   >
                     <option value="">provider 기본 모델</option>
-                    {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                    {availableModels.some((model) => model.group === "recommended") && <optgroup label="기본 · 추천 모델 세트">
+                      {availableModels.filter((model) => model.group === "recommended").map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                    </optgroup>}
+                    {availableModels.some((model) => model.group === "configured") && <optgroup label="서버 설정 모델">
+                      {availableModels.filter((model) => model.group === "configured").map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                    </optgroup>}
                   </select>
-                  <input
+                  {showDirectModelInput && <input
                     value={modelName}
                     onChange={(event) => setModelName(event.target.value)}
                     maxLength={128}
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
                     placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-label="모델 ID"
-                  />
-                  <span>{availableModels.length ? `서버 선택 목록 ${availableModels.length}개 · 직접 입력도 가능` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
+                  />}
+                  <span>{availableModels.length && !showDirectModelInput ? `추천 모델 ${availableModels.length}개에서 선택` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
                 </div>
               </div>
             )}

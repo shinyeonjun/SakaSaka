@@ -44,7 +44,7 @@ import { withFileLock } from "./fileLock";
 import { JsonJobQueue } from "./jobQueue";
 import { provisionProjectWorkspace } from "./workspaceProvisioner";
 import { hydrateManagedProcesses, stopProcessesForProject, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
-import { inspectRuntimeConnection, runtimeModelCatalog } from "./runtimeStatus";
+import { inspectModelConnection, inspectRuntimeConnection, runtimeModelCatalog } from "./runtimeStatus";
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
@@ -511,6 +511,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (method === "GET" && parsedUrl.pathname === "/runtime/model-catalog") {
     sendJson(response, 200, runtimeModelCatalog());
+    return;
+  }
+
+  if (method === "GET" && parsedUrl.pathname === "/runtime/model-status") {
+    const rawProvider = parsedUrl.searchParams.get("provider") ?? "auto";
+    const supportedProviders = ["auto", "deterministic", "openai-compatible", "codex-cli"] as const;
+    if (!(supportedProviders as readonly string[]).includes(rawProvider)) {
+      sendError(response, 400, "provider is not supported");
+      return;
+    }
+    const rawModelName = parsedUrl.searchParams.get("model")?.trim() || undefined;
+    if (rawModelName && !modelIdPattern.test(rawModelName)) {
+      sendError(response, 400, "model must be a model id with at most 128 safe characters");
+      return;
+    }
+    sendJson(response, 200, await inspectModelConnection(rawProvider as (typeof supportedProviders)[number], rawModelName));
     return;
   }
 

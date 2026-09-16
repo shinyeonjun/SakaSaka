@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 export type RouteMatch =
   | { kind: "new" }
+  | { kind: "global-settings" }
   | { kind: "overview"; projectId: string }
   | { kind: "needs-you"; projectId: string }
   | { kind: "human-item"; projectId: string; itemId: string }
@@ -20,6 +21,7 @@ export function matchRoute(pathname: string): RouteMatch {
   if (parts[0] === "handoff" && parts[1] === "routes") return { kind: "handoff-routes" };
   if (parts[0] === "handoff" && parts[1] === "runtime") return { kind: "handoff-runtime" };
   if (parts[0] === "projects" && parts[1] === "new") return { kind: "new" };
+  if (parts.length === 1 && parts[0] === "settings") return { kind: "global-settings" };
   if (parts[0] !== "projects" || !parts[1]) return { kind: "not-found" };
   const projectId = decodeURIComponent(parts[1]);
   if (parts.length === 2) return { kind: "overview", projectId };

@@ -1,16 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { redactSecretLikeText, parseActionEnvelope } from "../src/security";
 import type { ModelCapabilities, ModelGateway, ModelUsage } from "../src/ports";
 import type { ActionEnvelope, ContextPacket } from "../src/types";
+import { getRecommendedCodexModels } from "../src/modelCatalog";
 
 const defaultTimeoutMs = 120_000;
 const maxOutputBytes = 1_048_576;
 const maxPromptBytes = 512 * 1024;
 const execFileAsync = promisify(execFile);
+const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 const actionSchema = {
   type: "object",
@@ -67,7 +69,16 @@ function configuredBinary(): string {
 
 export function configuredCodexModel(): string | undefined {
   const configured = process.env.CODEX_CLI_MODEL?.trim() || process.env.MODEL_NAME?.trim();
-  return configured || undefined;
+  if (configured) return configured;
+  try {
+    const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
+    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+    const match = /^\s*model\s*=\s*["']([^"']+)["']\s*$/m.exec(config);
+    const configuredFromFile = match?.[1]?.trim();
+    return configuredFromFile && modelIdPattern.test(configuredFromFile) ? configuredFromFile : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface CodexCliDiagnostics {

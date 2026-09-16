@@ -12,6 +12,7 @@ const navItems = [
   { key: "artifacts", label: "산출물" },
   { key: "experiments", label: "실험" },
   { key: "settings", label: "설정" },
+  { key: "global-settings", label: "환경 설정" },
 ] as const;
 
 type NavKey = (typeof navItems)[number]["key"];
@@ -19,6 +20,7 @@ type NavKey = (typeof navItems)[number]["key"];
 function selectedNav(key: NavKey, kind: string): boolean {
   if (key === "overview") return kind === "overview" || kind === "new";
   if (key === "needs-you") return kind === "needs-you" || kind === "human-item";
+  if (key === "global-settings") return kind === "global-settings";
   return kind === key;
 }
 
@@ -51,9 +53,10 @@ export function AppShell({ children }: PropsWithChildren) {
         <Divider />
         <nav className="sidebar-nav">
           {navItems.map((item) => {
-            const path = !projectId ? "/projects/new" : item.key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${item.key}`;
+            const path = item.key === "global-settings" ? "/settings" : !projectId ? "/projects/new" : item.key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${item.key}`;
             const isActive = selectedNav(item.key, route.kind);
-            return <button key={item.key} className={cn("nav-item", isActive && "nav-item-active")} onClick={() => go(path)} disabled={!projectId && item.key !== "overview"} aria-current={isActive ? "page" : undefined}>{item.label}</button>;
+            const disabled = !projectId && item.key !== "overview" && item.key !== "global-settings";
+            return <button key={item.key} className={cn("nav-item", isActive && "nav-item-active")} onClick={() => go(path)} disabled={disabled} aria-current={isActive ? "page" : undefined}>{item.label}</button>;
           })}
         </nav>
         <div className="sidebar-spacer" />

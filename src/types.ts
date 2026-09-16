@@ -121,6 +121,13 @@ export interface ModelProviderStatus {
 export interface ModelCatalog {
   models: string[];
   defaultModel?: string;
+  entries?: ModelCatalogEntry[];
+}
+
+export interface ModelCatalogEntry {
+  id: string;
+  label: string;
+  group?: "recommended" | "configured";
 }
 
 export type WorkspaceBindingState = "bound" | "missing" | "inaccessible" | "unbound" | "rejected";
