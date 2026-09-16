@@ -45,3 +45,36 @@ jobs:
       - run: npm run security:check
       - run: npm test -- --run src/security.test.ts
       - run: git diff --check
+
+  native-codex-integration:
+    # Codex's Bubblewrap workspace sandbox needs unprivileged user namespaces.
+    # Keep this job on the supported 22.04 hosted image; ubuntu-latest may run
+    # under a hardened outer container that denies that kernel capability.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Install Linux sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap uidmap
+          bwrap --version
+      - name: Install pinned public Codex binary (no login)
+        run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
+      - name: Native agent and sandbox integration with local scripted model
+        env:
+          # The fixture has no credentials and only uses local mock/preview ports.
+          # GitHub-hosted runners may deny bwrap's network namespace setup.
+          NATIVE_ACCEPTANCE_SANDBOX_NETWORK: "1"
+        run: |
+          export SAKASAKA_TEST_CODEX_BIN="$RUNNER_TEMP/native-codex/node_modules/.bin/codex"
+          "$SAKASAKA_TEST_CODEX_BIN" --version
+          npm run acceptance:native

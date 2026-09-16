@@ -101,6 +101,7 @@ async function main(): Promise<void> {
     await newPage.getByRole("button", { name: "고급 설정" }).click();
     assert.equal(await newPage.getByLabel("모델 연결 방식").inputValue(), "codex-cli", "프로젝트 전 기본 provider가 새 프로젝트에 적용되지 않았습니다.");
     assert.equal(await newPage.getByLabel("모델 ID", { exact: true }).inputValue(), "configured-test-model", "프로젝트 전 기본 모델이 새 프로젝트에 적용되지 않았습니다.");
+    assert.equal(await newPage.locator("#execution-mode").inputValue(), "atomic", "Codex provider 설정만으로 Native 실행이 자동 선택되면 안 됩니다.");
     await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
     assert.equal(await newPage.getByLabel("Codex 모델 목록").count(), 1, "Codex 모델 드롭다운이 없습니다.");
     await newPage.getByLabel("모델 ID", { exact: true }).fill("configured-other-model");

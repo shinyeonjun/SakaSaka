@@ -8,6 +8,22 @@ Figma Product UI와 FigJam Master Architecture를 TypeScript로 구현한 실행
 최신 구조·변경 근거·보안 제한·재실험 절차는 [런타임 재검토 기록](docs/runtime-hardening.md)에 정리했습니다.
 모의 모델 acceptance 통과는 실제 Codex 모델이 제품을 완성한다는 증명이 아닙니다.
 
+## 지속형 Codex 프로젝트 실행 (PR #2)
+
+이제 `executionMode: "native"`를 명시적으로 선택하면 Codex App Server의 동일 thread 안에서 파일 작성·명령·실패 복구를 이어갑니다. 질문함은 비동기로 접수하고 실제 답변은 같은 세션에 steer하거나 다음 turn/resume에 전달합니다. 기존 프로젝트는 자동 전환하지 않으며 `atomic` ModelGateway 경로도 유지합니다.
+
+```bash
+npm run smoke:native             # 실행 파일·로그인·App Server initialize 확인, 모델 호출 없음
+npm run smoke:native -- --run    # 실제 모델 1구간 + 임시 폴더 파일 쓰기 검사; 모델 사용량 발생
+npm run desktop:dev
+```
+
+프로젝트 설정의 **실행 방식**에서 native를 선택하고, 모델 연결을 Codex CLI로 설정한 뒤 재개하십시오. `maxNativeTurns`(기본 40), `maxNativeTokens`(기본 250,000), `nativeTurnTimeoutMs`(기본 300초)로 제한합니다. 기존 `sandboxMode`는 환경 도구용이며 native 쓰기는 Codex workspace-write / native network=false입니다. host process 모드와 Docker bridge는 완전한 보안 격리가 아닙니다.
+
+[설계 추적·검증 범위](docs/figma-implementation-map.md) / [실행·권한·남은 한계](docs/mission-first.md)
+
+아래의 `ModelGateway → ActionEnvelope` 설명은 **기존 atomic 경로**에 적용됩니다. native에서는 ActionEnvelope 한 개마다 모델을 재호출하지 않습니다.
+
 ## Quick start
 
 ```bash
@@ -169,3 +185,7 @@ git diff --check
 원격 저장소: [shinyeonjun/SakaSaka](https://github.com/shinyeonjun/SakaSaka)
 
 구현 변경은 작업 브랜치에서 검증한 뒤 PR로 검토합니다. main 직접 덮어쓰기나 자동 병합을 하지 않습니다.
+
+### Native 검증 범위
+
+`npm run acceptance:native`는 실제 Codex 0.154.0 바이너리와 실제 Chromium을 사용하는 필수 CI 경로입니다. 모델 응답만 로컬 fixture이며 paid/live 모델의 능력 입증은 아닙니다. 브라우저 없는 환경의 별도 `npm run acceptance:native:core`는 native 명령/파일/실패 복구/답변/유지보수/작업 폴더 외부 쓰기 거절만 검사하고 **전체 CI 합격을 대체하지 않습니다**. 결과 구분과 Figma 원문 대응은 `docs/native-validation.md`, `docs/figma-implementation-map.md`를 참조합니다.

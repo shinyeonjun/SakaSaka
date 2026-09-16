@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createEmptyState } from "../src/emptyState";
 import { runDurableCycle } from "./cycleCoordinator";
+import { runNativeEpisode } from "./nativeRuntime";
 import { recoverTransientProviderFailures, wakeProject } from "../src/runtime";
 import { JsonlEventStore } from "./jsonlEventStore";
 import { JsonJobQueue } from "./jobQueue";
@@ -21,7 +22,7 @@ const configuredConcurrency = Number(process.env.WORKER_MAX_CONCURRENCY ?? "1");
 const maxJobsPerTick = Number.isFinite(configuredConcurrency) ? Math.max(1, Math.min(32, Math.floor(configuredConcurrency))) : 1;
 
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
-  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
+  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: raw?.maxNativeTokens, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs, modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
 }
 
 function normalizeProjectMetrics(raw: Partial<ProjectMetrics> | undefined): ProjectMetrics {
@@ -155,7 +156,10 @@ export async function runWorkerOnce(): Promise<{ processed: string[] }> {
           return project?.activeRunId === job.runId && project.status === "EQUILIBRIUM" ? wakeProject(state, job.projectId, job.trigger) : state;
         });
         const candidate = loadState().projects.find((item) => item.id === job.projectId);
-        if (candidate?.activeRunId === job.runId && await runDurableCycle({ read: loadState, transact }, job.projectId, { signal: workerStop.signal })) processed.push(job.projectId);
+        if (candidate?.activeRunId === job.runId) {
+          const execute = candidate.settings.executionMode === "native" ? runNativeEpisode : runDurableCycle;
+          if (await execute({ read: loadState, transact }, job.projectId, { signal: workerStop.signal })) processed.push(job.projectId);
+        }
         await withFileLock(lockPath, async () => {
           await queue.ack(job.id, workerId);
           const state = loadState();

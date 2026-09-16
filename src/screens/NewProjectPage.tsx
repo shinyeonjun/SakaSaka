@@ -21,6 +21,11 @@ export function NewProjectPage() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogEntry[]>(() => modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
   const [defaultModel, setDefaultModel] = useState("");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
+  // The provider preference is not consent to change the execution engine.
+  // Native execution must be selected explicitly for each new project.
+  const [executionMode, setExecutionMode] = useState<"native" | "atomic">("atomic");
+  const [maxNativeTurns, setMaxNativeTurns] = useState(40);
+  const [maxNativeTokens, setMaxNativeTokens] = useState(250000);
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceRoot, setWorkspaceRootValue] = useState("");
   const [workspacePicking, setWorkspacePicking] = useState(false);
@@ -80,7 +85,7 @@ export function NewProjectPage() {
       return;
     }
     saveUserPreferences({ modelProvider, modelName: modelName.trim() || undefined });
-    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, maxModelCalls, modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
+    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, maxModelCalls, executionMode, maxNativeTurns, maxNativeTokens, modelProvider: executionMode === "native" ? "codex-cli" : modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
     if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
     const id = createProject(intent, settings);
     navigate(projectPath(id));
@@ -101,6 +106,22 @@ export function NewProjectPage() {
           />
             <p id="intent-help" className="field-help">AI는 이 문장을 작업 목록으로 고정 변환하지 않습니다. 실제 월드를 보며 필요한 일을 스스로 발견합니다.</p>
           {showError && <p id="intent-error" className="field-error" role="alert">먼저 원하는 결과를 한 문장으로 남겨주세요.</p>}
+        </Card>
+
+        <Card className="workspace-binding-card">
+          <Label htmlFor="execution-mode">실행 방식</Label>
+          <select id="execution-mode" value={executionMode} disabled={!isControlPlaneEnabled} onChange={(e) => { const mode = e.target.value as "native" | "atomic"; setExecutionMode(mode); if (mode === "native") setModelProvider("codex-cli"); }}>
+            <option value="native">지속형 Codex 세션 · App Server</option>
+            <option value="atomic">기존 원자적 실행기 · API/연구 호환</option>
+          </select>
+          <p className="field-help">{executionMode === "native" ? "Codex가 같은 세션 안에서 파일 작성·명령·오류 복구를 직접 이어갑니다. 질문은 별도 탭에 보관되며 나중에 답해도 전달됩니다. 기존 프로젝트의 실행 방식은 자동 변경하지 않습니다." : "기존 ModelGateway가 행동 하나씩 반환하는 호환 실행기입니다. 지속형 Codex와 별개입니다."}</p>
+          {executionMode === "native" && <>
+            <div className="split-grid split-grid-2">
+              <label>최대 작업 구간<input aria-label="최대 Native 작업 구간" type="number" min="1" max="1000" value={maxNativeTurns} onChange={(e) => setMaxNativeTurns(Number(e.target.value))} /></label>
+              <label>전체 토큰 상한<input aria-label="Native 토큰 상한" type="number" min="1" max="10000000" value={maxNativeTokens} onChange={(e) => setMaxNativeTokens(Number(e.target.value))} /></label>
+            </div>
+            <p className="field-help">Native 쓰기는 Codex의 workspace-write sandbox, 네트워크는 차단됩니다. 미리보기·패키지 설치는 아래 환경 sandbox 설정을 따릅니다. 호스트 process 모드는 보안 격리가 아니므로 중요한 파일과 자격 증명이 없는 전용 환경에서 사용하십시오.</p>
+          </>}
         </Card>
 
         <Card className="workspace-binding-card">
@@ -206,7 +227,7 @@ export function NewProjectPage() {
               </div>
             )}
             <div className="advanced-setting-row">
-              <div><strong>샌드박스</strong><span>개발 명령을 격리할 실행 모드입니다.</span></div>
+              <div><strong>{executionMode === "native" ? "환경 도구 실행 모드" : "샌드박스"}</strong><span>{executionMode === "native" ? "미리보기·패키지 도구에 적용합니다. Native 파일·명령은 별도의 Codex workspace-write 제한으로 실행됩니다." : "개발 명령을 격리할 실행 모드입니다."}</span></div>
               <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as typeof sandboxMode)} aria-label="샌드박스 모드"><option value="docker">Docker 격리</option><option value="process">프로세스(호스트 실행 · 비격리)</option></select>
             </div>
             <InlineNotice tone="yellow" title="경계 기본값">production 배포 도구는 구현되지 않아 비활성화되어 있습니다. 프로세스 모드는 보안 격리가 아닙니다. 생성된 코드가 호스트 권한으로 실행되므로 비밀 정보가 없는 전용 환경에서만 시험하십시오.</InlineNotice>

@@ -151,6 +151,19 @@ async function main(): Promise<void> {
     assert.ok(typeof provisionedWorkspace === "string" && existsSync(provisionedWorkspace));
     assert.ok(provisionedWorkspace.startsWith(join(repoRoot, ".intent-world", "workspaces")));
 
+    // Execution-mode migration is explicit and preserves existing workspace/data.
+    const switched = await post(baseUrl, `/projects/${encodeURIComponent(greenfieldProjectId)}/execution`, { executionMode: "native", maxNativeTurns: 3, maxNativeTokens: 12000 });
+    assert.equal(switched.response.status, 200, JSON.stringify(switched.body));
+    assert.equal(switched.body.project.status, "PAUSED");
+    assert.equal(switched.body.project.settings.executionMode, "native");
+    assert.equal(switched.body.project.settings.workspacePath, provisionedWorkspace);
+    assert.equal(switched.body.project.settings.maxNativeTokens, 12000);
+    const invalidExecution = await post(baseUrl, `/projects/${encodeURIComponent(greenfieldProjectId)}/execution`, { executionMode: "native", maxNativeTokens: -1 });
+    assert.equal(invalidExecution.response.status, 400);
+    const legacyExecution = await post(baseUrl, `/projects/${encodeURIComponent(greenfieldProjectId)}/execution`, { executionMode: "atomic" });
+    assert.equal(legacyExecution.body.project.settings.executionMode, "atomic");
+    assert.equal(legacyExecution.body.project.status, "PAUSED");
+
     const queued = await post(baseUrl, `/projects/${encodeURIComponent(projectId)}/run`);
     assert.equal(queued.response.status, 202, JSON.stringify(queued.body));
     process.env.INTENT_WORLD_STATE_FILE = statePath;

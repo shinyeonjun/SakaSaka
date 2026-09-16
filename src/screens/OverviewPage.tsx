@@ -19,6 +19,7 @@ export function OverviewPage({ projectId }: { projectId: string }) {
   const diagnostics = runtimeDiagnostics(state, projectId);
   const projectEvidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
   const currentAction = state.actions.find((action) => action.id === project.currentActionId) ?? state.actions.filter((action) => action.projectId === projectId).at(-1);
+  const native = run.nativeSession;
   const latestEvent = state.events.filter((event) => event.projectId === projectId).at(-1);
 
   return (
@@ -40,7 +41,7 @@ export function OverviewPage({ projectId }: { projectId: string }) {
           <Card className="work-card">
             <SectionHeader title={diagnostics.stopped ? "실행 중단 원인" : "지금 AI가 하는 일"} />
             <Pill tone="blue">{phaseLabel(run.phase)}</Pill>
-            <p className="work-title">{diagnostics.reason ?? (run.phase === "decide" ? "모델의 다음 행동 결정을 기다리고 있습니다." : currentAction?.rationaleSummary ?? latestEvent?.summary ?? "현재 월드를 관찰하고 다음 행동을 선택하는 중")}</p>
+            <p className="work-title">{diagnostics.reason ?? (run.phase === "decide" ? (native?.state === "working" ? currentAction?.rationaleSummary ?? "Codex가 프로젝트를 같은 세션에서 진행하고 있습니다." : "모델의 다음 행동 결정을 기다리고 있습니다.") : currentAction?.rationaleSummary ?? latestEvent?.summary ?? "현재 월드를 관찰하고 다음 행동을 선택하는 중")}</p>
             {diagnostics.stopped ? <>
               <p className="work-discovery">오류 유형: {diagnostics.code ?? "런타임 / 경계"} · 반복 실패 {diagnostics.failureCount}회 · 진전 없음 {diagnostics.noProgressCount}회</p>
               <p className="small-copy">마지막 정상 행동: {diagnostics.lastSuccess?.tool ?? "아직 없음"}</p>
@@ -57,6 +58,15 @@ export function OverviewPage({ projectId }: { projectId: string }) {
             <Button variant="neutral" size="small" onClick={() => navigate(`${projectPath(projectId)}/needs-you`)}>확인하기</Button>
           </Card>
         </div>
+
+        {project.settings.executionMode === "native" && <Card className="native-session-card">
+          <SectionHeader title="지속형 프로젝트 세션" />
+          <p>Codex App Server · {native?.state === "working" ? "작업 중" : native?.state === "resting" ? "다음 신호 대기" : native?.state === "failed" ? "연결/실행 확인 필요" : "연결 준비"}</p>
+          <p className="small-copy">작업 구간 {native?.turnsStarted ?? 0} / {project.settings.maxNativeTurns ?? 40} · 누적 토큰 {native?.accountedTokens ?? 0} / {project.settings.maxNativeTokens ?? 250000}</p>
+          {native?.threadId && <p className="small-copy">세션 {native.threadId}</p>}
+          {native?.checkpoint && <><p>{native.checkpoint.summary}</p><p className="small-copy">남은 작업: {native.checkpoint.remainingWork.join(" · ") || "에이전트가 현재 남은 작업을 보고하지 않았습니다."}</p></>}
+          <p className="muted-copy">같은 세션 안에서 여러 행동과 오류 복구를 이어갑니다. 에이전트의 checkpoint는 제품 전체의 독립 검증 결과와 다릅니다.</p>
+        </Card>}
 
         <div className="split-grid overview-bottom-grid">
           <Card className="evidence-card">

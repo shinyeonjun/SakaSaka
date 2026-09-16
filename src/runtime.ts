@@ -207,6 +207,7 @@ export function modelProviderLabel(state: AppState, project: Project): string {
     .filter((action) => action.projectId === project.id)
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.id.localeCompare(left.id))[0];
   if (latest?.modelVersion.startsWith("openai-compatible:")) return latest.modelVersion;
+  if (latest?.modelVersion.startsWith("codex-app-server:")) return latest.modelVersion;
   if (latest?.modelVersion.startsWith("codex-cli:")) return latest.modelVersion;
   if (latest?.modelVersion === "unavailable") return "사용할 수 없음";
   if (latest?.modelVersion === MODEL_VERSION || project.settings.modelProvider === "deterministic") return "결정론적 기준선";
@@ -823,6 +824,10 @@ export function createProject(
       // require a project-provided allowlist entry.
       allowedDomains: [...new Set([...(settings.allowedDomains ?? []), "registry.npmjs.org", "localhost", "127.0.0.1"])],
       sandboxMode: settings.sandboxMode ?? "process",
+      executionMode: settings.executionMode ?? "atomic",
+      maxNativeTurns: positiveSetting(settings.maxNativeTurns, 40, 1000),
+      maxNativeTokens: positiveSetting(settings.maxNativeTokens, 250000, 10000000),
+      nativeTurnTimeoutMs: positiveSetting(settings.nativeTurnTimeoutMs, 300000, 540000),
       modelProvider: settings.modelProvider ?? "auto",
       modelName: settings.modelName?.trim() || undefined,
       reviewIntervalMinutes: positiveSetting(settings.reviewIntervalMinutes, 360, 10_080),
@@ -1730,7 +1735,13 @@ function setRuntimeStatus(state: AppState, projectId: string, status: RuntimeSta
   const updatedAt = nowIso();
   const leaseExpiresAt = status === "ACTIVE" ? nextLease(project, Date.parse(updatedAt)) : status === "KILLED" ? updatedAt : run.leaseExpiresAt;
   let next = updateProject(state, { ...project, status, updatedAt, nextReviewAt: status === "EQUILIBRIUM" ? project.nextReviewAt : undefined });
-  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt, stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined,
+  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt,
+    // Native episodes use the project status tuple as their resume boundary.
+    // Revoke that lease on pause/stop/stall so an old episode cannot regain
+    // the same control tuple and write into the resumed run. The short
+    // transaction coordinator keeps its own fence until it records discard.
+    execution: run.execution?.owner.startsWith("native-") && (status === "PAUSED" || status === "KILLED" || status === "STALLED") ? undefined : run.execution,
+    stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined,
     ...(status === "ACTIVE" ? { ...(run.execution && Date.parse(run.execution.expiresAt) <= Date.now() ? { execution: undefined } : {}), consecutiveFailures: 0, noProgressCycles: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined } : {}),
   });
   return appendEvent(next, {

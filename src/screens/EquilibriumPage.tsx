@@ -31,6 +31,7 @@ export function EquilibriumPage({ projectId }: { projectId: string }) {
       <div className="screen-stack equilibrium-screen-stack">
         <Card className="equilibrium-main-card">
           <h2>현재 균형 상태</h2>
+          {run?.nativeSession && <><p className="small-copy">지속형 Codex 세션 {run.nativeSession.threadId} · {run.nativeSession.turnsStarted}개 작업 구간</p><p className="small-copy">에이전트의 휴지 판단입니다. 제품 목표 전체가 독립 검증되었다는 뜻은 아닙니다.</p></>}
           <p className="equilibrium-reason">{equilibriumEvent?.detail ?? "모델이 WAIT를 선택했고 현재 저장된 증거에서 즉시 가치 있는 다음 행동을 확인하지 못했습니다."}</p>
           <p className="muted-copy">AI는 프로젝트의 의도와 경험을 계속 보존합니다. 새 신호가 들어오면 다시 월드를 관찰하고 ACTIVE로 전환합니다.</p>
         </Card>
