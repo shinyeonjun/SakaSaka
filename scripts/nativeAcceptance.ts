@@ -95,7 +95,7 @@ const server = createServer(async (req, res) => {
 });
 server.listen(0, "127.0.0.1"); await once(server, "listening");
 const port = (server.address() as {port:number}).port;
-writeFileSync(join(home, "config.toml"), `model="test-native-model"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Local scripted test only"\nbase_url="http://127.0.0.1:${port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n${process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" ? "\n# GitHub-hosted runners may not permit bwrap to create a loopback network namespace.\n[sandbox_workspace_write]\nnetwork_access=true\n" : ""}`);
+writeFileSync(join(home, "config.toml"), `model="test-native-model"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Local scripted test only"\nbase_url="http://127.0.0.1:${port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n[features]\n# GitHub-hosted Ubuntu runners may deny the vendored Bubblewrap user namespace.\n# Landlock remains a real filesystem sandbox and is enabled only for this fixture.\nuse_legacy_landlock=true\n${process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" ? "\n# The fixture model is loopback-only; avoid a runner network namespace setup.\n[sandbox_workspace_write]\nnetwork_access=true\n" : ""}`);
 const makeClient = (cwd: string) => new CodexAppServer({ binary, cwd, env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: home, RUST_LOG: "error" }, requestTimeoutMs: 10000 });
 try {
   await runNativeEpisode(store, "native-acceptance", { clientFactory: makeClient, pollMs: 100, sandboxNetworkAccess: process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" });
