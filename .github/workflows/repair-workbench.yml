@@ -1,0 +1,37 @@
+name: runtime-repair-workbench
+
+on:
+  push:
+    branches: [fix/runtime-contracts-and-recovery-20260917]
+    paths: [.github/workflows/repair-workbench.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Package public source and locked dependencies for offline verification
+        shell: bash
+        run: |
+          mkdir -p /tmp/sakasaka-workbench
+          git archive --format=tar HEAD | gzip > /tmp/sakasaka-workbench/source.tar.gz
+          tar -czf /tmp/sakasaka-workbench/dependencies.tar.gz node_modules
+          git rev-parse HEAD > /tmp/sakasaka-workbench/SOURCE_COMMIT
+          sha256sum /tmp/sakasaka-workbench/*.tar.gz > /tmp/sakasaka-workbench/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-repair-workbench
+          path: /tmp/sakasaka-workbench/
+          retention-days: 3
+          if-no-files-found: error
