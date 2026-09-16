@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAppServer } from "../server/codexAppServer";
 import { runNativeEpisode } from "../server/nativeRuntime";
@@ -12,7 +11,11 @@ import { createEmptyState } from "../src/emptyState";
 import { stopProcessesForRun } from "../server/processManager";
 import type { AppState } from "../src/types";
 
-const root = mkdtempSync(join(tmpdir(), "sakasaka-native-acceptance-"));
+// Keep the fixture workspace outside /tmp: Native turn/start deliberately
+// excludes /tmp, so putting the writable root there would test the wrong
+// boundary on Linux runners.
+const acceptanceParent = process.env.RUNNER_TEMP?.trim() || process.env.GITHUB_WORKSPACE?.trim() || process.cwd();
+const root = mkdtempSync(join(acceptanceParent, ".sakasaka-native-acceptance-"));
 const workspace = join(root, "workspace"), home = join(root, "codex-home");
 mkdirSync(workspace); mkdirSync(home);
 process.env.WORKSPACE_ROOT = root;
@@ -33,7 +36,17 @@ const files = {
   "test.mjs": 'import assert from "node:assert/strict";import {test} from "node:test";import {increment} from "./logic.mjs";test("increments exactly one",()=>assert.equal(increment(0),1));\n',
   "server.mjs": 'import http from "node:http";import fs from "node:fs";http.createServer((q,s)=>{s.setHeader("Content-Type","text/html; charset=utf-8");s.end(fs.readFileSync("index.html"));}).listen(Number(process.env.PORT),"127.0.0.1");\n',
 };
-const nodeWrite = (values: Record<string, string>) => `node -e ${shellQuote(`const fs=require('fs');for(const [p,c] of Object.entries(${JSON.stringify(values)}))fs.writeFileSync(p,c);`)}`;
+const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+const shellWrite = (values: Record<string, string>) => Object.entries(values)
+  .map(([path, content]) => `printf %s ${shellQuote(content)} > ${shellQuote(path)}`)
+  .join(" && ");
+const fixtureWrite = (mode: string, target?: string) => mode === "initial"
+  ? shellWrite(files)
+  : mode === "fix"
+    ? shellWrite({ "logic.mjs": "export const increment = n => n + 1;\n" })
+    : mode === "readme"
+      ? shellWrite({ "README.md": "사용자 선택: 하나 더\n" })
+      : shellWrite({ [target ?? "../outside-native.txt"]: "must-not-exist" });
 const server = createServer(async (req, res) => {
   if (!req.url?.endsWith("/responses")) { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ data: [] })); return; }
   try {
@@ -49,9 +62,9 @@ const server = createServer(async (req, res) => {
     const i = requestIndex++;
     if (!maintenance) {
       if (i === 0) call = { name: named("sakasaka_question"), arguments: JSON.stringify(question) };
-      else if (i === 1) { assert.equal(state.humanItems[0]?.status, "OPEN", "question must be registered before native work"); call = exec(nodeWrite(files)); }
+      else if (i === 1) { assert.equal(state.humanItems[0]?.status, "OPEN", "question must be registered before native work"); call = exec(fixtureWrite("initial")); }
       else if (i === 2) call = exec("node --test test.mjs");
-      else if (i === 3) call = exec(nodeWrite({ "logic.mjs": "export const increment = n => n + 1;\n" }) + " && node --test test.mjs");
+      else if (i === 3) call = exec(fixtureWrite("fix") + " && node --test test.mjs");
       else if (i === 4) call = { name: named("sakasaka_preview_start"), arguments: JSON.stringify({ argv: ["node", "server.mjs"], port: previewPort }) };
       else if (i === 5) call = coreOnly ? exec("node --test test.mjs") : { name: named("sakasaka_browser"), arguments: JSON.stringify({ url: `http://127.0.0.1:${previewPort}`, clickText: "더하기", expectedText: "1" }) };
       else if (i === 6) {
@@ -62,11 +75,11 @@ const server = createServer(async (req, res) => {
         call = { name: named("sakasaka_context"), arguments: "{}" };
       } else if (i === 7) {
         assert(inputs.at(-1)?.includes("하나 더"), "actual human answer must reach the same agent thread");
-        call = exec(nodeWrite({ "README.md": "사용자 선택: 하나 더\n" }));
-      } else if (i === 8) call = exec(`node -e ${shellQuote(`require('fs').writeFileSync(${JSON.stringify(join(root, 'outside-native.txt'))},'must-not-exist')`)}`);
+        call = exec(fixtureWrite("readme"));
+      } else if (i === 8) call = exec(fixtureWrite("outside", "../outside-native.txt"));
     } else {
       if (i === 0) call = exec("node --test test.mjs");
-      else if (i === 1) call = exec(nodeWrite({ "logic.mjs": "export const increment = n => n + 1;\n" }) + " && node --test test.mjs");
+      else if (i === 1) call = exec(fixtureWrite("fix") + " && node --test test.mjs");
     }
     const item = call ? { type: "function_call", id: `fc-${maintenance}-${i}`, call_id: `call-${maintenance}-${i}`, status: "completed", ...call }
       : { type: "message", id: `msg-${maintenance}-${i}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ disposition: "equilibrium", summary: "테스트 fixture가 작업 결과를 보고합니다. 실제 모델 지능 검증이 아닙니다.", remainingWork: [], evidenceRefs: state.evidence.map((e) => e.id).slice(-32), wakeReasons: ["사용자 의견 또는 장애"] }), annotations: [] }] };
@@ -119,5 +132,4 @@ try {
   if (!process.env.NATIVE_ACCEPTANCE_DEBUG_DIR) rmSync(root, { recursive: true, force: true });
 }
 
-function shellQuote(value: string) { return `'${value.replace(/'/g, `'\\''`)}'`; }
 async function freePort(): Promise<number> { const s = createServer(); s.listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as {port:number}).port; await new Promise<void>((resolve) => s.close(() => resolve())); return p; }
