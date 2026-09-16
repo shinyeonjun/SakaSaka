@@ -9,6 +9,7 @@ import {
   createArtifact,
   createExperiment,
   createProject,
+  deleteProject,
   getProject,
   getProjectContexts,
   getProjectEvents,
@@ -29,6 +30,7 @@ import {
   runCycle,
   runExperiment,
   stallProject,
+  updateProjectModelSettings,
   wakeProject,
 } from "../src/runtime";
 import type { AppState, ArtifactKind, Experiment, ProjectMetrics, ProjectSettings } from "../src/types";
@@ -41,7 +43,7 @@ import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
 import { withFileLock } from "./fileLock";
 import { JsonJobQueue } from "./jobQueue";
 import { provisionProjectWorkspace } from "./workspaceProvisioner";
-import { hydrateManagedProcesses, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
+import { hydrateManagedProcesses, stopProcessesForProject, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
 import { inspectRuntimeConnection, runtimeModelCatalog } from "./runtimeStatus";
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
@@ -52,6 +54,7 @@ const eventJournal = new JsonlEventStore(`${statePath}.events.jsonl`);
 const queue = new JsonJobQueue(`${statePath}.queue.json`);
 const subscribers = new Map<string, Set<ServerResponse>>();
 const maxBodyBytes = 1_048_576;
+const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
   return {
@@ -198,7 +201,7 @@ function headers(contentType = "application/json"): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "DELETE, GET, POST, OPTIONS",
     "Content-Type": contentType,
   };
 }
@@ -268,6 +271,7 @@ const queueTriggers = new Map<string, RuntimeJob["trigger"]>([
   ["QUESTION_CREATED", "signal"],
   ["ACTION_EXECUTED", "signal"],
   ["TOOL_RESULT", "signal"],
+  ["POLICY_CHANGED", "signal"],
 ]);
 
 async function scheduleJobs(previous: AppState, next: AppState): Promise<void> {
@@ -392,7 +396,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
   if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible" && modelProvider !== "codex-cli") return { error: "modelProvider is not supported" };
   const modelName = body.modelName === undefined ? undefined : body.modelName;
-  if (modelName !== undefined && (typeof modelName !== "string" || (modelName.trim() && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(modelName.trim())))) return { error: "modelName must be a model id with at most 128 safe characters" };
+  if (modelName !== undefined && (typeof modelName !== "string" || (modelName.trim() && !modelIdPattern.test(modelName.trim())))) return { error: "modelName must be a model id with at most 128 safe characters" };
   const previewUrl = body.previewUrl === undefined ? undefined : body.previewUrl;
   let previewHost: string | undefined;
   if (previewUrl !== undefined) {
@@ -423,6 +427,16 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
   if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
   return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
+}
+
+function parseModelSettings(body: Record<string, unknown>): { settings?: Pick<ProjectSettings, "modelProvider" | "modelName">; error?: string } {
+  const modelProvider = body.modelProvider;
+  if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible" && modelProvider !== "codex-cli") return { error: "modelProvider is not supported" };
+  const rawModelName = body.modelName;
+  if (rawModelName !== undefined && typeof rawModelName !== "string") return { error: "modelName must be a string" };
+  const modelName = typeof rawModelName === "string" ? rawModelName.trim() || undefined : undefined;
+  if (modelName && !modelIdPattern.test(modelName)) return { error: "modelName must be a model id with at most 128 safe characters" };
+  return { settings: { modelProvider, modelName } };
 }
 
 function isSafeProjectId(value: string): boolean {
@@ -581,8 +595,51 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
 
+    if (method === "DELETE" && parts.length === 2) {
+      let deleted = false;
+      await commitMutation(async (current) => {
+        const currentProject = getProject(current, projectId);
+        if (!currentProject) return current;
+        await stopProcessesForProject(current.processes, projectId);
+        await queue.removeProject(projectId);
+        deleted = true;
+        return deleteProject(current, projectId);
+      });
+      if (!deleted) {
+        sendError(response, 404, "project not found");
+        return;
+      }
+      for (const listener of subscribers.get(projectId) ?? []) {
+        try { listener.end(); } catch { /* the client may already be gone */ }
+      }
+      subscribers.delete(projectId);
+      sendJson(response, 200, { deleted: true, projectId, workspacePreserved: true });
+      return;
+    }
+
     if (method === "GET" && parts[2] === "runtime-status" && parts.length === 3) {
       sendJson(response, 200, await inspectRuntimeConnection(project));
+      return;
+    }
+
+    if (method === "POST" && parts[2] === "model" && parts.length === 3) {
+      const body = await readJson(request);
+      const parsedModel = parseModelSettings(body);
+      if (parsedModel.error || !parsedModel.settings) {
+        sendError(response, 400, parsedModel.error ?? "invalid model settings");
+        return;
+      }
+      let changed = false;
+      const committed = await commitMutation((current) => {
+        const next = updateProjectModelSettings(current, projectId, parsedModel.settings!);
+        changed = next !== current;
+        return next;
+      });
+      if (!getProject(committed, projectId)) {
+        sendError(response, 404, "project not found");
+        return;
+      }
+      sendJson(response, 200, { ...projectPayload(projectId), changed });
       return;
     }
 

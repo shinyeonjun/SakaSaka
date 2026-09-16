@@ -47,6 +47,7 @@ export const RUNTIME_SCHEMA_VERSION = 1 as const;
 export const MODEL_VERSION = "local-deterministic-0.1";
 export const TOOL_VERSION = "local-tool-gateway-0.1";
 export const POLICY_VERSION = 1;
+const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 export type ExperimentInput = Pick<Experiment, "key" | "title" | "hypothesis" | "description" | "variant"> & Partial<Pick<Experiment, "benchmark" | "budgetLimit" | "hiddenCriteria" | "evaluatorRefs" | "variantConfig">>;
 export type HumanAction = "answer" | "approve" | "reject" | "defer" | "acknowledge";
@@ -254,6 +255,67 @@ function appendEvent(
 
 function updateProject(state: AppState, project: Project): AppState {
   return { ...state, projects: replaceById(state.projects, project) };
+}
+
+export function updateProjectModelSettings(
+  state: AppState,
+  projectId: string,
+  settings: Pick<ProjectSettings, "modelProvider" | "modelName">,
+): AppState {
+  const project = getProject(state, projectId);
+  if (!project) return state;
+  const modelProvider = settings.modelProvider ?? project.settings.modelProvider ?? "auto";
+  if (!(["auto", "deterministic", "openai-compatible", "codex-cli"] as const).includes(modelProvider)) return state;
+  const modelName = typeof settings.modelName === "string" ? settings.modelName.trim() || undefined : undefined;
+  if (modelName && !modelIdPattern.test(modelName)) return state;
+  if (project.settings.modelProvider === modelProvider && project.settings.modelName === modelName) return state;
+  const updatedAt = nowIso();
+  let next = updateProject(state, {
+    ...project,
+    settings: { ...project.settings, modelProvider, modelName },
+    updatedAt,
+  });
+  if (project.status === "EQUILIBRIUM") next = setRuntimeStatus(next, projectId, "ACTIVE", "wake", "모델 설정 변경으로 runtime을 다시 시작", "human");
+  const run = getRun(next, projectId);
+  return appendEvent(next, {
+    projectId,
+    type: "POLICY_CHANGED",
+    actor: "human",
+    summary: "모델 설정 변경",
+    detail: `${modelProvider}${modelName ? ` · ${modelName}` : " · provider 기본 모델"}`,
+    runId: run?.id,
+    createdAt: updatedAt,
+  });
+}
+
+export function deleteProject(state: AppState, projectId: string): AppState {
+  if (!state.projects.some((project) => project.id === projectId)) return state;
+  const belongsToProject = <T extends { projectId: string }>(items: T[]) => items.filter((item) => item.projectId !== projectId);
+  const remainingProjects = state.projects.filter((project) => project.id !== projectId);
+  const activeProjectId = state.activeProjectId === projectId ? remainingProjects[0]?.id ?? "" : state.activeProjectId;
+  return {
+    ...state,
+    activeProjectId,
+    projects: remainingProjects,
+    intents: belongsToProject(state.intents),
+    runs: belongsToProject(state.runs),
+    actions: belongsToProject(state.actions),
+    worldSnapshots: belongsToProject(state.worldSnapshots),
+    observations: belongsToProject(state.observations),
+    contexts: belongsToProject(state.contexts),
+    events: belongsToProject(state.events),
+    evidence: belongsToProject(state.evidence),
+    humanItems: belongsToProject(state.humanItems),
+    artifacts: belongsToProject(state.artifacts),
+    experiences: belongsToProject(state.experiences),
+    policies: belongsToProject(state.policies),
+    resourceLedger: belongsToProject(state.resourceLedger),
+    relations: belongsToProject(state.relations),
+    retrievalIndex: belongsToProject(state.retrievalIndex),
+    experiments: belongsToProject(state.experiments),
+    approvalGrants: belongsToProject(state.approvalGrants),
+    processes: belongsToProject(state.processes),
+  };
 }
 
 function updateRun(state: AppState, run: Run): AppState {

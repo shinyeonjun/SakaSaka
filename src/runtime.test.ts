@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyState } from "./emptyState";
-import { assembleContext, createProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordNonToolAction, resolveHumanItem, resumeProject, runCycle } from "./runtime";
+import { assembleContext, createProject, deleteProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordNonToolAction, resolveHumanItem, resumeProject, runCycle, updateProjectModelSettings } from "./runtime";
 import type { ActionEnvelope, AppState } from "./types";
 import type { ToolResult } from "./ports";
 
@@ -55,6 +55,34 @@ describe("Intent World runtime", () => {
     expect(eventTypes.has("WORLD_CHANGED")).toBe(true);
     expect(getResourceLedger(next, projectId)?.toolCalls).toBe(1);
     expect(getProjectEvents(next, projectId).some((event) => event.type === "EQUILIBRIUM_ENTERED")).toBe(false);
+  });
+
+  it("기존 프로젝트에서 모델을 바꾸고 EQUILIBRIUM을 다시 깨운다", () => {
+    const { state, projectId } = projectState("project-model-settings");
+    const sleeping = recordNonToolAction(state, projectId, {
+      type: "WAIT",
+      intentRef: getProject(state, projectId)!.intentId,
+      worldCursor: getWorldSnapshot(state, projectId)!.cursorEventId,
+      rationaleSummary: "현재 즉시 가치 있는 행동이 없음",
+      riskClass: "P0",
+    });
+    expect(getProject(sleeping, projectId)?.status).toBe("EQUILIBRIUM");
+    const next = updateProjectModelSettings(sleeping, projectId, { modelProvider: "codex-cli", modelName: "codex-test" });
+    expect(getProject(next, projectId)?.settings.modelProvider).toBe("codex-cli");
+    expect(getProject(next, projectId)?.settings.modelName).toBe("codex-test");
+    expect(getProject(next, projectId)?.status).toBe("ACTIVE");
+    expect(getProjectEvents(next, projectId).some((event) => event.type === "POLICY_CHANGED" && event.summary === "모델 설정 변경")).toBe(true);
+  });
+
+  it("프로젝트 삭제는 연결된 상태를 제거하고 작업 폴더 경로는 런타임 밖에서 보존한다", () => {
+    const first = projectState("project-delete-first").state;
+    const state = createProject(first, "두 번째 프로젝트도 보존해줘", "project-delete-second");
+    const next = deleteProject({ ...state, activeProjectId: "project-delete-first" }, "project-delete-first");
+    expect(next.projects.map((project) => project.id)).toEqual(["project-delete-second"]);
+    expect(next.activeProjectId).toBe("project-delete-second");
+    for (const collection of [next.intents, next.runs, next.actions, next.worldSnapshots, next.observations, next.contexts, next.events, next.evidence, next.humanItems, next.artifacts, next.experiences, next.policies, next.resourceLedger, next.relations, next.retrievalIndex, next.experiments, next.approvalGrants, next.processes]) {
+      expect(collection.some((item) => item.projectId === "project-delete-first")).toBe(false);
+    }
   });
 
   it("질문은 영향 범위만 보류하고 DEFERRED 뒤에도 자유 텍스트 답변을 받는다", () => {

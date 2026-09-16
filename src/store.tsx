@@ -6,6 +6,7 @@ import {
   createArtifact,
   createExperiment,
   createProject,
+  deleteProject,
   killProject,
   makeId,
   pauseProject,
@@ -15,6 +16,7 @@ import {
   runCycle,
   runExperiment,
   stallProject,
+  updateProjectModelSettings,
   wakeProject,
 } from "./runtime";
 import type { AppState, ArtifactKind, ProjectSettings } from "./types";
@@ -81,6 +83,8 @@ function loadState(): AppState {
 
 export type AppAction =
   | { type: "CREATE_PROJECT"; rawIntent: string; projectId: string; settings?: Partial<ProjectSettings> }
+  | { type: "UPDATE_PROJECT_MODEL"; projectId: string; modelProvider: NonNullable<ProjectSettings["modelProvider"]>; modelName?: string }
+  | { type: "DELETE_PROJECT"; projectId: string }
   | { type: "RESOLVE_HUMAN_ITEM"; itemId: string; action: "answer" | "approve" | "reject" | "defer" | "acknowledge"; answer?: string }
   | { type: "RUN_CYCLE"; projectId: string }
   | { type: "REFRESH_WORLD"; projectId: string }
@@ -100,6 +104,10 @@ export function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case "CREATE_PROJECT":
       return createProject(state, action.rawIntent, action.projectId, action.settings);
+    case "UPDATE_PROJECT_MODEL":
+      return updateProjectModelSettings(state, action.projectId, { modelProvider: action.modelProvider, modelName: action.modelName });
+    case "DELETE_PROJECT":
+      return deleteProject(state, action.projectId);
     case "RESOLVE_HUMAN_ITEM":
       return resolveHumanItem(state, action.itemId, action.action, action.answer);
     case "RUN_CYCLE":

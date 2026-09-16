@@ -65,6 +65,14 @@ export class JsonJobQueue implements JobQueue {
     this.persist();
   }
 
+  async removeProject(projectId: string): Promise<void> {
+    this.reload();
+    const remaining = this.jobs.filter((job) => job.projectId !== projectId);
+    if (remaining.length === this.jobs.length) return;
+    this.jobs = remaining;
+    this.persist();
+  }
+
   private persist(): void {
     writeJsonAtomically(this.filePath, this.jobs, (value) => Array.isArray(value));
   }

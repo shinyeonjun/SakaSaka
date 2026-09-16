@@ -158,6 +158,7 @@ export interface JobQueue {
   lease(workerId: string, leaseMs: number): Promise<RuntimeJob | undefined>;
   ack(jobId: string, workerId?: string): Promise<void>;
   retry(jobId: string, delayMs: number, workerId?: string): Promise<void>;
+  removeProject(projectId: string): Promise<void>;
 }
 
 export interface ControlPlane {

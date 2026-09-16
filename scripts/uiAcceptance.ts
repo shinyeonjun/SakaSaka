@@ -134,6 +134,16 @@ async function main(): Promise<void> {
     await open(desktop, baseUrl, `${projectPath}/settings`);
     assert.equal(await desktop.getByRole("heading", { name: "프로젝트 설정", exact: true }).count(), 1);
 
+    await open(newPage, baseUrl, `${newPage.url().replace(baseUrl, "")}/settings`);
+    await newPage.getByLabel("모델 연결 방식").selectOption("codex-cli");
+    await newPage.getByLabel("Codex 모델").fill("ui-selected-codex-model");
+    await newPage.getByRole("button", { name: "모델 설정 저장" }).click();
+    assert.equal(await newPage.getByText("저장 요청됨").count(), 1, "기존 프로젝트 모델 설정 저장 UI가 없습니다.");
+    newPage.once("dialog", (dialog) => { void dialog.accept(); });
+    await newPage.getByRole("button", { name: "이 프로젝트 삭제" }).click();
+    await newPage.waitForURL(/\/projects\/new$/);
+    assert.equal(await newPage.getByRole("heading", { name: "무엇을 원하나요?", exact: true }).count(), 1, "프로젝트 삭제 후 신규 화면으로 돌아가지 않았습니다.");
+
     const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     contexts.push(mobileContext);
     const mobile = await mobileContext.newPage();

@@ -202,6 +202,21 @@ export async function stopProcessesForRun(processes: ManagedProcess[], runId: st
   }));
 }
 
+export async function stopProcessesForProject(processes: ManagedProcess[], projectId: string): Promise<void> {
+  hydrateManagedProcesses(processes);
+  await Promise.all(processes.filter((record) => record.projectId === projectId && (record.status === "starting" || record.status === "running")).map(async (record) => {
+    if (records.has(record.id)) {
+      await stopManagedProcess(record.id);
+      const stopped = records.get(record.id);
+      if (stopped) Object.assign(record, stopped);
+    } else {
+      await terminatePid(record.pid ?? 0);
+      record.status = "stopped";
+      record.endedAt = new Date().toISOString();
+    }
+  }));
+}
+
 export async function stopAllManagedProcesses(): Promise<void> {
   await Promise.all([...records.values()].filter((record) => record.status === "starting" || record.status === "running").map((record) => stopManagedProcess(record.id)));
 }

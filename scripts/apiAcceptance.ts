@@ -200,6 +200,16 @@ async function main(): Promise<void> {
     const greenfieldKilled = await post(baseUrl, `/runs/${encodeURIComponent(greenfieldRunId)}/kill`);
     assert.equal(greenfieldKilled.body.project.status, "KILLED");
 
+    const modelUpdated = await post(baseUrl, `/projects/${encodeURIComponent(projectId)}/model`, { modelProvider: "deterministic", modelName: "updated-offline-model" });
+    assert.equal(modelUpdated.response.status, 200, JSON.stringify(modelUpdated.body));
+    assert.equal(modelUpdated.body.project.settings.modelName, "updated-offline-model");
+    assert.equal(modelUpdated.body.project.settings.modelProvider, "deterministic");
+    const deleted = await request(baseUrl, `/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+    assert.equal(deleted.response.status, 200, JSON.stringify(deleted.body));
+    assert.equal(deleted.body.workspacePreserved, true);
+    const deletedLookup = await request(baseUrl, `/projects/${encodeURIComponent(projectId)}`);
+    assert.equal(deletedLookup.response.status, 404);
+
     console.log("API/worker acceptance passed");
   } finally {
     if (child.exitCode === null) child.kill("SIGTERM");

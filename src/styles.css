@@ -160,10 +160,18 @@ ul { padding: 0; list-style: none; }
 .settings-definition-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .settings-definition-list code { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
 .settings-model-list { overflow-wrap: anywhere; color: var(--muted-strong); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.settings-model-form { display: flex; flex-direction: column; gap: 12px; margin-top: 2px; padding-top: 15px; border-top: 1px solid var(--border); }
+.settings-form-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.settings-form-field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.settings-form-field input, .settings-form-field select { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--input-border); border-radius: 8px; background: #fff; color: var(--text); font-size: 13px; }
+.settings-form-field input { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.settings-save-state { color: #23643e; font-size: 12px; font-weight: 700; }
 .settings-boundary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .settings-boundary-grid > div { display: flex; flex-direction: column; gap: 5px; min-height: 70px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 .settings-boundary-grid span { color: var(--muted); font-size: 11px; }
 .settings-boundary-grid strong { font-size: 13px; line-height: 1.4; }
+.settings-danger-zone { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 22px; border-color: #e4b4ae; background: #fffaf9; }
+.settings-danger-zone p { max-width: 680px; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .inline-notice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 12px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45; }
 .inline-notice strong { font-weight: 700; }
 .notice-blue { background: var(--blue); }

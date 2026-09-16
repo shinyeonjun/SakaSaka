@@ -51,6 +51,15 @@ export async function mirrorAction(action: AppAction, state: AppState): Promise<
         settings: action.settings,
       });
       return;
+    case "UPDATE_PROJECT_MODEL":
+      await post(`/projects/${encodeURIComponent(action.projectId)}/model`, {
+        modelProvider: action.modelProvider,
+        modelName: action.modelName,
+      });
+      return;
+    case "DELETE_PROJECT":
+      await request(`/projects/${encodeURIComponent(action.projectId)}`, { method: "DELETE" });
+      return;
     case "RESOLVE_HUMAN_ITEM":
       await post(`/human-items/${encodeURIComponent(action.itemId)}/${action.action}`, action.answer ? { answer: action.answer } : undefined);
       return;

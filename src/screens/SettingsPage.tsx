@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { fetchRuntimeConnectionStatus, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader } from "../components/ui";
 import { getProject } from "../runtime";
@@ -73,12 +73,22 @@ function localStatus(project: Project): RuntimeConnectionStatus {
 }
 
 export function SettingsPage({ projectId }: { projectId: string }) {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const { navigate } = useRouter();
   const project = getProject(state, projectId);
   const [status, setStatus] = useState<RuntimeConnectionStatus | undefined>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [modelProvider, setModelProvider] = useState<ModelProvider>(project?.settings.modelProvider ?? "auto");
+  const [modelName, setModelName] = useState(project?.settings.modelName ?? "");
+  const [modelSaved, setModelSaved] = useState(false);
+  const [modelError, setModelError] = useState<string | undefined>();
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    setModelProvider(project?.settings.modelProvider ?? "auto");
+    setModelName(project?.settings.modelName ?? "");
+  }, [project?.id, project?.settings.modelProvider, project?.settings.modelName]);
 
   const loadStatus = useCallback(async () => {
     if (!project) return;
@@ -99,6 +109,28 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   }, [project, projectId]);
 
   useEffect(() => { void loadStatus(); }, [loadStatus]);
+
+  const saveModelSettings = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedModel = modelName.trim();
+    if (normalizedModel && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(normalizedModel)) {
+      setModelError("모델 ID는 영문·숫자로 시작하고 영문·숫자·._:/-만 사용할 수 있습니다.");
+      setModelSaved(false);
+      return;
+    }
+    setModelError(undefined);
+    setModelSaved(true);
+    dispatch({ type: "UPDATE_PROJECT_MODEL", projectId, modelProvider, modelName: normalizedModel || undefined });
+  };
+
+  const removeProject = () => {
+    if (!project || deleting) return;
+    const confirmed = window.confirm("이 프로젝트를 삭제할까요? 프로젝트 기록은 화면과 저장 상태에서 제거되고, 작업 폴더의 파일은 보존됩니다.");
+    if (!confirmed) return;
+    setDeleting(true);
+    dispatch({ type: "DELETE_PROJECT", projectId });
+    navigate("/projects/new");
+  };
 
   if (!project) {
     return <div className="screen"><Card className="empty-state"><h1>프로젝트를 찾을 수 없습니다.</h1><p>먼저 프로젝트를 만든 뒤 설정을 확인해 주세요.</p><Button variant="primary" onClick={() => navigate("/projects/new")}>새 프로젝트 시작</Button></Card></div>;
@@ -154,6 +186,39 @@ export function SettingsPage({ projectId }: { projectId: string }) {
               {model.availableModels.length > 0 && <div><dt>서버 목록</dt><dd className="settings-model-list">{model.availableModels.join(" · ")}</dd></div>}
             </dl>
             <p className="muted-copy">{model.detail}</p>
+            <form className="settings-model-form" onSubmit={saveModelSettings}>
+              <div className="settings-form-field">
+                <label htmlFor="settings-model-provider">모델 연결 방식</label>
+                <select id="settings-model-provider" value={modelProvider} onChange={(event) => { setModelProvider(event.target.value as ModelProvider); setModelSaved(false); }}>
+                  <option value="auto">자동 선택</option>
+                  <option value="codex-cli">Codex CLI</option>
+                  <option value="openai-compatible">OpenAI 호환 API</option>
+                  <option value="deterministic">결정론적 연구 기준선</option>
+                </select>
+              </div>
+              {modelProvider !== "deterministic" && (
+                <div className="settings-form-field">
+                  <label htmlFor="settings-model-name">{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</label>
+                  <input
+                    id="settings-model-name"
+                    list="settings-codex-model-options"
+                    value={modelName}
+                    onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }}
+                    maxLength={128}
+                    pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
+                    placeholder="provider 기본 모델"
+                    aria-describedby="settings-model-help"
+                  />
+                  <datalist id="settings-codex-model-options">{model.availableModels.map((availableModel) => <option key={availableModel} value={availableModel} />)}</datalist>
+                  <span id="settings-model-help" className="field-help">{model.availableModels.length ? `서버가 제공한 선택 목록 ${model.availableModels.length}개 · 직접 입력 가능` : "서버 선택 목록 없음 · 직접 입력 가능"}</span>
+                </div>
+              )}
+              <div className="button-row">
+                <Button variant="primary" size="small" type="submit">모델 설정 저장</Button>
+                {modelSaved && <span className="settings-save-state" role="status">저장 요청됨</span>}
+              </div>
+              {modelError && <p className="field-error" role="alert">{modelError}</p>}
+            </form>
           </Card>
         </div>
 
@@ -175,6 +240,12 @@ export function SettingsPage({ projectId }: { projectId: string }) {
               ? "현재는 결정론적 연구 기준선입니다. 실제 AI가 연결된 것처럼 간주하지 않습니다."
               : "Codex CLI를 쓰려면 서버 환경에서 CODEX_CLI_ENABLED=true와 codex login을 설정하고, 이 프로젝트의 모델 연결 방식을 Codex CLI 또는 자동 선택으로 지정하세요."}
         </InlineNotice>
+
+        <Card className="settings-danger-zone">
+          <SectionHeader title="프로젝트 제거" />
+          <p>이 프로젝트를 화면과 저장 상태에서 제거합니다. 연결된 작업 폴더와 그 안의 파일은 삭제하지 않습니다.</p>
+          <Button variant="danger" size="small" onClick={removeProject} disabled={deleting}>{deleting ? "제거 중…" : "이 프로젝트 삭제"}</Button>
+        </Card>
 
         <div className="button-row"><Button variant="subtle" size="small" onClick={() => navigate(projectPath(projectId))}>개요로 돌아가기</Button></div>
       </div>

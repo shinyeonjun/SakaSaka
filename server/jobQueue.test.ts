@@ -72,4 +72,14 @@ describe("durable runtime job queue", () => {
     const recovered = new JsonJobQueue(path);
     expect((await recovered.lease("worker-recovery", 10_000))?.projectId).toBe("project-recovery");
   });
+
+  it("removes queued work when its project is deleted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "intent-world-queue-"));
+    tempRoots.push(root);
+    const queue = new JsonJobQueue(join(root, "queue.json"));
+    await queue.enqueue({ projectId: "project-remove", runId: "run-remove", trigger: "signal" });
+    await queue.enqueue({ projectId: "project-keep", runId: "run-keep", trigger: "signal" });
+    await queue.removeProject("project-remove");
+    expect(await queue.lease("worker-remove", 10_000)).toMatchObject({ projectId: "project-keep" });
+  });
 });
