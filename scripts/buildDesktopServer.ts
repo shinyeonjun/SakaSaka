@@ -23,6 +23,17 @@ async function run(executable: string, args: string[]): Promise<void> {
   await execFileAsync(executable, args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
 }
 
+async function runEsbuild(args: string[]): Promise<void> {
+  // The esbuild package installs a native executable on Unix and a Node shim
+  // on Windows. Invoke each form through the correct runtime so the same
+  // desktop asset build works on every CI runner and developer machine.
+  if (process.platform === "win32") {
+    await run(process.execPath, [esbuild, ...args]);
+    return;
+  }
+  await run(esbuild, args);
+}
+
 async function main(): Promise<void> {
   const target = targetForCurrentPlatform();
   mkdirSync(binariesDirectory, { recursive: true });
@@ -35,7 +46,7 @@ async function main(): Promise<void> {
   ];
   for (const entry of entries) {
     const bundled = resolve(outputDirectory, entry.output);
-    await run(process.execPath, [esbuild, entry.source, "--bundle", "--platform=node", "--format=cjs", "--target=node22", "--external:playwright", `--outfile=${bundled}`]);
+    await runEsbuild([entry.source, "--bundle", "--platform=node", "--format=cjs", "--target=node22", "--external:playwright", `--outfile=${bundled}`]);
     const sidecar = resolve(binariesDirectory, `${entry.sidecar}-${target.tauri}${target.binarySuffix}`);
     rmSync(sidecar, { force: true });
     await run(process.execPath, [pkg, "--config", resolve(root, "desktop.pkg.json"), `--targets=${target.pkg}`, "--output", sidecar, bundled]);
