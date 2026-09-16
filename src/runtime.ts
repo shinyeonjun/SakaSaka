@@ -1,7 +1,8 @@
 import { worldSourceKeys } from "./types";
 import type { EvaluatorResult, ModelUsage, ToolResult } from "./ports";
 import { scoreExperiment, experimentDefinition } from "./experimentHarness";
-import { estimateActionCost, redactSecretLikeText, validateActionBoundary } from "./security";
+import { estimateActionCost, actionFingerprint, canonicalActionParams, paramsFingerprint, redactSecretLikeText, validateActionBoundary } from "./security";
+import { createConfiguredEmbeddingProvider, rebuildRetrievalIndex, retrieveRelevantExperiences, retrieveRelevantExperiencesWithEmbedding } from "./memory";
 import type {
   ActionStatus,
   ActionCandidate,
@@ -56,13 +57,20 @@ function positiveSetting(value: number | undefined, fallback: number, maximum: n
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(value, maximum) : fallback;
 }
 
+function nonNegativeSetting(value: number | undefined, fallback: number, maximum: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(value, maximum) : fallback;
+}
+
 function nextLease(project: Project, at = Date.now()): string {
   return new Date(at + positiveSetting(project.settings.maxHours, 12, 168) * 60 * 60 * 1000).toISOString();
 }
 
 function sanitizeActionEnvelope(action: ActionEnvelope): ActionEnvelope {
   const params = action.params
-    ? Object.fromEntries(Object.entries(action.params).map(([key, value]) => [key, typeof value === "string" ? redactSecretLikeText(value).slice(0, 2_000) : value]))
+    ? Object.fromEntries(Object.entries(action.params).map(([key, value]) => [key,
+      typeof value === "string" ? redactSecretLikeText(value).slice(0, 256_000)
+        : Array.isArray(value) ? value.map((item) => redactSecretLikeText(item).slice(0, 2_000))
+          : value]))
     : undefined;
   return {
     ...action,
@@ -93,6 +101,8 @@ export interface RuntimeCycleInput {
   toolResult?: ToolResult;
   evaluation?: EvaluatorResult;
   modelUsage?: ModelUsage;
+  /** The exact model-facing packet used for this dispatch, including remote retrieval when configured. */
+  context?: ContextPacket;
 }
 
 export function makeId(prefix: string): string {
@@ -117,19 +127,19 @@ export function getRun(state: AppState, projectId: string): Run | undefined {
 export function getWorldSnapshot(state: AppState, projectId: string): WorldSnapshot | undefined {
   return state.worldSnapshots
     .filter((snapshot) => snapshot.projectId === projectId)
-    .sort((a, b) => b.observedAt.localeCompare(a.observedAt))[0];
+    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt) || b.id.localeCompare(a.id))[0];
 }
 
 export function getProjectObservations(state: AppState, projectId: string): Observation[] {
   return state.observations
     .filter((observation) => observation.projectId === projectId)
-    .sort((a, b) => b.observedAt.localeCompare(a.observedAt));
+    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt) || b.id.localeCompare(a.id));
 }
 
 export function getProjectContexts(state: AppState, projectId: string): ContextPacket[] {
   return state.contexts
     .filter((context) => context.projectId === projectId)
-    .sort((a, b) => b.assembledAt.localeCompare(a.assembledAt));
+    .sort((a, b) => Date.parse(b.assembledAt) - Date.parse(a.assembledAt) || b.id.localeCompare(a.id));
 }
 
 export function getActivePolicy(state: AppState, projectId: string): Policy | undefined {
@@ -141,7 +151,7 @@ export function getActivePolicy(state: AppState, projectId: string): Policy | un
 export function getResourceLedger(state: AppState, projectId: string, runId = getRun(state, projectId)?.id): ResourceLedger | undefined {
   return state.resourceLedger
     .filter((ledger) => ledger.projectId === projectId && (!runId || ledger.runId === runId))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.id.localeCompare(a.id))[0];
 }
 
 export function getProjectRelations(state: AppState, projectId: string): Relation[] {
@@ -154,6 +164,12 @@ export function getProjectRetrievalEntries(state: AppState, projectId: string): 
     .sort((a, b) => b.recency - a.recency || b.outcomeQuality - a.outcomeQuality);
 }
 
+export function getMatchingApprovalGrant(state: AppState, projectId: string, action: ActionEnvelope, at = Date.now()): import("./types").ApprovalGrant | undefined {
+  return state.approvalGrants
+    .filter((grant) => grant.projectId === projectId && grant.singleUse && !grant.consumedAt && Date.parse(grant.expiresAt) > at && grant.tool === action.tool && grant.actionFingerprint === actionFingerprint(action) && grant.paramsFingerprint === paramsFingerprint(action))
+    .sort((left, right) => Date.parse(right.issuedAt) - Date.parse(left.issuedAt) || right.id.localeCompare(left.id))[0];
+}
+
 export function getProjectEvents(state: AppState, projectId: string): EventRecord[] {
   return state.events
     .filter((event) => event.projectId === projectId)
@@ -163,15 +179,31 @@ export function getProjectEvents(state: AppState, projectId: string): EventRecor
 export function getProjectHumanItems(state: AppState, projectId: string): HumanItem[] {
   return state.humanItems
     .filter((item) => item.projectId === projectId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.id.localeCompare(a.id));
+}
+
+export function modelProviderLabel(state: AppState, project: Project): string {
+  const latest = state.actions
+    .filter((action) => action.projectId === project.id)
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.id.localeCompare(left.id))[0];
+  if (latest?.modelVersion.startsWith("openai-compatible:")) return latest.modelVersion;
+  if (latest?.modelVersion === "unavailable") return "unavailable";
+  if (latest?.modelVersion === MODEL_VERSION || project.settings.modelProvider === "deterministic") return "deterministic baseline";
+  return `${project.settings.modelProvider ?? "auto"} · not resolved`;
 }
 
 export function isOpenHumanItem(item: HumanItem): boolean {
-  return item.status === "OPEN";
+  return item.status === "OPEN" || item.status === "DEFERRED";
 }
+
+export const isHumanItemActionable = isOpenHumanItem;
 
 export function getOpenHumanItems(state: AppState, projectId: string): HumanItem[] {
   return getProjectHumanItems(state, projectId).filter(isOpenHumanItem);
+}
+
+export function getActionableHumanItems(state: AppState, projectId: string): HumanItem[] {
+  return getOpenHumanItems(state, projectId);
 }
 
 export function getHumanCounts(state: AppState, projectId: string): Record<HumanItemKind, number> {
@@ -253,8 +285,9 @@ function activeIncidentRefs(state: AppState, projectId: string): string[] {
 
 /**
  * Commits fresh adapter observations without pretending that a summary is the
- * source of truth. The event that caused the observation is attached later by
- * the runtime cycle, while the raw observation references remain queryable.
+ * authoritative environment state. The event that caused the observation is
+ * attached later by the runtime cycle, while raw observation references remain
+ * queryable beside the persisted snapshot.
  */
 export function applyObservedWorld(state: AppState, projectId: string, observations: Observation[]): AppState {
   const snapshot = getWorldSnapshot(state, projectId);
@@ -279,7 +312,7 @@ export function applyObservedWorld(state: AppState, projectId: string, observati
     ...snapshot,
     id: makeId("world"),
     observedAt: latest,
-    summary: "Direct source observations refreshed; event log and raw references remain the source of truth.",
+    summary: "Direct source observations refreshed; snapshot state and raw references remain linked to the event journal.",
     sources,
   };
   return {
@@ -337,9 +370,18 @@ export function observationsFromSnapshot(snapshot: WorldSnapshot, idPrefix = "ob
 
 export function getToolSurface(project: Project): ToolCapability[] {
   return [
-    { name: "repo.read", description: "git diff와 dependency/config를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
+    { name: "repo.read", description: "실제 workspace의 git status와 diff를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
+    { name: "workspace.list", description: "workspace 내부의 bounded file tree를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "workspace.read", description: "workspace 내부 text file을 line range로 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "workspace.write", description: "workspace 안에 atomic하게 새 파일을 만들거나 명시적으로 덮어씁니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "workspace.patch", description: "검증된 unified patch를 원자적으로 적용합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "workspace.delete", description: "workspace 안의 파일을 backup/ref와 함께 삭제합니다.", riskClass: "P2", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "dependency.install", description: "감지된 Node package manager로 install script 없이 dependency를 설치합니다.", riskClass: "P1", reversible: true, requiresNetwork: true, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
     { name: "shell.sandbox", description: "격리 workspace에서 명령을 실행합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
     { name: "browser.playwright", description: "브라우저와 DOM을 관찰·검증합니다.", riskClass: "P1", reversible: true, requiresNetwork: true, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "process.start", description: "workspace에 귀속된 managed developer process를 시작합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "process.status", description: "managed process의 실제 lifecycle 상태를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
+    { name: "process.stop", description: "workspace/run에 귀속된 managed process를 종료합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
     { name: "database.read", description: "연결된 DB 상태를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
     { name: "deploy.production", description: "production side effect를 실행합니다.", riskClass: "P3", reversible: false, requiresNetwork: true, sideEffect: true, enabled: !project.settings.productionBlocked, toolVersion: TOOL_VERSION },
   ];
@@ -354,11 +396,11 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
   const policy = getActivePolicy(state, projectId);
   const openItems = getOpenHumanItems(state, projectId);
   const observations = getProjectObservations(state, projectId).slice(0, 18);
-  const experiences = state.experiences
-    .filter((experience) => experience.projectId === projectId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 5);
-  return {
+  const recentActions = state.actions.filter((action) => action.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 8);
+  const recentEvidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 12);
+  const activeGrants = state.approvalGrants.filter((grant) => grant.projectId === projectId && !grant.consumedAt && Date.parse(grant.expiresAt) > Date.now());
+  const activeProcesses = state.processes.filter((process) => process.projectId === projectId && process.runId === run.id && (process.status === "starting" || process.status === "running")).slice(0, 16);
+  const preliminary: ContextPacket = {
     id: makeId("context"),
     projectId,
     intentRef: intent.id,
@@ -370,7 +412,7 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
     constraints: intent.constraints.map((constraint) => redactSecretLikeText(constraint)),
     observationRefs: observations.map((observation) => observation.id),
     openHumanItemRefs: openItems.map((item) => item.id),
-    experienceRefs: experiences.map((experience) => experience.id),
+    experienceRefs: [],
     runId: run.id,
     observationViews: observations.map((observation) => ({
       id: observation.id,
@@ -393,16 +435,31 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
       blockingScope: [...item.blockingScope],
       continuingScope: [...item.continuingScope],
     })),
-    relevantExperienceViews: experiences.map((experience) => ({
-      id: experience.id,
-      situation: redactSecretLikeText(experience.situation),
-      decision: redactSecretLikeText(experience.decision),
-      action: redactSecretLikeText(experience.action),
-      outcome: redactSecretLikeText(experience.outcome),
-      evidenceIds: [...experience.evidenceIds],
-      risk: experience.risk,
-      createdAt: experience.createdAt,
+    relevantExperienceViews: [],
+    recentActionViews: recentActions.map((action) => ({
+      id: action.id,
+      type: action.type,
+      status: action.status,
+      tool: action.tool,
+      params: action.params,
+      rationaleSummary: redactSecretLikeText(action.rationaleSummary),
+      intentRef: action.intentRef,
+      worldCursor: action.worldCursor,
+      approvalGrantId: action.approvalGrantId,
+      createdAt: action.createdAt,
     })),
+    recentEvidenceViews: recentEvidence.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      verdict: item.verdict,
+      summary: redactSecretLikeText(item.summary),
+      source: redactSecretLikeText(item.source),
+      actionId: item.actionId,
+      rawRef: item.rawRef,
+      createdAt: item.createdAt,
+    })),
+    activeApprovalGrantViews: activeGrants.map((grant) => ({ id: grant.id, actionFingerprint: grant.actionFingerprint, tool: grant.tool, expiresAt: grant.expiresAt })),
+    activeProcessViews: activeProcesses.map((process) => ({ id: process.id, argv: [...process.argv], status: process.status, pid: process.pid, port: process.port, previewUrl: process.previewUrl, stdoutRawRef: process.stdoutRawRef, stderrRawRef: process.stderrRawRef })),
     activeIncidentRefs: activeIncidentRefs(state, projectId),
     boundary: {
       remainingBudget: Math.max(0, Number((project.settings.budgetLimit - project.budgetSpent).toFixed(2))),
@@ -418,6 +475,47 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
     policyVersion: policy?.version ?? POLICY_VERSION,
     untrustedObservationRefs: observations.filter((observation) => observation.trustLevel === "untrusted" || observation.source === "browser" || observation.source === "shell" || observation.source === "logs").map((observation) => observation.id),
   };
+  const experiences = retrieveRelevantExperiences(state, projectId, preliminary, 8);
+  return { ...preliminary, experienceRefs: experiences.map((experience) => experience.id), relevantExperienceViews: experiences.map((experience) => ({
+    id: experience.id,
+    situation: redactSecretLikeText(experience.situation),
+    decision: redactSecretLikeText(experience.decision),
+    action: redactSecretLikeText(experience.action),
+    outcome: redactSecretLikeText(experience.outcome),
+    evidenceIds: [...experience.evidenceIds],
+    risk: experience.risk,
+    createdAt: experience.createdAt,
+  })) };
+}
+
+/**
+ * Server-side context assembly can use a configured embedding provider without
+ * making the pure/browser reducer asynchronous. A provider outage falls back
+ * to the rebuildable lexical/local-vector index for the same cycle.
+ */
+export async function assembleContextAsync(state: AppState, projectId: string, assembledAt = nowIso()): Promise<ContextPacket | undefined> {
+  const fallback = assembleContext(state, projectId, assembledAt);
+  const provider = createConfiguredEmbeddingProvider();
+  if (!fallback || !provider) return fallback;
+  try {
+    const experiences = await retrieveRelevantExperiencesWithEmbedding(state, projectId, fallback, provider, 8);
+    return {
+      ...fallback,
+      experienceRefs: experiences.map((experience) => experience.id),
+      relevantExperienceViews: experiences.map((experience) => ({
+        id: experience.id,
+        situation: redactSecretLikeText(experience.situation),
+        decision: redactSecretLikeText(experience.decision),
+        action: redactSecretLikeText(experience.action),
+        outcome: redactSecretLikeText(experience.outcome),
+        evidenceIds: [...experience.evidenceIds],
+        risk: experience.risk,
+        createdAt: experience.createdAt,
+      })),
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 export function selectActionCandidates(state: AppState, projectId: string, context: ContextPacket): ActionCandidate[] {
@@ -425,22 +523,25 @@ export function selectActionCandidates(state: AppState, projectId: string, conte
   const run = getRun(state, projectId);
   if (!project || !run) return [];
   const hasOpenQuestion = context.openHumanItemRefs.some((itemId) => state.humanItems.find((item) => item.id === itemId)?.kind === "QUESTION");
-  const firstCycle = run.cycleCount === 0;
-  const tripTogetherFlow = project.name === "TripTogether";
+  const latestEvidence = context.recentEvidenceViews?.[0];
+  const hasGap = !latestEvidence || latestEvidence.verdict !== "PASS" || context.observationViews?.some((item) => item.status !== "healthy") === true;
+  const executable = context.toolSurface.find((tool) => tool.enabled && ["workspace.list", "workspace.read", "repo.read", "shell.sandbox", "browser.playwright"].includes(tool.name));
+  const gapScore = hasGap ? 0.78 : 0.12;
+  const informationScore = context.observationViews?.length ? 0.32 : 0.72;
   const closure: ActionCandidate = {
     id: makeId("candidate"),
     projectId,
     type: "ACT",
     intentRef: context.intentRef,
     worldCursor: context.worldCursor,
-    rationaleSummary: firstCycle && tripTogetherFlow ? "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증" : firstCycle ? "Intent에 연결된 World source를 관찰하고 첫 evidence를 확보" : "현재 World의 evidence gap을 점검하고 다음 가치 있는 변화를 선택",
-    tool: firstCycle && tripTogetherFlow ? "playwright" : "world-adapter",
-    params: { cycle: run.cycleCount + 1, sandbox: true },
-    expectedValue: firstCycle && tripTogetherFlow ? 0.88 : 0.41,
-    riskClass: "P1",
-    evidencePlan: firstCycle && tripTogetherFlow ? ["browser", "test", "world"] : ["world", "test"],
+    rationaleSummary: hasGap ? "현재 World의 gap을 실제 capability로 관찰하고 evidence를 확보" : "현재 evidence와 boundary를 다시 확인해 다음 유용한 변화를 판단",
+    tool: executable?.name,
+    params: executable?.name === "workspace.list" ? { depth: 3, maxEntries: 200 } : executable?.name === "repo.read" ? { commandId: "repo-status" } : undefined,
+    expectedValue: Number(Math.max(0, Math.min(1, gapScore)).toFixed(2)),
+    riskClass: executable?.riskClass ?? "P0",
+    evidencePlan: ["world", "test"],
     force: "closure",
-    score: { goalGap: firstCycle && tripTogetherFlow ? 0.88 : 0.44, informationGain: firstCycle && tripTogetherFlow ? 0.74 : 0.4, evidenceGain: 0.8, cost: 0.38, risk: 0.08, total: firstCycle && tripTogetherFlow ? 2.02 : 1.18 },
+    score: { goalGap: gapScore, informationGain: informationScore, evidenceGain: hasGap ? 0.68 : 0.18, cost: executable ? 0.08 : 0, risk: executable?.riskClass === "P1" ? 0.08 : 0, total: gapScore + informationScore + (hasGap ? 0.68 : 0.18) - (executable ? 0.08 : 0) },
     sourceRefs: context.observationRefs.slice(0, 3),
   };
   const discovery: ActionCandidate = {
@@ -449,11 +550,10 @@ export function selectActionCandidates(state: AppState, projectId: string, conte
     type: "IDEA",
     intentRef: context.intentRef,
     worldCursor: context.worldCursor,
-    rationaleSummary: "반복된 사용자 행동에서 제품 기회를 제안",
-    tool: "browser-observation",
-    expectedValue: 0.45,
-    riskClass: "P1",
-    evidencePlan: ["browser", "human"],
+    rationaleSummary: "현재 Intent 밖의 선택적 개선 가능성을 human에게 비동기로 제안",
+    expectedValue: 0.24,
+    riskClass: "P0",
+    evidencePlan: ["world", "human"],
     force: "discovery",
     score: { goalGap: 0.25, informationGain: 0.62, evidenceGain: 0.3, cost: 0.14, risk: 0.05, total: 0.98 },
     sourceRefs: context.observationRefs.slice(0, 2),
@@ -464,13 +564,12 @@ export function selectActionCandidates(state: AppState, projectId: string, conte
     type: "QUESTION",
     intentRef: context.intentRef,
     worldCursor: context.worldCursor,
-    rationaleSummary: "제품 권한 철학은 인간의 의도 없이는 결정할 수 없음",
-    tool: "human-boundary",
+    rationaleSummary: "현재 관찰만으로 결정할 수 없는 인간의 선호 또는 business value를 확인",
     expectedValue: 0.52,
     riskClass: "P2",
     evidencePlan: ["human"],
     force: "boundary",
-    score: { goalGap: hasOpenQuestion ? 0.42 : 0.12, informationGain: hasOpenQuestion ? 0.7 : 0.2, evidenceGain: 0.25, cost: 0.03, risk: 0.04, total: hasOpenQuestion ? 1.3 : 0.5 },
+    score: { goalGap: hasOpenQuestion ? 0.42 : 0.12, informationGain: hasOpenQuestion ? 0.7 : 0.2, evidenceGain: 0.25, cost: 0.03, risk: 0.04, total: hasOpenQuestion ? 0.64 : 0.5 },
     sourceRefs: hasOpenQuestion ? context.openHumanItemRefs : [],
   };
   const wait: ActionCandidate = {
@@ -479,7 +578,7 @@ export function selectActionCandidates(state: AppState, projectId: string, conte
     type: "WAIT",
     intentRef: context.intentRef,
     worldCursor: context.worldCursor,
-    rationaleSummary: "현재 비용·위험 대비 즉시 가치 있는 변화가 낮음",
+    rationaleSummary: "현재 evidence와 boundary를 기준으로 즉시 가치 있는 action이 없음",
     force: "wait",
     score: { goalGap: 0.05, informationGain: 0.08, evidenceGain: 0.04, cost: 0, risk: 0, total: 0.17 },
     sourceRefs: [],
@@ -520,7 +619,7 @@ function newWorldSnapshot(projectId: string, observedAt: string): WorldSnapshot 
     observedAt,
     summary: "새 프로젝트 workspace를 연결하는 중입니다. 직접 관찰 결과가 들어오면 World Snapshot이 갱신됩니다.",
     sources: {
-      repo: source("repo", "Repo", "workspace connected", observedAt, "healthy", "verified"),
+      repo: source("repo", "Repo", "awaiting direct workspace observation", observedAt, "warning"),
       runtime: source("runtime", "Runtime", "not started", observedAt, "warning"),
       browser: source("browser", "Browser", "awaiting first observation", observedAt, "warning"),
       db: source("db", "DB", "not connected", observedAt, "warning"),
@@ -531,9 +630,6 @@ function newWorldSnapshot(projectId: string, observedAt: string): WorldSnapshot 
 }
 
 function deriveProjectName(rawIntent: string): { name: string; subtitle: string } {
-  if (rawIntent.includes("여행") || rawIntent.toLowerCase().includes("travel")) {
-    return { name: "TripTogether", subtitle: "친구들과 여행 계획을 함께 만드는 서비스" };
-  }
   const firstSentence = rawIntent.split(/[.!?\n]/)[0]?.trim() || "New Intent";
   return {
     name: firstSentence.length > 24 ? `${firstSentence.slice(0, 24)}…` : firstSentence,
@@ -572,10 +668,19 @@ export function createProject(
       networkPolicy: settings.networkPolicy ?? "allowlist",
       workspacePath: settings.workspacePath,
       previewUrl: settings.previewUrl,
-      allowedDomains: settings.allowedDomains ? [...settings.allowedDomains] : undefined,
+      // Local preview verification is part of the normal greenfield path.
+      // Loopback hosts are explicit, bounded entries; external hosts still
+      // require a project-provided allowlist entry.
+      allowedDomains: [...new Set([...(settings.allowedDomains ?? []), "registry.npmjs.org", "localhost", "127.0.0.1"])],
       sandboxMode: settings.sandboxMode ?? "process",
-      modelProvider: settings.modelProvider ?? "deterministic",
+      modelProvider: settings.modelProvider ?? "auto",
       reviewIntervalMinutes: positiveSetting(settings.reviewIntervalMinutes, 360, 10_080),
+      failureThreshold: positiveSetting(settings.failureThreshold, 3, 32),
+      noProgressThreshold: positiveSetting(settings.noProgressThreshold, 5, 128),
+       cycleDelayMs: nonNegativeSetting(settings.cycleDelayMs, 250, 60_000),
+      approvalTtlMinutes: positiveSetting(settings.approvalTtlMinutes, 60, 10_080),
+      processMaxLifetimeMs: positiveSetting(settings.processMaxLifetimeMs, 1_800_000, 86_400_000),
+      maxConcurrentProcesses: positiveSetting(settings.maxConcurrentProcesses, 4, 32),
     },
     metrics: {
       testsPassed: 0,
@@ -606,6 +711,9 @@ export function createProject(
     startedAt: createdAt,
     lastCycleAt: createdAt,
     leaseExpiresAt: nextLease(project),
+    consecutiveFailures: 0,
+    noProgressCycles: 0,
+    activeProcessIds: [],
   };
   const policy: Policy = {
     id: makeId("policy"),
@@ -672,9 +780,9 @@ function humanBoundaryStatus(state: AppState, projectId: string): "ACTIVE" | "WA
 }
 
 export function isHumanActionAllowed(item: HumanItem, action: HumanAction, answer?: string): boolean {
-  if (item.status !== "OPEN") return false;
+  if (item.status !== "OPEN" && item.status !== "DEFERRED") return false;
   if (!humanActionNames.includes(action)) return false;
-  if (action === "defer") return true;
+  if (action === "defer") return item.status === "OPEN";
   if (item.kind === "QUESTION") return action === "answer" && Boolean(answer?.trim()) && (item.options.length === 0 || item.options.some((option) => option.id === answer));
   if (item.kind === "APPROVAL") return action === "approve" || action === "reject";
   return action === "acknowledge" || action === "reject";
@@ -697,6 +805,7 @@ export function resolveHumanItem(
     status,
     answer: safeAnswer,
     answerLabel: option?.title ?? safeAnswer,
+    responseMode: item.responseMode ?? (item.options.length ? "choice" : "free-text"),
     updatedAt,
   };
   let next: AppState = { ...state, humanItems: replaceById(state.humanItems, updatedItem) };
@@ -716,6 +825,27 @@ export function resolveHumanItem(
 
   const project = getProject(next, item.projectId);
   const run = getRun(next, item.projectId);
+  if (item.kind === "APPROVAL" && action === "approve" && item.actionRef && project) {
+    const approvedAction = state.actions.find((candidate) => candidate.id === item.actionRef);
+    if (approvedAction && !next.approvalGrants.some((candidate) => candidate.approvalItemId === item.id && !candidate.consumedAt)) {
+      const ttlMinutes = positiveSetting(project.settings.approvalTtlMinutes, 60, 10_080);
+      const grant: import("./types").ApprovalGrant = {
+        id: makeId("approval-grant"),
+        projectId: item.projectId,
+        approvalItemId: item.id,
+        originalActionRef: approvedAction.id,
+        actionFingerprint: actionFingerprint(approvedAction),
+        tool: approvedAction.tool,
+        paramsFingerprint: paramsFingerprint(approvedAction),
+        paramsCanonical: canonicalActionParams(approvedAction),
+        issuedAt: updatedAt,
+        expiresAt: new Date(Date.parse(updatedAt) + ttlMinutes * 60_000).toISOString(),
+        singleUse: true,
+      };
+      next = { ...next, approvalGrants: [...next.approvalGrants, grant] };
+      next = appendEvent(next, { projectId: item.projectId, type: "APPROVAL_GRANT_ISSUED", actor: "system", summary: `approval grant issued · ${grant.tool ?? "action"}`, detail: `grant=${grant.id} · expires=${grant.expiresAt}`, runId: run?.id, actionId: approvedAction.id, createdAt: updatedAt, payload: { grantId: grant.id, approvalItemId: item.id, actionFingerprint: grant.actionFingerprint } });
+    }
+  }
   const remainingBlocking = getOpenHumanItems(next, item.projectId).some((candidate) => candidate.blockingScope.length > 0);
   if (project) {
     const nextStatus: RuntimeStatus = project.status === "KILLED"
@@ -781,45 +911,14 @@ export function resolveHumanItem(
   return moveWorldCursor(next, item.projectId, next.events.at(-1)?.id ?? item.id, updatedAt);
 }
 
-function actionDescription(cycleCount: number, projectName: string): { summary: string; detail: string; tool: string } {
-  if (cycleCount === 0 && projectName === "TripTogether") {
-    return {
-      summary: "모바일 초대 흐름을 다시 관찰하고 안전 영역을 검증",
-      detail: "fresh browser observation → CSS layout check → 390px/430px verify",
-      tool: "playwright",
-    };
-  }
-  if (cycleCount === 0) {
-    return {
-      summary: "Intent에 연결된 World source를 관찰하고 첫 evidence를 확보",
-      detail: "repo + runtime + browser + human source observation → deterministic verification",
-      tool: "world-adapter",
-    };
-  }
-  return {
-    summary: "현재 World의 evidence gap을 점검하고 다음 가치 있는 변화를 선택",
-    detail: "repo + runtime + human signals를 다시 읽은 뒤 변경 없이도 검증 가능한 범위를 비교",
-    tool: "world-adapter",
-  };
-}
-
 function updateWorldAfterCycle(snapshot: WorldSnapshot, actionId: string, observedAt: string, cycleCount: number, openHumanCount = 0): WorldSnapshot {
   return {
     ...snapshot,
     id: makeId("world"),
     cursorEventId: actionId,
     observedAt,
-    summary: cycleCount === 1
-      ? "Mobile invite flow was re-observed and verified. The remaining decision is scoped to invite permissions."
-      : "World re-observed. No unbounded work was started; runtime keeps the latest evidence and waits for a meaningful signal.",
-    sources: {
-      ...snapshot.sources,
-      repo: { ...snapshot.sources.repo, observedAt, summary: cycleCount === 1 ? "clean · +2 files" : "clean · no new diff", freshness: "fresh", trustLevel: "verified" },
-      runtime: { ...snapshot.sources.runtime, observedAt, summary: "Preview environment · healthy", status: "healthy", freshness: "fresh" },
-      browser: { ...snapshot.sources.browser, observedAt, summary: cycleCount === 1 ? "mobile verified" : "last verified · 390/430px", status: "healthy", freshness: "fresh", trustLevel: "verified" },
-      logs: { ...snapshot.sources.logs, observedAt, summary: "0 critical errors", status: "healthy", freshness: "fresh" },
-      human: { ...snapshot.sources.human, observedAt, summary: openHumanCount ? `${openHumanCount} open item${openHumanCount > 1 ? "s" : ""}` : "all decisions resolved", status: openHumanCount ? "warning" : "healthy", freshness: "fresh" },
-    },
+    summary: `World cursor advanced after cycle ${cycleCount}; ${openHumanCount ? `${openHumanCount} actionable human item${openHumanCount > 1 ? "s" : ""} remain` : "no actionable human item is currently open"}.`,
+    sources: { ...snapshot.sources, human: { ...snapshot.sources.human, observedAt, summary: openHumanCount ? `${openHumanCount} actionable item${openHumanCount > 1 ? "s" : ""}` : "no actionable items", status: openHumanCount ? "warning" : "healthy", freshness: "fresh" } },
   };
 }
 
@@ -848,12 +947,13 @@ function updateWorldFromActualObservations(snapshot: WorldSnapshot, observations
   };
 }
 
-function testCountsForCycle(project: Project, toolResult: ToolResult | undefined, evidence: Evidence): { testsPassed: number; testsTotal: number } {
-  if (project.id === "project-trip-together") return { testsPassed: 42, testsTotal: 42 };
+function testCountsForCycle(toolResult: ToolResult | undefined, evidence: Evidence): { testsPassed: number; testsTotal: number } {
   const output = toolResult?.output ?? evidence.summary;
-  const passed = output.match(/(\d+)\s+(?:tests?|specs?|passed|pass)/i)?.[1];
-  const count = passed ? Number(passed) : 0;
-  return count > 0 ? { testsPassed: count, testsTotal: count } : { testsPassed: project.metrics.testsPassed, testsTotal: project.metrics.testsTotal };
+  const match = output.match(/(?:Tests?|Specs?)\s*[:=]?\s*(\d+)\s*(?:passed|pass)?[^\n]*?(?:of|\/)\s*(\d+)|(?:^|\s)(\d+)\s+(?:tests?|specs?)\s+(?:passed|pass)/i);
+  if (!match) return { testsPassed: 0, testsTotal: 0 };
+  const passed = Number(match[1] ?? match[3] ?? 0);
+  const total = Number(match[2] ?? match[3] ?? passed);
+  return Number.isFinite(passed) && Number.isFinite(total) ? { testsPassed: Math.max(0, passed), testsTotal: Math.max(passed, total) } : { testsPassed: 0, testsTotal: 0 };
 }
 
 export function runCycle(state: AppState, projectId: string, input: RuntimeCycleInput = {}): AppState {
@@ -880,7 +980,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     ...input.modelUsage,
     modelVersion: redactSecretLikeText(input.modelUsage.modelVersion).slice(0, 256),
   } : undefined;
-  const toolCost = typeof toolResult?.cost === "number" && Number.isFinite(toolResult.cost) ? Math.max(0, toolResult.cost) : 0.38;
+  const toolCost = typeof toolResult?.cost === "number" && Number.isFinite(toolResult.cost) ? Math.max(0, toolResult.cost) : 0;
   const modelCost = typeof modelUsage?.cost === "number" && Number.isFinite(modelUsage.cost) ? Math.max(0, modelUsage.cost) : 0;
   const cost = Number((toolCost + modelCost).toFixed(2));
   if (project.budgetSpent + cost > project.settings.budgetLimit) {
@@ -894,7 +994,13 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "wall time hard stop · 최대 실행 시간이 초과");
   }
   const nextCycle = run.cycleCount + 1;
-  const context = assembleContext(observedState, projectId, createdAt);
+  const contextCandidate = input.context;
+  const context = contextCandidate
+    && contextCandidate.projectId === projectId
+    && contextCandidate.intentRef === (getIntent(observedState, projectId)?.id ?? "")
+    && contextCandidate.worldCursor === previousWorld.cursorEventId
+    ? contextCandidate
+    : assembleContext(observedState, projectId, createdAt);
   if (!context) return observedState;
   if (input.action && (input.action.intentRef !== context.intentRef || input.action.worldCursor !== context.worldCursor)) {
     return recordBoundaryDecision(observedState, projectId, input.action, "blocked", "model action references a stale intent or world cursor", context.id);
@@ -903,8 +1009,9 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     return recordRuntimeFailure(observedState, projectId, "verify", "tool returned evidence for a different project");
   }
   let boundaryDecision: ReturnType<typeof validateActionBoundary> | undefined;
+  const matchingApprovalGrant = input.action ? getMatchingApprovalGrant(observedState, projectId, input.action) : undefined;
   if (input.action) {
-    boundaryDecision = validateActionBoundary(project, input.action, getToolSurface(project), estimateActionCost(input.action));
+    boundaryDecision = validateActionBoundary(project, input.action, getToolSurface(project), estimateActionCost(input.action), matchingApprovalGrant);
     if (boundaryDecision.status !== "allowed") return recordBoundaryDecision(observedState, projectId, input.action, boundaryDecision.status, boundaryDecision.reason, context.id);
   }
   if (input.action && input.action.type !== "ACT") return recordNonToolAction(observedState, projectId, input.action, context.id);
@@ -926,7 +1033,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   if (!selected) return observedState;
   const actionId = makeId("action");
   const safeSelected = sanitizeActionEnvelope(selected);
-  const copy = input.action ? { summary: safeSelected.rationaleSummary, detail: `actual tool dispatch · ${safeSelected.tool ?? "none"}`, tool: safeSelected.tool ?? "none" } : actionDescription(run.cycleCount, project.name);
+  const copy = { summary: safeSelected.rationaleSummary, detail: input.action ? `actual tool dispatch · ${safeSelected.tool ?? "none"}` : "runtime selected a capability candidate; no external tool result was supplied", tool: safeSelected.tool ?? "none" };
   const rawEvidence = toolResult?.evidence ?? [];
   const evidenceKinds = new Set(["test", "browser", "screenshot", "world", "metric", "human"]);
   const evidenceVerdicts = new Set(["PASS", "FAIL", "UNCERTAIN"]);
@@ -950,6 +1057,8 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
       ? "UNCERTAIN"
       : "PASS";
   const evaluationSummary = input.evaluation && evaluationVerdict === input.evaluation.verdict ? input.evaluation.summary : undefined;
+  const cycleHasFailure = toolResult?.status === "failed" || toolResult?.status === "blocked" || evaluationVerdict === "FAIL";
+  const cycleIsUncertain = !toolResult || evaluationVerdict === "UNCERTAIN";
   const action: AgentAction = {
     id: actionId,
     projectId,
@@ -975,6 +1084,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     completedAt: createdAt,
     toolResultRef: toolResult?.outputRef,
     boundaryDecision: toolResult?.status === "blocked" ? "blocked" : "allowed",
+    approvalGrantId: matchingApprovalGrant?.id,
   };
   const evidenceId = firstEvidence?.id ?? makeId("evidence");
   const linkedEvidenceIds = [...new Set([evidenceId, ...suppliedEvidence.map((item) => item.id)])];
@@ -984,7 +1094,10 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     projectId,
     kind: firstEvidence?.kind ?? "world",
     verdict: evaluationVerdict,
-    summary: redactSecretLikeText(evaluationSummary ?? firstEvidence?.summary ?? (nextCycle === 1 ? "390px/430px browser verification passed" : "Fresh world observation completed with no new critical gap")).slice(0, 4_000),
+    summary: redactSecretLikeText([
+      firstEvidence?.summary ?? toolResult?.summary ?? "No verification evidence was returned for this action",
+      evaluationSummary && evaluationSummary !== firstEvidence?.summary ? `evaluator: ${evaluationSummary}` : undefined,
+    ].filter(Boolean).join(" · ")).slice(0, 4_000),
     source: firstEvidence?.source ?? copy.tool,
     createdAt,
     actionId,
@@ -1001,12 +1114,24 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     evidence: [...evidenceById.values()],
     contexts: [...observedState.contexts, context],
   };
+  if (toolResult?.process) {
+    const processRecord = toolResult.process;
+    const existingProcess = next.processes.some((candidate) => candidate.id === processRecord.id);
+    next = { ...next, processes: existingProcess ? replaceById(next.processes, processRecord) : [...next.processes, processRecord] };
+  }
+  if (matchingApprovalGrant && toolResult) {
+    const consumedAt = createdAt;
+    next = {
+      ...next,
+      approvalGrants: replaceById(next.approvalGrants, { ...matchingApprovalGrant, consumedAt }),
+    };
+    next = appendEvent(next, { projectId, type: "APPROVAL_GRANT_CONSUMED", actor: "system", summary: `approval grant consumed · ${matchingApprovalGrant.tool ?? "action"}`, detail: `grant=${matchingApprovalGrant.id}`, runId: run.id, actionId, createdAt: consumedAt, payload: { grantId: matchingApprovalGrant.id, actionFingerprint: matchingApprovalGrant.actionFingerprint } });
+  }
   const eventSteps: Array<{ type: EventType; summary: string; detail?: string; actor?: EventActor; payload?: EventRecord["payload"] }> = [
     { type: "WAKE_TRIGGERED", summary: `cycle ${nextCycle} · lease and budget checked`, detail: "project/world cursor fixed before context assembly", payload: { trigger: "cycle", worldCursor: context.worldCursor } },
-    { type: "OBSERVE", summary: input.observations?.length ? `${input.observations.length} direct source observations` : nextCycle === 1 ? "Playwright mobile viewport 관찰" : "repo · runtime · human signal 재관찰", detail: copy.detail, payload: { observationRefs: input.observations?.map((observation) => observation.id) ?? context.observationRefs } },
+    { type: "OBSERVE", summary: input.observations?.length ? `${input.observations.length} direct source observations` : "current World sources re-observed", detail: copy.detail, payload: { observationRefs: input.observations?.map((observation) => observation.id) ?? context.observationRefs } },
     { type: "CONTEXT_ASSEMBLED", summary: "raw intent + fresh world + open human items + boundary", detail: "retrieved experience is evidence, not an instruction", payload: { contextId: context.id, observationRefs: context.observationRefs, openHumanItemRefs: context.openHumanItemRefs, experienceRefs: context.experienceRefs } },
     { type: "MODEL_TURN", summary: "행동 후보를 evidence 기반으로 비교", detail: "hard constraints → risk → required gap → information gain → opportunity" },
-    { type: "GAP_FOUND", summary: nextCycle === 1 ? "required evidence gap identified" : "남은 evidence gap 재평가", detail: copy.detail },
     { type: "ACTION_SELECTED", summary: copy.summary, detail: `ActionEnvelope ACT · ${copy.tool}` },
     { type: "TOOL_CALLED", summary: `${copy.tool} 호출`, detail: "capability surface와 sandbox boundary를 통과한 실행 요청" },
     { type: "ACTION_EXECUTED", summary: "sandbox action dispatched", detail: toolResult ? `${toolResult.tool} · ${toolResult.status}` : "P1 local reversible action" },
@@ -1014,6 +1139,16 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     { type: "VERIFY", summary: cycleEvidence.summary, detail: "deterministic evidence plan completed" },
     { type: "EVIDENCE_RECORDED", summary: "world evidence linked to action", detail: `${evidenceId} · evaluator=${cycleEvidence.evaluator}` },
   ];
+  if (cycleHasFailure || cycleIsUncertain) eventSteps.splice(4, 0, { type: "GAP_FOUND", summary: "verification gap recorded from actual tool evidence", detail: cycleEvidence.summary });
+  if (toolResult?.changedPaths?.length) eventSteps.splice(5, 0, { type: "WORKSPACE_CHANGED", summary: `workspace changed · ${toolResult.changedPaths.length} path(s)`, detail: toolResult.changedPaths.join(" · ") });
+  if (toolResult?.process) {
+    const processEvent: EventType | undefined = safeSelected.tool === "process.start"
+      ? "PROCESS_STARTED"
+      : safeSelected.tool === "process.stop" || ["exited", "stopped", "failed"].includes(toolResult.process.status)
+        ? "PROCESS_EXITED"
+        : undefined;
+    if (processEvent) eventSteps.splice(6, 0, { type: processEvent, summary: `${processEvent === "PROCESS_STARTED" ? "process started" : "process lifecycle changed"} · ${toolResult.process.id}`, detail: toolResult.process.previewUrl ?? toolResult.process.error ?? toolResult.process.status });
+  }
   for (const step of eventSteps) {
     next = appendEvent(next, {
       projectId,
@@ -1032,13 +1167,16 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     });
   }
 
-  const nextWorld = input.observations?.length
-    ? updateWorldFromActualObservations(previousWorld, input.observations, actionId, createdAt, getOpenHumanItems(next, projectId).length, evaluationVerdict)
+  const actualObservations = [...(input.observations ?? []), ...(toolResult?.observations ?? [])].filter((observation) => observation.projectId === projectId);
+  const knownObservationIds = new Set(next.observations.map((observation) => observation.id));
+  const newToolObservations = actualObservations.filter((observation) => !knownObservationIds.has(observation.id));
+  const nextWorld = actualObservations.length
+    ? updateWorldFromActualObservations(previousWorld, actualObservations, actionId, createdAt, getOpenHumanItems(next, projectId).length, evaluationVerdict)
     : updateWorldAfterCycle(previousWorld, actionId, createdAt, nextCycle, getOpenHumanItems(next, projectId).length);
   next = withWorldSnapshot(next, nextWorld);
   next = {
     ...next,
-    observations: [...next.observations, ...observationsFromSnapshot(nextWorld, `${actionId}-observation`)],
+    observations: [...next.observations, ...newToolObservations, ...observationsFromSnapshot(nextWorld, `${actionId}-observation`)],
     relations: [
       ...next.relations,
       { id: makeId("relation"), projectId, fromId: context.id, relationType: "derived-from", toId: actionId, createdAt },
@@ -1064,11 +1202,11 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     id: previousLedger?.id ?? makeId("ledger"),
     projectId,
     runId: run.id,
-    tokens: (previousLedger?.tokens ?? 0) + (typeof modelUsage?.tokens === "number" && Number.isFinite(modelUsage.tokens) ? Math.max(0, modelUsage.tokens) : 1240),
+    tokens: (previousLedger?.tokens ?? 0) + (typeof modelUsage?.tokens === "number" && Number.isFinite(modelUsage.tokens) ? Math.max(0, modelUsage.tokens) : 0),
     modelCost: Number(((previousLedger?.modelCost ?? 0) + modelCost).toFixed(2)),
-    wallTimeMs: (previousLedger?.wallTimeMs ?? 0) + (toolResult?.wallTimeMs ?? modelUsage?.latencyMs ?? 1800),
-    toolCalls: (previousLedger?.toolCalls ?? 0) + 1,
-    sandboxSeconds: (previousLedger?.sandboxSeconds ?? 0) + Math.max(1, Math.ceil((toolResult?.wallTimeMs ?? 4000) / 1000)),
+    wallTimeMs: (previousLedger?.wallTimeMs ?? 0) + (toolResult?.wallTimeMs ?? modelUsage?.latencyMs ?? 0),
+    toolCalls: (previousLedger?.toolCalls ?? 0) + (toolResult ? 1 : 0),
+    sandboxSeconds: (previousLedger?.sandboxSeconds ?? 0) + (toolResult ? Math.max(0, Math.ceil((toolResult.wallTimeMs ?? 0) / 1000)) : 0),
     budgetLimit: project.settings.budgetLimit,
     updatedAt: createdAt,
   };
@@ -1077,30 +1215,58 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     resourceLedger: previousLedger ? replaceById(next.resourceLedger, updatedLedger) : [...next.resourceLedger, updatedLedger],
   };
 
-  const hasExecutionFailure = toolResult?.status === "failed" || toolResult?.status === "blocked" || evaluationVerdict === "FAIL";
-  const hasVerificationGap = Boolean(toolResult) && evaluationVerdict === "UNCERTAIN";
+  const hasExecutionFailure = cycleHasFailure;
+  const hasVerificationGap = cycleIsUncertain;
+  const meaningfulProgress = toolResult?.progress === "meaningful" || (toolResult?.changedPaths?.length ?? 0) > 0;
+  const failureSignature = hasExecutionFailure || hasVerificationGap
+    ? `${toolResult?.tool ?? selected.tool ?? "none"}|${toolResult?.status ?? "none"}|${evaluationVerdict}|${toolResult?.blockedReason ? "blocked" : "execution"}`
+    : undefined;
+  const consecutiveFailures = failureSignature
+    ? (run.lastFailureSignature === failureSignature ? run.consecutiveFailures : 0) + 1
+    : 0;
+  const noProgressCycles = meaningfulProgress ? 0 : run.noProgressCycles + 1;
+  const failureThreshold = positiveSetting(project.settings.failureThreshold, 3, 32);
+  const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
+  const thresholdStalled = consecutiveFailures >= failureThreshold || (hasVerificationGap && noProgressCycles >= noProgressThreshold);
   const hasBlockingHumanItem = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
-  const nextStatus: RuntimeStatus = hasExecutionFailure || hasVerificationGap
+  const nextStatus: RuntimeStatus = thresholdStalled
     ? "STALLED"
     : hasBlockingHumanItem
       ? humanBoundaryStatus(next, projectId)
-      : "EQUILIBRIUM";
+      : "ACTIVE";
   const nextPhase: RuntimePhase = "sleep";
-  const updatedRun: Run = { ...run, status: nextStatus, phase: nextPhase, cycleCount: nextCycle, lastCycleAt: createdAt };
+  const updatedRun: Run = {
+    ...run,
+    status: nextStatus,
+    phase: nextPhase,
+    cycleCount: nextCycle,
+    lastCycleAt: createdAt,
+    consecutiveFailures,
+    noProgressCycles,
+    lastMeaningfulProgressAt: meaningfulProgress ? createdAt : run.lastMeaningfulProgressAt,
+    lastFailureSignature: failureSignature,
+    activeProcessIds: toolResult?.process
+      ? toolResult.process.status === "running" || toolResult.process.status === "starting"
+        ? [...new Set([...run.activeProcessIds, toolResult.process.id])]
+        : run.activeProcessIds.filter((id) => id !== toolResult.process?.id)
+      : run.activeProcessIds,
+  };
+  const testCounts = testCountsForCycle(toolResult, cycleEvidence);
+  const actionCount = next.actions.filter((candidate) => candidate.projectId === projectId).length;
+  const linkedActionCount = next.evidence.filter((candidate) => candidate.projectId === projectId && candidate.actionId).map((candidate) => candidate.actionId).filter((id, index, all) => id && all.indexOf(id) === index).length;
   const updatedProject: Project = {
     ...project,
+    settings: toolResult?.process?.previewUrl ? { ...project.settings, previewUrl: toolResult.process.previewUrl } : project.settings,
     status: nextStatus,
     currentActionId: actionId,
     updatedAt: createdAt,
     budgetSpent: Math.min(project.settings.budgetLimit, Number((project.budgetSpent + cost).toFixed(2))),
-    nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined,
+    nextReviewAt: undefined,
     metrics: {
       ...project.metrics,
-      testsPassed: Math.max(project.metrics.testsPassed, testCountsForCycle(project, toolResult, cycleEvidence).testsPassed),
-      testsTotal: Math.max(project.metrics.testsTotal, testCountsForCycle(project, toolResult, cycleEvidence).testsTotal),
-      evidenceCoverage: Math.min(1, Number((project.metrics.evidenceCoverage + 0.02).toFixed(2))),
-      initiativeRecall: Math.max(project.metrics.initiativeRecall, 0.71),
-      initiativePrecision: Math.max(project.metrics.initiativePrecision, 0.86),
+      testsPassed: Math.max(project.metrics.testsPassed, testCounts.testsPassed),
+      testsTotal: Math.max(project.metrics.testsTotal, testCounts.testsTotal),
+      evidenceCoverage: actionCount ? Number((linkedActionCount / actionCount).toFixed(2)) : 0,
     },
   };
   next = updateRun(next, updatedRun);
@@ -1110,7 +1276,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     type: "RUN_STATE_CHANGED",
     actor: "system",
     summary: `${nextStatus} · cycle ${nextCycle} complete`,
-    detail: nextStatus === "WAITING" ? "blocking scope는 human decision을 기다리고, 독립 작업은 보존됩니다." : nextStatus === "STALLED" ? "실행 또는 검증 실패를 보존했습니다. 원인 확인 후 새 wake에서 재시도할 수 있습니다." : "현재 비용 대비 가치 높은 행동이 없어 equilibrium에 진입합니다.",
+    detail: nextStatus === "WAITING" ? "blocking scope는 human decision을 기다리고, 독립 작업은 보존됩니다." : nextStatus === "STALLED" ? `실패 evidence를 보존했습니다 · consecutiveFailures=${consecutiveFailures}` : "ACT 결과를 반영했습니다. project는 다음 cognition cycle을 위해 ACTIVE로 유지됩니다.",
     createdAt,
     runId: run.id,
   });
@@ -1125,17 +1291,6 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
       runId: run.id,
       actionId,
       evidenceIds: linkedEvidenceIds,
-    });
-  }
-  if (nextStatus === "EQUILIBRIUM") {
-    next = appendEvent(next, {
-      projectId,
-      type: "EQUILIBRIUM_ENTERED",
-      actor: "system",
-      summary: "EQUILIBRIUM · meaningful next change not found",
-      detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.",
-      createdAt,
-      runId: run.id,
     });
   }
   const experience: Experience = {
@@ -1166,13 +1321,13 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     sourceRef: experience.id,
     metadata: { actionType: selected.type, tool: selected.tool ?? "none", verdict: cycleEvidence.verdict },
     recency: 1,
-    outcomeQuality: cycleEvidence.verdict === "PASS" ? 0.91 : 0.2,
+    outcomeQuality: cycleEvidence.verdict === "PASS" ? 1 : 0,
     createdAt,
   };
   next = {
     ...next,
     experiences: [...next.experiences, experience],
-    retrievalIndex: [...next.retrievalIndex, retrievalEntry],
+    retrievalIndex: rebuildRetrievalIndex({ ...next, experiences: [...next.experiences, experience] }, projectId),
     relations: [
       ...next.relations,
       { id: makeId("relation"), projectId, fromId: experience.id, relationType: "derived-from", toId: actionId, createdAt },
@@ -1189,6 +1344,7 @@ export function recordBoundaryDecision(
   decision: "blocked" | "human-approval",
   reason: string,
   contextId?: string,
+  modelUsage?: ModelUsage,
 ): AppState {
   const project = getProject(state, projectId);
   const run = getRun(state, projectId);
@@ -1209,9 +1365,9 @@ export function recordBoundaryDecision(
     worldCursor: safeEnvelope.worldCursor || world.cursorEventId,
     status: "BLOCKED",
     cost: 0,
-    modelVersion: MODEL_VERSION,
+     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
-    policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
+     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
     contextId,
     createdAt,
     completedAt: createdAt,
@@ -1221,40 +1377,50 @@ export function recordBoundaryDecision(
   next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${safeEnvelope.type} blocked at boundary`, detail: safeReason, actionId, runId: run.id, createdAt });
   next = appendEvent(next, { projectId, type: "TOOL_RESULT", actor: "system", summary: `BLOCKED · ${safeEnvelope.tool ?? "side effect"}`, detail: safeReason, actionId, runId: run.id, createdAt });
   let nextStatus: RuntimeStatus = "STALLED";
+  let duplicateApproval = false;
   if (decision === "human-approval") {
-    const item: HumanItem = {
-      id: makeId("APPROVAL"),
-      projectId,
-      kind: "APPROVAL",
-      status: "OPEN",
-      title: `${safeEnvelope.tool ?? "외부 작업"} 실행 승인`,
-      summary: "실제 외부 영향이 있는 작업은 실행 전에 승인이 필요합니다.",
-      actionRef: actionId,
-      rationale: safeReason,
-      blockingScope: [safeEnvelope.tool ?? "external-side-effect"],
-      continuingScope: ["관찰", "검증 계획", "문서화"],
-      options: [],
-      priority: "high",
-      createdAt,
-      updatedAt: createdAt,
-      evidenceRefs: [],
-    };
-    next = { ...next, humanItems: [...next.humanItems, item] };
-    next = appendEvent(next, { projectId, type: "HUMAN_ITEM_CREATED", actor: "agent", summary: `Approval ${item.id} · boundary decision required`, detail: item.rationale, runId: run.id, createdAt });
-    next = {
-      ...next,
-      relations: [...next.relations, { id: makeId("relation"), projectId, fromId: item.id, relationType: "blocked-by", toId: actionId, createdAt }],
-    };
+    const duplicate = next.humanItems.find((candidate) => candidate.projectId === projectId && candidate.kind === "APPROVAL" && isOpenHumanItem(candidate) && candidate.actionRef !== undefined && next.actions.some((existing) => existing.id === candidate.actionRef && actionFingerprint(existing) === actionFingerprint(safeEnvelope)));
+    if (duplicate) {
+      duplicateApproval = true;
+      next = { ...next, relations: [...next.relations, { id: makeId("relation"), projectId, fromId: duplicate.id, relationType: "blocked-by", toId: actionId, createdAt }] };
+    } else {
+      const item: HumanItem = {
+        id: makeId("APPROVAL"),
+        projectId,
+        kind: "APPROVAL",
+        status: "OPEN",
+        title: `${safeEnvelope.tool ?? "외부 작업"} 실행 승인`,
+        summary: "실제 외부 영향이 있는 작업은 실행 전에 승인이 필요합니다.",
+        actionRef: actionId,
+        rationale: safeReason,
+        blockingScope: [safeEnvelope.tool ?? "external-side-effect"],
+        continuingScope: ["관찰", "검증 계획", "문서화"],
+        options: [],
+        responseMode: "choice",
+        priority: "high",
+        createdAt,
+        updatedAt: createdAt,
+        evidenceRefs: [],
+      };
+      next = { ...next, humanItems: [...next.humanItems, item] };
+      next = appendEvent(next, { projectId, type: "HUMAN_ITEM_CREATED", actor: "agent", summary: `Approval ${item.id} · boundary decision required`, detail: item.rationale, runId: run.id, createdAt });
+      next = {
+        ...next,
+        relations: [...next.relations, { id: makeId("relation"), projectId, fromId: item.id, relationType: "blocked-by", toId: actionId, createdAt }],
+      };
+    }
     nextStatus = humanBoundaryStatus(next, projectId);
   }
+  const noProgressCycles = duplicateApproval ? run.noProgressCycles + 1 : 0;
+  if (duplicateApproval && noProgressCycles >= positiveSetting(project.settings.noProgressThreshold, 5, 128)) nextStatus = "STALLED";
   next = updateProject(next, { ...project, status: nextStatus, updatedAt: createdAt, currentActionId: actionId, nextReviewAt: undefined });
-  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", lastCycleAt: createdAt, stopReason: decision === "blocked" ? safeReason : undefined });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: duplicateApproval ? run.lastMeaningfulProgressAt : createdAt, stopReason: nextStatus === "STALLED" ? (decision === "blocked" ? safeReason : `repeated boundary request made no progress for ${noProgressCycles} cycles`) : undefined });
   next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · boundary enforcement`, detail: safeReason, runId: run.id, createdAt });
   next = refreshHumanWorld(next, projectId, createdAt);
   return moveWorldCursor(next, projectId, next.events.at(-1)?.id ?? actionId, createdAt);
 }
 
-export function recordNonToolAction(state: AppState, projectId: string, actionEnvelope: ActionEnvelope, contextId?: string): AppState {
+export function recordNonToolAction(state: AppState, projectId: string, actionEnvelope: ActionEnvelope, contextId?: string, modelUsage?: ModelUsage): AppState {
   const project = getProject(state, projectId);
   const run = getRun(state, projectId);
   const intent = getIntent(state, projectId);
@@ -1273,49 +1439,78 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     worldCursor: safeEnvelope.worldCursor || world.cursorEventId,
     status: "PROPOSED",
     cost: 0,
-    modelVersion: MODEL_VERSION,
+     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
     contextId,
     createdAt,
   };
   let next: AppState = { ...state, actions: [...state.actions, action] };
+  const duplicateHumanItem = action.type === "QUESTION" || action.type === "IDEA" || action.type === "CONCERN"
+    ? state.humanItems.find((item) => item.projectId === projectId && item.kind === action.type && isOpenHumanItem(item) && item.actionRef !== undefined && state.actions.some((existing) => existing.id === item.actionRef && actionFingerprint(existing) === actionFingerprint(safeEnvelope)))
+    : undefined;
+  let createdHumanItem = false;
+  next = appendEvent(next, { projectId, type: "WAKE_TRIGGERED", actor: "system", summary: `cycle ${run.cycleCount + 1} · wake`, detail: "persistent cognition cycle started", actionId, runId: run.id, createdAt });
+  next = appendEvent(next, { projectId, type: "OBSERVE", actor: "agent", summary: "current World observed before non-tool decision", detail: `world cursor=${world.cursorEventId}`, actionId, runId: run.id, createdAt });
+  next = appendEvent(next, { projectId, type: "CONTEXT_ASSEMBLED", actor: "agent", summary: "Intent + World + boundary context assembled", detail: contextId ? `context=${contextId}` : "context was not persisted by the caller", actionId, runId: run.id, createdAt });
+  next = appendEvent(next, { projectId, type: "MODEL_TURN", actor: "agent", summary: `${action.type} selected from the current context`, detail: "non-tool action protocol; no fixed role or workflow was imposed", actionId, runId: run.id, createdAt, modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION });
   next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${action.type} · ${action.rationaleSummary}`, detail: "model output is a proposal; no tool side effect was dispatched", actionId, runId: run.id, createdAt });
+  if (action.type === "WAIT" && /model gateway unavailable/i.test(action.rationaleSummary)) {
+    next = appendEvent(next, { projectId, type: "RUNTIME_ERROR", actor: "system", summary: "Model provider unavailable · WAIT recorded", detail: action.rationaleSummary, actionId, runId: run.id, createdAt });
+  }
   if (action.type === "QUESTION" || action.type === "IDEA" || action.type === "CONCERN") {
     const kind = action.type;
-    const item: HumanItem = {
-      id: makeId(kind),
-      projectId,
-      kind,
-      status: "OPEN",
-      title: action.rationaleSummary,
-      actionRef: actionId,
-      summary: kind === "QUESTION" ? "현재 관찰만으로 인간의 의도·가치를 결정할 수 없습니다." : kind === "IDEA" ? "현재 요구사항 밖이지만 더 나은 상태의 가능성이 관찰되었습니다." : "지금 실패는 아니지만 위험 또는 부채가 관찰되었습니다.",
-      rationale: `model action ${action.type} · world cursor ${world.cursorEventId}`,
-      blockingScope: kind === "QUESTION" ? [typeof action.params?.scope === "string" ? action.params.scope : "intent-decision"] : [],
-      continuingScope: ["독립적인 관찰", "검증 계획"],
-      options: [],
-      priority: kind === "QUESTION" ? "high" : "medium",
-      createdAt,
-      updatedAt: createdAt,
-      evidenceRefs: [],
-    };
-    next = { ...next, humanItems: [...next.humanItems, item] };
-    next = appendEvent(next, { projectId, type: "HUMAN_ITEM_CREATED", actor: "agent", summary: `${kind} ${item.id} · ${item.title}`, detail: item.rationale, actionId, runId: run.id, createdAt });
-    if (kind === "QUESTION") next = appendEvent(next, { projectId, type: "QUESTION_CREATED", actor: "agent", summary: `Question ${item.id} · human-only decision`, detail: item.rationale, actionId, runId: run.id, createdAt });
+    const configuredOptions = Array.isArray(action.params?.options) ? action.params.options.filter((option): option is string => typeof option === "string").slice(0, 16) : [];
+    const responseMode = configuredOptions.length && (action.params?.responseMode === "choice" || action.params?.responseMode === "choice-and-text") ? action.params.responseMode : configuredOptions.length ? "choice" : "free-text";
+    const configuredBlockingScope = Array.isArray(action.params?.blockingScope) ? action.params.blockingScope.filter((scope): scope is string => typeof scope === "string").slice(0, 16) : undefined;
+    const configuredContinuingScope = Array.isArray(action.params?.continuingScope) ? action.params.continuingScope.filter((scope): scope is string => typeof scope === "string").slice(0, 16) : undefined;
+    const blockingScope = kind === "QUESTION" ? configuredBlockingScope ?? (typeof action.params?.scope === "string" ? [action.params.scope] : ["intent-decision"]) : [];
+    const continuingScope = configuredContinuingScope ?? ["독립적인 관찰", "검증 계획"];
+    const linkedContext = contextId ? state.contexts.find((context) => context.id === contextId) : undefined;
+    const linkedEvidenceRefs = (linkedContext?.recentEvidenceViews ?? []).map((view) => view.id).filter((id) => state.evidence.some((item) => item.id === id && item.projectId === projectId));
+    if (!duplicateHumanItem) {
+      const item: HumanItem = {
+        id: makeId(kind),
+        projectId,
+        kind,
+        status: "OPEN",
+        title: action.rationaleSummary,
+        actionRef: actionId,
+        summary: kind === "QUESTION" ? "현재 관찰만으로 인간의 의도·가치를 결정할 수 없습니다." : kind === "IDEA" ? "현재 요구사항 밖이지만 더 나은 상태의 가능성이 관찰되었습니다." : "지금 실패는 아니지만 위험 또는 부채가 관찰되었습니다.",
+        rationale: `model action ${action.type} · world cursor ${world.cursorEventId}`,
+        blockingScope,
+        continuingScope,
+        options: configuredOptions.map((title, index) => ({ id: `option-${index + 1}`, title: redactSecretLikeText(title).slice(0, 256), description: "model-provided option; human remains the decision maker" })),
+        responseMode,
+        priority: kind === "QUESTION" ? "high" : "medium",
+        createdAt,
+        updatedAt: createdAt,
+        evidenceRefs: linkedEvidenceRefs,
+      };
+      createdHumanItem = true;
+      next = { ...next, humanItems: [...next.humanItems, item] };
+      next = appendEvent(next, { projectId, type: "HUMAN_ITEM_CREATED", actor: "agent", summary: `${kind} ${item.id} · ${item.title}`, detail: item.rationale, actionId, runId: run.id, createdAt });
+      if (kind === "QUESTION") next = appendEvent(next, { projectId, type: "QUESTION_CREATED", actor: "agent", summary: `Question ${item.id} · human-only decision`, detail: item.rationale, actionId, runId: run.id, createdAt });
+    } else {
+      next = appendEvent(next, { projectId, type: "GAP_FOUND", actor: "system", summary: `${kind} duplicate suppressed`, detail: `existing human item ${duplicateHumanItem.id} remains actionable`, actionId, runId: run.id, createdAt });
+    }
   }
   next = refreshHumanWorld(next, projectId, createdAt);
   const hasBlocking = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
-  const nextStatus: RuntimeStatus = hasBlocking
-      ? humanBoundaryStatus(next, projectId)
-      : "EQUILIBRIUM";
+  const noProgressCycles = action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
+  const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
+  const nextStatus: RuntimeStatus = action.type === "WAIT"
+    ? hasBlocking ? humanBoundaryStatus(next, projectId) : "EQUILIBRIUM"
+    : noProgressCycles >= noProgressThreshold
+      ? "STALLED"
+      : hasBlocking ? humanBoundaryStatus(next, projectId) : "ACTIVE";
   const experience: Experience = {
     id: makeId("experience"),
     projectId,
     situation: `context ${contextId ?? "unlinked"} · world cursor ${world.cursorEventId}`,
     decision: action.rationaleSummary,
     action: `${action.type} recorded without tool dispatch`,
-    outcome: nextStatus === "WAITING" ? "human boundary opened for the affected scope" : "runtime entered equilibrium with signal-based wake preserved",
+    outcome: nextStatus === "WAITING" ? "human boundary opened for the affected scope" : nextStatus === "EQUILIBRIUM" ? "model selected WAIT; signal-based wake remains enabled" : "non-tool decision recorded while independent work remains active",
     evidenceIds: [],
     cost: 0,
     risk: action.riskClass ?? "P0",
@@ -1326,29 +1521,20 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     intentRef: intent.id,
     actionType: action.type,
     actionPayloadRef: actionId,
-    modelVersion: MODEL_VERSION,
+     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
   };
-  const retrievalEntry: RetrievalIndexEntry = {
-    id: makeId("retrieval"),
-    projectId,
-    entityId: experience.id,
-    sourceRef: experience.id,
-    metadata: { actionType: action.type, tool: action.tool ?? "none", outcome: nextStatus },
-    recency: 1,
-    outcomeQuality: nextStatus === "WAITING" ? 0.7 : 0.5,
-    createdAt,
-  };
+  const experiences = [...next.experiences, experience];
   next = {
     ...next,
-    experiences: [...next.experiences, experience],
-    retrievalIndex: [...next.retrievalIndex, retrievalEntry],
+    experiences,
+    retrievalIndex: rebuildRetrievalIndex({ ...next, experiences }, projectId),
     relations: [...next.relations, { id: makeId("relation"), projectId, fromId: experience.id, relationType: "derived-from", toId: actionId, createdAt }],
   };
   const updatedProject: Project = { ...project, status: nextStatus, currentActionId: actionId, updatedAt: createdAt, nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined };
   next = updateProject(next, updatedProject);
-  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", lastCycleAt: createdAt, leaseExpiresAt: nextLease(project, Date.parse(createdAt)) });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: nextStatus === "STALLED" ? `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
   next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
   if (nextStatus === "EQUILIBRIUM") next = appendEvent(next, { projectId, type: "EQUILIBRIUM_ENTERED", actor: "system", summary: "EQUILIBRIUM · no tool dispatch required", detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.", runId: run.id, createdAt });
   return moveWorldCursor(next, projectId, next.events.at(-1)?.id ?? actionId, createdAt);
@@ -1366,7 +1552,7 @@ export function refreshWorld(state: AppState, projectId: string): AppState {
     type: "OBSERVATION_REFRESHED",
     actor: "agent",
     summary: "World sources refreshed",
-    detail: "repo · runtime · browser · db · logs · human adapters returned their latest observation",
+    detail: "local adapter refresh is unavailable for this browser-only project; existing source values were preserved",
     createdAt: observedAt,
   });
   next = appendEvent(next, {
@@ -1413,18 +1599,26 @@ export const killProject = (state: AppState, projectId: string) => setRuntimeSta
 
 export function recordRuntimeFailure(state: AppState, projectId: string, phase: RuntimePhase, reason: string): AppState {
   const detail = redactSecretLikeText(reason).replace(/\s+/g, " ").trim().slice(0, 500) || "runtime failure";
-  let next = setRuntimeStatus(state, projectId, "STALLED", "sleep", `${phase} failed · ${detail}`, "system");
-  if (next === state) return state;
-  const run = getRun(next, projectId);
-  return appendEvent(next, {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  if (!project || !run || project.status === "PAUSED" || project.status === "KILLED") return state;
+  const signature = `${phase}|${detail.toLowerCase().replace(/\d+/g, "#").slice(0, 160)}`;
+  const consecutiveFailures = (run.lastFailureSignature === signature ? run.consecutiveFailures : 0) + 1;
+  const threshold = positiveSetting(project.settings.failureThreshold, 3, 32);
+  const nextStatus: RuntimeStatus = consecutiveFailures >= threshold ? "STALLED" : "ACTIVE";
+  const updatedAt = nowIso();
+  let next = updateRun(state, { ...run, status: nextStatus, phase: "sleep", lastCycleAt: updatedAt, consecutiveFailures, lastFailureSignature: signature, noProgressCycles: run.noProgressCycles + 1, stopReason: nextStatus === "STALLED" ? `${phase} failed · ${detail}` : undefined, leaseExpiresAt: nextStatus === "ACTIVE" ? nextLease(project, Date.parse(updatedAt)) : run.leaseExpiresAt });
+  next = updateProject(next, { ...project, status: nextStatus, updatedAt, currentActionId: project.currentActionId, nextReviewAt: undefined });
+  next = appendEvent(next, {
     projectId,
     type: "RUNTIME_ERROR",
     actor: "system",
     summary: `Runtime failure · ${phase}`,
     detail,
     runId: run?.id,
-    createdAt: nowIso(),
+    createdAt: updatedAt,
   });
+  return appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · ${phase} failure ${consecutiveFailures}/${threshold}`, detail, runId: run.id, createdAt: updatedAt });
 }
 
 export function createArtifact(
@@ -1461,9 +1655,16 @@ export function runExperiment(state: AppState, experimentId: string): AppState {
   const experiment = state.experiments.find((candidate) => candidate.id === experimentId);
   if (!experiment) return state;
   const updatedAt = nowIso();
-  const result = scoreExperiment(state, experiment);
-  const updatedExperiment: Experiment = {
+  const activeRun = getRun(state, experiment.projectId);
+  const evidenceRefs = state.evidence.filter((item) => item.projectId === experiment.projectId).map((item) => item.id);
+  const evaluatedExperiment: Experiment = {
     ...experiment,
+    runIds: [...new Set([...(experiment.runIds ?? []), ...(activeRun ? [activeRun.id] : [])])],
+    evaluationEvidenceRefs: [...new Set([...(experiment.evaluationEvidenceRefs ?? []), ...evidenceRefs])],
+  };
+  const result = scoreExperiment(state, evaluatedExperiment);
+  const updatedExperiment: Experiment = {
+    ...evaluatedExperiment,
     status: result.passed ? "passed" : "needs-review",
     score: result.score,
     evaluatorRefs: result.evaluatorRefs,
@@ -1505,7 +1706,7 @@ export function createExperiment(
     status: "ready",
     score: "—",
     updatedAt: createdAt,
-    benchmark: input.benchmark ?? "greenfield-travel",
+    benchmark: input.benchmark ?? "unassigned",
     budgetLimit: input.budgetLimit ?? 5,
     hiddenCriteria: input.hiddenCriteria ?? ["deterministic evidence", "blind evaluator", "failure retained"],
     evaluatorRefs: input.evaluatorRefs ?? experimentDefinition(input.key)?.evaluatorRefs ?? [],
@@ -1553,6 +1754,8 @@ export function eventTone(type: EventType): string {
   if (type === "VERIFY" || type === "EVIDENCE_RECORDED") return "mint";
   if (type === "HUMAN_ITEM_CREATED" || type === "QUESTION_CREATED" || type.startsWith("HUMAN_")) return "pink";
   if (type === "WORLD_CHANGED" || type === "OBSERVATION_REFRESHED") return "purple";
+  if (type === "WORKSPACE_CHANGED" || type === "PROCESS_STARTED" || type === "PROCESS_EXITED") return "mint";
+  if (type === "APPROVAL_GRANT_ISSUED" || type === "APPROVAL_GRANT_CONSUMED" || type === "JOB_ENQUEUED") return "blue";
   if (type === "GAP_FOUND" || type === "RUNTIME_ERROR") return "orange";
   if (type === "EXPERIMENT_CREATED" || type === "EXPERIMENT_STARTED" || type === "POLICY_CHANGED") return "purple";
   if (type === "RUN_STATE_CHANGED") return "yellow";
@@ -1575,6 +1778,12 @@ export function eventLabel(type: EventType): string {
     EVIDENCE_RECORDED: "EVIDENCE",
     WORLD_CHANGED: "WORLD",
     OBSERVATION_REFRESHED: "WORLD",
+    WORKSPACE_CHANGED: "WORKSPACE",
+    PROCESS_STARTED: "PROCESS",
+    PROCESS_EXITED: "PROCESS",
+    APPROVAL_GRANT_ISSUED: "APPROVAL",
+    APPROVAL_GRANT_CONSUMED: "APPROVAL",
+    JOB_ENQUEUED: "QUEUE",
     HUMAN_ITEM_CREATED: "HUMAN",
     QUESTION_CREATED: "HUMAN",
     HUMAN_ANSWERED: "HUMAN",

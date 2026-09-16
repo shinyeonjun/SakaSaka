@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -86,6 +86,7 @@ async function main(): Promise<void> {
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const logs: string[] = [];
+  let provisionedWorkspace: string | undefined;
   const child = spawn(process.execPath, [resolve(repoRoot, "node_modules", "tsx", "dist", "cli.mjs"), resolve(repoRoot, "server", "index.ts")], {
     cwd: repoRoot,
     env: {
@@ -121,9 +122,16 @@ async function main(): Promise<void> {
     const invalidBody = await request(baseUrl, "/projects", { method: "POST", body: "[]" });
     assert.equal(invalidBody.response.status, 400);
 
+    const greenfieldProjectId = `${projectId}-greenfield`;
+    const greenfield = await post(baseUrl, "/projects", { projectId: greenfieldProjectId, rawIntent: "빈 workspace에서 작은 앱을 만들어줘", settings: { budgetLimit: 5, maxHours: 1, cycleDelayMs: 60_000 } });
+    assert.equal(greenfield.response.status, 201, JSON.stringify(greenfield.body));
+    provisionedWorkspace = greenfield.body.project.settings.workspacePath;
+    assert.ok(typeof provisionedWorkspace === "string" && existsSync(provisionedWorkspace));
+    assert.ok(provisionedWorkspace.startsWith(join(repoRoot, ".intent-world", "workspaces")));
+
     const run = await post(baseUrl, `/projects/${encodeURIComponent(projectId)}/run`);
     assert.equal(run.response.status, 200, JSON.stringify(run.body));
-    assert.equal(run.body.project.status, "EQUILIBRIUM");
+    assert.equal(run.body.project.status, "ACTIVE");
     assert.ok(run.body.actions.some((action: any) => action.projectId === projectId && action.status === "VERIFIED"));
     const passEvidence = run.body.evidence.find((item: any) => item.projectId === projectId && item.verdict === "PASS");
     assert.ok(passEvidence);
@@ -131,7 +139,7 @@ async function main(): Promise<void> {
     assert.ok(run.body.events.some((event: any) => event.type === "OBSERVE"));
     assert.ok(run.body.events.some((event: any) => event.type === "CONTEXT_ASSEMBLED"));
     assert.ok(run.body.events.some((event: any) => event.type === "EVIDENCE_RECORDED"));
-    assert.ok(run.body.events.some((event: any) => event.type === "EQUILIBRIUM_ENTERED"));
+    assert.ok(!run.body.events.some((event: any) => event.type === "EQUILIBRIUM_ENTERED"));
     const worldChanged = run.body.events.filter((event: any) => event.type === "WORLD_CHANGED").at(-1);
     assert.equal(run.body.world.cursorEventId, worldChanged.id);
 
@@ -149,24 +157,28 @@ async function main(): Promise<void> {
     }
 
     const workerProjectId = `${projectId}-worker`;
-    const workerCreated = await post(baseUrl, "/projects", { projectId: workerProjectId, rawIntent: "worker가 quality gate를 실행해줘", settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1 } });
+    const workerCreated = await post(baseUrl, "/projects", { projectId: workerProjectId, rawIntent: "worker가 quality gate를 실행해줘", settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, cycleDelayMs: 0 } });
     assert.equal(workerCreated.response.status, 201);
     const oldStatePath = process.env.INTENT_WORLD_STATE_FILE;
     const oldRawDirectory = process.env.INTENT_WORLD_RAW_DIR;
     const oldWorkspaceRoot = process.env.WORKSPACE_ROOT;
     process.env.INTENT_WORLD_STATE_FILE = statePath;
-    process.env.INTENT_WORLD_RAW_DIR = rawDirectory;
-    process.env.WORKSPACE_ROOT = repoRoot;
+      process.env.INTENT_WORLD_RAW_DIR = rawDirectory;
+      process.env.WORKSPACE_ROOT = repoRoot;
     try {
       const workerModule = await import("../server/worker");
-      const processed = await workerModule.runWorkerOnce();
+      let processed = { processed: [] as string[] };
+      for (let attempt = 0; attempt < 20 && !processed.processed.includes(workerProjectId); attempt += 1) {
+        processed = await workerModule.runWorkerOnce();
+        if (!processed.processed.includes(workerProjectId)) await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+      }
       assert.ok(processed.processed.includes(workerProjectId));
     } finally {
       if (oldStatePath === undefined) delete process.env.INTENT_WORLD_STATE_FILE; else process.env.INTENT_WORLD_STATE_FILE = oldStatePath;
       if (oldRawDirectory === undefined) delete process.env.INTENT_WORLD_RAW_DIR; else process.env.INTENT_WORLD_RAW_DIR = oldRawDirectory;
       if (oldWorkspaceRoot === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = oldWorkspaceRoot;
     }
-    const workerState = await waitForProject(baseUrl, workerProjectId, (body) => body.project.status === "EQUILIBRIUM");
+    const workerState = await waitForProject(baseUrl, workerProjectId, (body) => body.actions.some((action: any) => action.projectId === workerProjectId));
     const workerRunId = workerState.run.id;
     const paused = await post(baseUrl, `/runs/${encodeURIComponent(workerRunId)}/pause`);
     assert.equal(paused.body.project.status, "PAUSED");
@@ -174,6 +186,9 @@ async function main(): Promise<void> {
     assert.equal(resumed.body.project.status, "ACTIVE");
     const killed = await post(baseUrl, `/runs/${encodeURIComponent(workerRunId)}/kill`);
     assert.equal(killed.body.project.status, "KILLED");
+    const greenfieldRunId = greenfield.body.project.activeRunId;
+    const greenfieldKilled = await post(baseUrl, `/runs/${encodeURIComponent(greenfieldRunId)}/kill`);
+    assert.equal(greenfieldKilled.body.project.status, "KILLED");
 
     console.log("API/worker acceptance passed");
   } finally {
@@ -184,6 +199,7 @@ async function main(): Promise<void> {
       setTimeout(() => resolvePromise(), 2_000);
     });
     rmSync(temporaryRoot, { recursive: true, force: true });
+    if (provisionedWorkspace && provisionedWorkspace.startsWith(join(repoRoot, ".intent-world", "workspaces")) && existsSync(provisionedWorkspace)) rmSync(provisionedWorkspace, { recursive: true, force: true });
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createSeedState } from "./seed";
-import { assembleContext, createProject, getActivePolicy, getHumanCounts, getProject, getProjectContexts, getProjectEvents, getOpenHumanItems, getProjectObservations, getResourceLedger, killProject, pauseProject, recordNonToolAction, resolveHumanItem, resumeProject, runCycle, runExperiment } from "./runtime";
+import { assembleContext, createProject, getActivePolicy, getActionableHumanItems, getHumanCounts, getProject, getProjectContexts, getProjectEvents, getOpenHumanItems, getProjectObservations, getResourceLedger, getRun, getWorldSnapshot, killProject, pauseProject, recordBoundaryDecision, recordNonToolAction, resolveHumanItem, resumeProject, runCycle, runExperiment } from "./runtime";
 
 describe("Intent World runtime", () => {
   it("keeps the seeded human boundary visible in the project state", () => {
@@ -15,13 +15,13 @@ describe("Intent World runtime", () => {
     const next = runCycle(initial, "project-trip-together");
     const project = getProject(next, "project-trip-together");
     expect(project?.status).toBe("ACTIVE");
-    expect(project?.budgetSpent).toBe(8.8);
+    expect(project?.budgetSpent).toBe(8.42);
     expect(next.evidence.length).toBe(initial.evidence.length + 1);
     expect(getProjectEvents(next, "project-trip-together").some((event) => event.type === "VERIFY")).toBe(true);
     expect(getProjectEvents(next, "project-trip-together").some((event) => event.type === "WORLD_CHANGED")).toBe(true);
     expect(getProjectContexts(next, "project-trip-together")).toHaveLength(2);
     expect(getProjectObservations(next, "project-trip-together").length).toBeGreaterThan(6);
-    expect(getResourceLedger(next, "project-trip-together")?.toolCalls).toBe(19);
+    expect(getResourceLedger(next, "project-trip-together")?.toolCalls).toBe(18);
   });
 
   it("keeps independent work active while a human-owned scope is waiting", () => {
@@ -64,7 +64,7 @@ describe("Intent World runtime", () => {
     state = resolveHumanItem(state, "APPROVAL-12", "approve");
     expect(state.humanItems.find((item) => item.id === "Q-17")?.answerLabel).toBe("여행 생성자만 초대 가능");
     expect(getOpenHumanItems(state, "project-trip-together")).toHaveLength(3);
-    state = runCycle(state, "project-trip-together");
+    state = recordNonToolAction(state, "project-trip-together", { type: "WAIT", intentRef: getProject(state, "project-trip-together")!.intentId, worldCursor: getWorldSnapshot(state, "project-trip-together")!.cursorEventId, rationaleSummary: "현재 즉시 가치 있는 action 없음", riskClass: "P0" });
     expect(getProject(state, "project-trip-together")?.status).toBe("EQUILIBRIUM");
   });
 
@@ -105,7 +105,7 @@ describe("Intent World runtime", () => {
     const initial = createSeedState();
     const created = createProject(initial, "팀이 함께 제품 아이디어를 검증할 수 있는 공간", "project-new");
     const next = runCycle(created, "project-new");
-    expect(next.actions.find((action) => action.projectId === "project-new")?.rationaleSummary).toContain("Intent에 연결된 World");
+    expect(next.actions.find((action) => action.projectId === "project-new")?.rationaleSummary).toContain("현재 World");
     expect(next.experiences.find((experience) => experience.projectId === "project-new")?.situation).not.toContain("초대");
   });
 
@@ -121,7 +121,10 @@ describe("Intent World runtime", () => {
 
     const nearLimit = createSeedState();
     const limited = { ...nearLimit, projects: nearLimit.projects.map((project) => ({ ...project, budgetSpent: 29.9 })) };
-    const stalled = runCycle(limited, "project-trip-together");
+    const stalled = runCycle(limited, "project-trip-together", {
+      action: { type: "ACT", intentRef: "intent-trip-together", worldCursor: "event-816", rationaleSummary: "budget check", tool: "repo.read", params: { commandId: "repo-status" }, riskClass: "P0" },
+      toolResult: { tool: "repo.read", toolVersion: "test", status: "succeeded", outputRef: "tool://budget", summary: "budget check", evidence: [], cost: 0.2, wallTimeMs: 1 },
+    });
     expect(getProject(stalled, "project-trip-together")?.status).toBe("STALLED");
     expect(getProjectEvents(stalled, "project-trip-together").some((event) => event.summary.includes("STALLED"))).toBe(true);
   });
@@ -154,12 +157,13 @@ describe("Intent World runtime", () => {
   it("does not accept a tool result that belongs to another project", () => {
     const state = createProject(createSeedState(), "검증 프로젝트", "project-foreign-evidence");
     const project = getProject(state, "project-foreign-evidence")!;
-    const stalled = runCycle(state, project.id, {
+    const failed = runCycle(state, project.id, {
       action: { type: "ACT", intentRef: project.intentId, worldCursor: "pending", rationaleSummary: "잘못 연결된 결과", tool: "repo.read" },
       toolResult: { tool: "repo.read", toolVersion: "test", status: "succeeded", outputRef: "tool://foreign", summary: "foreign", evidence: [{ id: "foreign-evidence", projectId: "other-project", kind: "test", verdict: "PASS", summary: "foreign", source: "test", createdAt: new Date().toISOString() }], cost: 0, wallTimeMs: 1 },
     });
-    expect(getProject(stalled, project.id)?.status).toBe("STALLED");
-    expect(getProjectEvents(stalled, project.id).some((event) => event.type === "RUNTIME_ERROR")).toBe(true);
+    expect(getProject(failed, project.id)?.status).toBe("ACTIVE");
+    expect(getRun(failed, project.id)?.consecutiveFailures).toBe(1);
+    expect(getProjectEvents(failed, project.id).some((event) => event.type === "RUNTIME_ERROR")).toBe(true);
   });
 
   it("enforces the action boundary even when a caller bypasses the local adapter", () => {

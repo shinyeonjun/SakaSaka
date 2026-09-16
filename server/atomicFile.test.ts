@@ -30,4 +30,19 @@ describe("atomic snapshot persistence", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("does not replace a valid recovery point with a bad primary during repair", () => {
+    const directory = mkdtempSync(join(tmpdir(), "intent-world-atomic-"));
+    const filePath = join(directory, "state.json");
+    const valid = (value: unknown) => Boolean(value && typeof value === "object" && Array.isArray((value as { projects?: unknown }).projects));
+    try {
+      writeJsonAtomically(filePath, { projects: [] }, valid);
+      writeJsonAtomically(filePath, { projects: "invalid" }, valid);
+      expect(readJsonWithBackup(filePath, valid)).toEqual({ projects: [] });
+      writeJsonAtomically(filePath, { projects: [] }, valid);
+      expect(readJsonWithBackup(filePath, valid)).toEqual({ projects: [] });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

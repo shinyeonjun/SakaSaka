@@ -148,6 +148,13 @@ const project: Project = {
     requireExternalApproval: true,
     productionBlocked: true,
     networkPolicy: "allowlist",
+    modelProvider: "deterministic",
+    failureThreshold: 3,
+    noProgressThreshold: 5,
+    cycleDelayMs: 250,
+    approvalTtlMinutes: 60,
+    processMaxLifetimeMs: 30 * 60_000,
+    maxConcurrentProcesses: 4,
   },
   metrics: {
     testsPassed: 42,
@@ -168,6 +175,10 @@ const run: Run = {
   startedAt: time(20),
   lastCycleAt: time(35),
   leaseExpiresAt: "2026-09-17T02:20:00+09:00",
+  consecutiveFailures: 0,
+  noProgressCycles: 0,
+  lastMeaningfulProgressAt: time(34),
+  activeProcessIds: [],
 };
 
 const action: AgentAction = {
@@ -461,6 +472,8 @@ export function createSeedState(): AppState {
     relations,
     retrievalIndex,
     experiments,
+    approvalGrants: [],
+    processes: [],
   };
   // The seed is used both as a browser fallback and as the API bootstrap. A
   // fresh deep copy prevents one optimistic reducer or test from mutating the

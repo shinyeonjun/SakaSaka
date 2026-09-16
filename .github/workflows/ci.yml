@@ -20,12 +20,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run typecheck
       - run: npm run build:api
       - run: npm test -- --run
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
       - run: npm run acceptance
       - run: npm run acceptance:api
-      - run: npx playwright install --with-deps chromium
+      - run: npm run acceptance:autonomous
+      - run: npm run acceptance:experiments
       - run: npm run acceptance:ui
 
   security-and-gates:
@@ -40,3 +43,4 @@ jobs:
       - run: npm ci
       - run: npm run security:check
       - run: npm test -- --run src/security.test.ts
+      - run: git diff --check

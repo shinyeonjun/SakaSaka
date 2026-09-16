@@ -1,4 +1,4 @@
-import { allWorldSources, getProject, getProjectContexts, getProjectObservations, getResourceLedger, getWorldSnapshot } from "../runtime";
+import { allWorldSources, getProject, getProjectContexts, getProjectObservations, getResourceLedger, getRun, getWorldSnapshot, modelProviderLabel } from "../runtime";
 import { useApp } from "../store";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader, cn } from "../components/ui";
 import { formatDate } from "../format";
@@ -7,7 +7,8 @@ export function WorldPage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
   const project = getProject(state, projectId);
   const snapshot = getWorldSnapshot(state, projectId);
-  if (!project || !snapshot) return <div className="screen"><Card className="empty-state"><h1>World를 표시할 수 없습니다.</h1></Card></div>;
+  const run = getRun(state, projectId);
+  if (!project || !snapshot || !run) return <div className="screen"><Card className="empty-state"><h1>World를 표시할 수 없습니다.</h1></Card></div>;
   const sources = allWorldSources(snapshot);
   const observations = getProjectObservations(state, projectId);
   const latestObservationBySource = new Map(observations.map((observation) => [observation.source, observation]));
@@ -19,7 +20,7 @@ export function WorldPage({ projectId }: { projectId: string }) {
       <PageHeading title="Current World" description="요약을 진실로 두지 않고, 필요한 순간 실제 source를 다시 관찰합니다." actions={<Button variant="primary" size="small" onClick={() => dispatch({ type: "REFRESH_WORLD", projectId })}>직접 관찰 새로고침</Button>} />
       <div className="screen-stack">
         <Card className="world-snapshot-banner">
-          <div><Pill tone="purple">SNAPSHOT · {snapshot.cursorEventId}</Pill><h2>{snapshot.summary}</h2><p className="muted-copy">Last observed {formatDate(snapshot.observedAt)} · source of truth는 실제 environment와 append-only event log입니다.</p></div>
+          <div><Pill tone="purple">SNAPSHOT · {snapshot.cursorEventId}</Pill><h2>{snapshot.summary}</h2><p className="muted-copy">Last observed {formatDate(snapshot.observedAt)} · snapshot은 실제 environment 관찰과 event provenance에 연결됩니다.</p></div>
           <div className="snapshot-stat"><strong>{sources.filter((source) => source.status === "healthy").length}/{sources.length}</strong><span>sources healthy</span></div>
         </Card>
         <div className="world-source-grid">
@@ -39,7 +40,7 @@ export function WorldPage({ projectId }: { projectId: string }) {
           </Card>
           <Card>
             <SectionHeader title="Runtime Boundary" />
-            <div className="boundary-list"><div><span>Local sandbox</span><Pill tone="mint">allowed</Pill></div><div><span>Network</span><Pill tone="yellow">allowlist</Pill></div><div><span>Production</span><Pill tone="red">approval</Pill></div><div><span>Secrets</span><Pill tone="neutral">broker only</Pill></div></div>
+            <div className="boundary-list"><div><span>Model provider</span><Pill tone="blue">{modelProviderLabel(state, project)}</Pill></div><div><span>Sandbox mode</span><Pill tone={project.settings.sandboxMode === "docker" ? "mint" : "yellow"}>{project.settings.sandboxMode ?? "process"}</Pill></div><div><span>Workspace</span><Pill tone={project.settings.workspacePath ? "mint" : "yellow"}>{project.settings.workspacePath ? "bound" : "browser-only"}</Pill></div><div><span>Network</span><Pill tone="yellow">{project.settings.networkPolicy}</Pill></div><div><span>Production</span><Pill tone="red">{project.settings.productionBlocked ? "hard-blocked" : "approval"}</Pill></div><div><span>Secrets</span><Pill tone="neutral">env redacted</Pill></div></div>
           </Card>
         </div>
         <Card className="world-runtime-card">
@@ -48,6 +49,7 @@ export function WorldPage({ projectId }: { projectId: string }) {
             <div><strong>Observations</strong><span>{observations.length} source observations · latest rawRef linked</span></div>
             <div><strong>Context</strong><span>{context ? `${context.id} · ${context.observationRefs.length} refs · ${context.toolSurface.filter((tool) => tool.enabled).length} tools enabled` : "아직 context가 assembled되지 않음"}</span></div>
             <div><strong>Resource Ledger</strong><span>{ledger ? `${ledger.tokens.toLocaleString()} tokens · ${ledger.toolCalls} tool calls · ${ledger.wallTimeMs}ms` : "아직 사용량이 기록되지 않음"}</span></div>
+            <div><strong>Autonomy</strong><span>{run.consecutiveFailures} consecutive failures · {run.noProgressCycles} no-progress cycles</span></div>
           </div>
         </Card>
         <details className="runtime-controls">

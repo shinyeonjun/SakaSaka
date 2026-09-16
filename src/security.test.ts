@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSeedState } from "./seed";
 import { getProject, getToolSurface } from "./runtime";
-import { estimateActionCost, isAllowedNetworkHost, parseActionEnvelope, redactSecretLikeText, validateActionBoundary } from "./security";
+import { estimateActionCost, isAllowedNetworkHost, isDeveloperArgv, parseActionEnvelope, redactSecretLikeText, validateActionBoundary } from "./security";
 
 describe("action boundary enforcement", () => {
   it("rejects tools that are not exposed by the project capability surface", () => {
@@ -18,12 +18,30 @@ describe("action boundary enforcement", () => {
     expect(decision.reason).toContain("fixed local allowlist");
   });
 
+  it("keeps arbitrary developer argv inside the Docker boundary", () => {
+    const processProject = getProject(createSeedState(), "project-trip-together")!;
+    const developerAction = { type: "ACT" as const, intentRef: processProject.intentId, worldCursor: "event-816", rationaleSummary: "start the dev server", tool: "shell.sandbox", params: { argv: ["node", "server.js"] } };
+    expect(validateActionBoundary(processProject, developerAction, getToolSurface(processProject)).status).toBe("blocked");
+    const dockerProject = { ...processProject, settings: { ...processProject.settings, sandboxMode: "docker" as const } };
+    expect(validateActionBoundary(dockerProject, developerAction, getToolSurface(dockerProject)).status).toBe("allowed");
+    expect(validateActionBoundary(dockerProject, { ...developerAction, params: { argv: ["node", "-e", "process.exit(0)"] } }, getToolSurface(dockerProject)).status).toBe("blocked");
+    expect(isDeveloperArgv(["node", "--eval=process.exit(0)"])).toBe(false);
+    expect(isDeveloperArgv(["node", "-p", "process.env.SECRET"])).toBe(false);
+    expect(isDeveloperArgv(["npm", "--prefix=..", "test"])).toBe(false);
+  });
+
   it("does not let a read-only capability smuggle a quality command", () => {
     const project = getProject(createSeedState(), "project-trip-together")!;
     const decision = validateActionBoundary(project, { type: "ACT", intentRef: project.intentId, worldCursor: "event-816", rationaleSummary: "smuggled command", tool: "repo.read", params: { commandId: "quality-test" } }, getToolSurface(project));
     expect(decision.status).toBe("blocked");
-    expect(decision.reason).toContain("repo-status");
+    expect(decision.reason).toContain("status");
     expect(estimateActionCost({ type: "ACT", intentRef: project.intentId, worldCursor: "event-816", rationaleSummary: "tests", tool: "shell.sandbox", params: { commandId: "quality-test" } })).toBe(0.18);
+  });
+
+  it("exposes actual git diff through the read-only repo capability", () => {
+    const project = getProject(createSeedState(), "project-trip-together")!;
+    const decision = validateActionBoundary(project, { type: "ACT", intentRef: project.intentId, worldCursor: "event-816", rationaleSummary: "inspect current changes", tool: "repo.read", params: { commandId: "repo-diff" } }, getToolSurface(project));
+    expect(decision.status).toBe("allowed");
   });
 
   it("does not allow a network tool when the project policy denies egress", () => {
@@ -57,8 +75,9 @@ describe("action boundary enforcement", () => {
   });
 
   it("validates structured model output before it reaches a tool gateway", () => {
-    expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "run tests", params: { commandId: "quality-test" } })?.type).toBe("ACT");
+    expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "run tests", tool: "shell.sandbox", params: { commandId: "quality-test" } })?.type).toBe("ACT");
     expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "run rm", params: { command: { injected: true } } })).toBeUndefined();
-    expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "invalid value", expectedValue: 2 })).toBeUndefined();
+    expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "missing tool" })).toBeUndefined();
+    expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "invalid value", tool: "shell.sandbox", expectedValue: 2 })).toBeUndefined();
   });
 });

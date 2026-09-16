@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getHumanCounts, getProject, getProjectHumanItems, humanLabel, humanTone } from "../runtime";
+import { getActionableHumanItems, getHumanCounts, getProject, humanLabel, humanTone } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import type { HumanItem, HumanItemKind } from "../types";
@@ -22,12 +22,10 @@ export function NeedsYouPage({ projectId }: { projectId: string }) {
   const project = getProject(state, projectId);
   if (!project) return <div className="screen"><Card className="empty-state"><h1>프로젝트를 찾을 수 없습니다.</h1></Card></div>;
   const counts = getHumanCounts(state, projectId);
-  const allItems = getProjectHumanItems(state, projectId);
-  const openItems = allItems.filter((item) => item.status === "OPEN");
-  const primaryItems = openItems
-    .filter((item) => item.kind === "QUESTION" || item.kind === "APPROVAL" || item.id === "IDEA-21")
+  const actionableItems = getActionableHumanItems(state, projectId);
+  const primaryItems = actionableItems
     .sort((a, b) => ["QUESTION", "IDEA", "CONCERN", "APPROVAL"].indexOf(a.kind) - ["QUESTION", "IDEA", "CONCERN", "APPROVAL"].indexOf(b.kind));
-  const items = filter === "ALL" ? primaryItems : openItems.filter((item) => item.kind === filter);
+  const items = filter === "ALL" ? primaryItems : actionableItems.filter((item) => item.kind === filter);
 
   return (
     <div className="screen">
@@ -44,7 +42,7 @@ export function NeedsYouPage({ projectId }: { projectId: string }) {
 }
 
 function HumanItemCard({ item, onOpen, onDefer, onApprove, onReject }: { item: HumanItem; onOpen: () => void; onDefer: () => void; onApprove: () => void; onReject: () => void }) {
-  const isOpen = item.status === "OPEN";
+  const isOpen = item.status === "OPEN" || item.status === "DEFERRED";
   const tone = humanTone(item.kind);
   return (
     <Card className={cn("human-item-card", !isOpen && "human-item-resolved")}>
@@ -58,7 +56,7 @@ function HumanItemCard({ item, onOpen, onDefer, onApprove, onReject }: { item: H
         <Button variant="neutral" size="small" onClick={onReject}>거절</Button>
       </div> : item.kind === "QUESTION" ? <div className="button-row">
         <Button variant="primary" size="small" onClick={onOpen}>답변하기</Button>
-        <Button variant="subtle" size="small" onClick={onDefer}>나중에</Button>
+        {item.status === "OPEN" && <Button variant="subtle" size="small" onClick={onDefer}>나중에</Button>}
       </div> : item.kind === "CONCERN" ? <div className="button-row"><Button variant="neutral" size="small" onClick={onOpen}>확인하기</Button></div> : null}
     </Card>
   );

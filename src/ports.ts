@@ -11,6 +11,7 @@ import type {
   Run,
   Verdict,
   WorldSnapshot,
+  ManagedProcess,
 } from "./types";
 
 /** Runtime boundaries from the architecture spec. Implementations may be local, remote, or sandbox-backed. */
@@ -45,6 +46,8 @@ export interface SandboxContext {
   createdAt?: string;
   mode?: "process" | "docker";
   image?: string;
+  processMaxLifetimeMs?: number;
+  maxConcurrentProcesses?: number;
 }
 
 export interface ToolResult {
@@ -59,6 +62,10 @@ export interface ToolResult {
   output?: string;
   blockedReason?: string;
   artifactRefs?: string[];
+  progress?: "meaningful" | "none";
+  changedPaths?: string[];
+  process?: ManagedProcess;
+  observations?: Observation[];
 }
 
 export interface ToolGateway {

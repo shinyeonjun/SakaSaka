@@ -2,12 +2,20 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSy
 import { dirname } from "node:path";
 
 /** Writes a complete snapshot before replacing the visible state file. */
-export function writeJsonAtomically(filePath: string, value: unknown): void {
+export function writeJsonAtomically(filePath: string, value: unknown, isCurrentValid?: (value: unknown) => boolean): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(temporaryPath, JSON.stringify(value, null, 2), "utf8");
   try {
-    if (existsSync(filePath)) copyFileSync(filePath, `${filePath}.bak`);
+    if (existsSync(filePath)) {
+      let shouldBackup = true;
+      if (isCurrentValid) {
+        try { shouldBackup = isCurrentValid(JSON.parse(readFileSync(filePath, "utf8"))); } catch { shouldBackup = false; }
+      }
+      // Never replace a known-good recovery point with a truncated or
+      // structurally invalid primary snapshot.
+      if (shouldBackup) copyFileSync(filePath, `${filePath}.bak`);
+    }
     renameSync(temporaryPath, filePath);
   } catch (error: unknown) {
     // Windows cannot always replace an existing file with renameSync. The

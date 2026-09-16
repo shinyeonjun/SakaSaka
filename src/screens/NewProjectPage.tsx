@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
+import { isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, Label, PageHeading } from "../components/ui";
 
 export function NewProjectPage() {
@@ -10,6 +11,8 @@ export function NewProjectPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [budget, setBudget] = useState(30);
   const [maxHours, setMaxHours] = useState(12);
+  const [modelProvider, setModelProvider] = useState<"auto" | "deterministic" | "openai-compatible">(isControlPlaneEnabled ? "auto" : "deterministic");
+  const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
   const [showError, setShowError] = useState(false);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -18,7 +21,7 @@ export function NewProjectPage() {
       setShowError(true);
       return;
     }
-    const id = createProject(intent, { budgetLimit: budget, maxHours });
+    const id = createProject(intent, { budgetLimit: budget, maxHours, modelProvider, sandboxMode });
     navigate(projectPath(id));
   };
 
@@ -32,7 +35,7 @@ export function NewProjectPage() {
             id="intent"
             value={intent}
             onChange={(event) => { setIntent(event.target.value); setShowError(false); }}
-            placeholder="예: 친구들이 여행 계획을 같이 세우고 실제 여행에서도 쓸 수 있는 서비스가 있었으면 좋겠어."
+            placeholder="예: 팀이 반복 업무를 줄일 수 있는 작은 웹앱을 만들어줘."
             aria-describedby={showError ? "intent-error" : "intent-help"}
           />
           <p id="intent-help" className="field-help">AI는 이 문장을 task 목록으로 고정 변환하지 않습니다. 실제 World를 보며 필요한 일을 스스로 발견합니다.</p>
@@ -66,6 +69,14 @@ export function NewProjectPage() {
             <div className="advanced-setting-row">
               <div><strong>Wall time</strong><span>lease가 유지되는 최대 시간입니다.</span></div>
               <input type="number" min="1" max="168" value={maxHours} onChange={(event) => setMaxHours(Number(event.target.value) || 1)} aria-label="최대 실행 시간" />
+            </div>
+            <div className="advanced-setting-row">
+              <div><strong>Model provider</strong><span>auto는 설정된 compatible provider를 우선 사용합니다.</span></div>
+              <select value={modelProvider} onChange={(event) => setModelProvider(event.target.value as typeof modelProvider)} aria-label="모델 provider"><option value="auto">auto</option><option value="deterministic">deterministic baseline</option><option value="openai-compatible">OpenAI-compatible</option></select>
+            </div>
+            <div className="advanced-setting-row">
+              <div><strong>Sandbox</strong><span>개발 명령을 격리할 실행 모드입니다.</span></div>
+              <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as typeof sandboxMode)} aria-label="sandbox mode"><option value="docker">docker</option><option value="process">process (allowlist)</option></select>
             </div>
             <InlineNotice tone="yellow" title="경계 기본값">외부 side effect와 production 배포는 사람 승인 전까지 차단됩니다.</InlineNotice>
           </Card>

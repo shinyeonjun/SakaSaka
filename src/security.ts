@@ -1,9 +1,10 @@
-import type { ActionEnvelope, ActionType, Project, RiskClass, ToolCapability } from "./types";
+import type { ActionEnvelope, ActionParamValue, ActionType, ApprovalGrant, Project, RiskClass, ToolCapability } from "./types";
 
 const riskRank: Record<RiskClass, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
 export const safeCommandIds = [
   "repo-status",
+  "repo-diff",
   "repo-diff-check",
   "quality-test",
   "quality-build",
@@ -14,11 +15,17 @@ export type SafeCommandId = (typeof safeCommandIds)[number];
 
 const safeCommandCost: Record<SafeCommandId, number> = {
   "repo-status": 0.02,
+  "repo-diff": 0.04,
   "repo-diff-check": 0.03,
   "quality-test": 0.18,
   "quality-build": 0.24,
   "quality-build-api": 0.12,
 };
+
+const maxActionPayloadBytes = 256 * 1024;
+const maxActionArrayLength = 128;
+const developerExecutables = new Set(["node", "node.exe", "npm", "npm.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd", "git", "python", "python3", "pytest", "tsc", "vite", "playwright"]);
+const blockedDeveloperFlags = new Set(["-e", "--eval", "-p", "--print", "-r", "--require", "--loader", "--import", "--experimental-loader"]);
 
 export interface BoundaryDecision {
   status: "allowed" | "blocked" | "human-approval";
@@ -79,7 +86,13 @@ export function estimateActionCost(action: ActionEnvelope): number {
   const tool = normalizeToolName(action.tool);
   if (tool === "browser.playwright") return 0.12;
   if (tool === "database.read") return 0.05;
-  if (tool === "repo.read" && action.params?.commandId === "repo-status") return safeCommandCost["repo-status"];
+  if (tool === "workspace.list" || tool === "workspace.read") return 0.01;
+  if (tool === "workspace.write" || tool === "workspace.patch") return 0.08;
+  if (tool === "workspace.delete") return 0.12;
+  if (tool === "dependency.install") return 0.35;
+  if (tool === "process.start") return 0.08;
+  if (tool === "process.status" || tool === "process.stop") return 0.02;
+  if (tool === "repo.read" && isSafeCommand(action.params?.commandId)) return safeCommandCost[action.params.commandId];
   if (tool === "shell.sandbox" && isSafeCommand(action.params?.commandId)) return safeCommandCost[action.params.commandId];
   return 0.2;
 }
@@ -89,6 +102,8 @@ export function validateActionBoundary(
   action: ActionEnvelope,
   capabilities: ToolCapability[],
   estimatedCost = 0,
+  approvalGrant?: ApprovalGrant,
+  now = Date.now(),
 ): BoundaryDecision {
   if (action.type !== "ACT") return { status: "allowed", reason: "human-facing action does not dispatch a side effect" };
 
@@ -109,22 +124,62 @@ export function validateActionBoundary(
   if (capability.name === "browser.playwright" && (typeof action.params?.url !== "string" || !isAllowedNetworkUrl(project, action.params.url))) {
     return { status: "blocked", reason: "network URL is outside the project allowlist", capability, normalizedTool };
   }
-  if (capability.name === "repo.read" && action.params?.commandId !== "repo-status") {
-    return { status: "blocked", reason: "repo.read only exposes the repo-status command", capability, normalizedTool };
+  if (capability.name === "repo.read" && !["repo-status", "repo-diff", "repo-diff-check"].includes(String(action.params?.commandId))) {
+    return { status: "blocked", reason: "repo.read only exposes status, diff, and diff-check commands", capability, normalizedTool };
   }
   if (capability.name === "shell.sandbox" && !isSafeCommand(action.params?.commandId)) {
-    return { status: "blocked", reason: "command is outside the fixed local allowlist", capability, normalizedTool };
+    if (project.settings.sandboxMode !== "docker" || !isDeveloperArgv(action.params?.argv)) {
+      return { status: "blocked", reason: "command is outside the fixed local allowlist or Docker argv contract", capability, normalizedTool };
+    }
   }
+  if (capability.name === "workspace.read" && !isWorkspacePathParam(action.params?.path)) return { status: "blocked", reason: "workspace.read requires a relative path", capability, normalizedTool };
+  if (capability.name === "workspace.write" && (!isWorkspacePathParam(action.params?.path) || typeof action.params?.content !== "string")) return { status: "blocked", reason: "workspace.write requires a relative path and text content", capability, normalizedTool };
+  if (capability.name === "workspace.patch" && typeof action.params?.patch !== "string") return { status: "blocked", reason: "workspace.patch requires a unified patch string", capability, normalizedTool };
+  if (capability.name === "workspace.delete" && !isWorkspacePathParam(action.params?.path)) return { status: "blocked", reason: "workspace.delete requires a relative path", capability, normalizedTool };
+  if (capability.name === "dependency.install" && !isPackageList(action.params?.packages)) return { status: "blocked", reason: "dependency.install requires validated package names", capability, normalizedTool };
+  if (capability.name === "process.start" && !isDeveloperArgv(action.params?.argv)) return { status: "blocked", reason: "process.start requires an argv array", capability, normalizedTool };
+  if ((capability.name === "process.status" || capability.name === "process.stop") && !isBoundedString(action.params?.processId, 256)) return { status: "blocked", reason: `${capability.name} requires a processId`, capability, normalizedTool };
   if (riskRank[capability.riskClass] >= riskRank.P3 && project.settings.productionBlocked) {
     return { status: "blocked", reason: "P3 production/destructive side effects are hard-blocked by project policy", capability, normalizedTool };
   }
   if (riskRank[capability.riskClass] >= riskRank.P2 && project.settings.requireExternalApproval) {
+    if (approvalGrant && approvalGrant.singleUse && !approvalGrant.consumedAt && Date.parse(approvalGrant.expiresAt) > now && approvalGrant.projectId === project.id && approvalGrant.tool === action.tool && approvalGrant.actionFingerprint === actionFingerprint(action) && approvalGrant.paramsFingerprint === paramsFingerprint(action)) {
+      return { status: "allowed", reason: "matching single-use human approval grant is active", capability, normalizedTool };
+    }
     return { status: "human-approval", reason: "external or difficult-to-reverse side effect requires an approval item", capability, normalizedTool };
   }
   if (capability.riskClass === "P1" && !project.settings.localActions) {
     return { status: "blocked", reason: "local sandbox actions are disabled by project policy", capability, normalizedTool };
   }
   return { status: "allowed", reason: "capability, permission, network, and resource checks passed", capability, normalizedTool };
+}
+
+function isBoundedString(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= max;
+}
+
+function isWorkspacePathParam(value: unknown): value is string {
+  if (!isBoundedString(value, 2_000)) return false;
+  const normalized = value.replace(/\\/g, "/");
+  return !normalized.startsWith("/") && !/^[a-zA-Z]:/.test(normalized) && !normalized.split("/").some((part) => part === "..");
+}
+
+export function isDeveloperArgv(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64 || !value.every((item) => typeof item === "string" && item.length > 0 && item.length <= 2_000)) return false;
+  const executable = String(value[0]).toLowerCase();
+  if (!developerExecutables.has(executable)) return false;
+  return !value.slice(1).some((item) => {
+    const option = item.toLowerCase().split("=", 1)[0];
+    return item.includes("\0")
+      || blockedDeveloperFlags.has(option)
+      || item.startsWith("/")
+      || /^[a-zA-Z]:[\\/]/.test(item)
+      || /(?:^|[=:\\/]\s*)\.\.(?:[\\/]|$)/.test(item);
+  });
+}
+
+function isPackageList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 64 && value.every((item) => typeof item === "string" && /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:@[a-z0-9._-]+)?$/i.test(item) && item.length <= 214);
 }
 
 export function redactSecretLikeText(value: string): string {
@@ -147,8 +202,10 @@ export function parseActionEnvelope(value: unknown): ActionEnvelope | undefined 
   const worldCursor = candidate.worldCursor;
   const rationaleSummary = candidate.rationaleSummary;
   if (!actionTypes.includes(type as ActionType) || typeof intentRef !== "string" || intentRef.length > 512 || typeof worldCursor !== "string" || worldCursor.length > 512 || typeof rationaleSummary !== "string" || !rationaleSummary.trim() || rationaleSummary.length > 4_000) return undefined;
+  if (type === "ACT" && (typeof candidate.tool !== "string" || !candidate.tool.trim())) return undefined;
+  if (type !== "ACT" && candidate.tool !== undefined) return undefined;
   const params = candidate.params;
-  if (params !== undefined && (!params || typeof params !== "object" || Array.isArray(params) || Object.keys(params).length > 64 || Object.values(params).some((item) => !["string", "number", "boolean"].includes(typeof item)))) return undefined;
+  if (params !== undefined && (!isBoundedParams(params) || JSON.stringify(params).length > maxActionPayloadBytes)) return undefined;
   const riskClass = candidate.riskClass;
   if (riskClass !== undefined && !["P0", "P1", "P2", "P3"].includes(String(riskClass))) return undefined;
   const evidencePlan = candidate.evidencePlan;
@@ -166,4 +223,46 @@ export function parseActionEnvelope(value: unknown): ActionEnvelope | undefined 
     riskClass: riskClass as ActionEnvelope["riskClass"],
     evidencePlan: evidencePlan as string[] | undefined,
   };
+}
+
+function isBoundedParams(value: unknown): value is Record<string, ActionParamValue> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length > 64) return false;
+  return entries.every(([key, item]) => {
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/.test(key)) return false;
+    if (typeof item === "string") return item.length <= 256_000;
+    if (typeof item === "number") return Number.isFinite(item);
+    if (typeof item === "boolean") return true;
+    if (Array.isArray(item)) return item.length <= maxActionArrayLength && item.every((entry) => typeof entry === "string" && entry.length <= 2_000);
+    return false;
+  });
+}
+
+function stableValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+function fingerprintCanonical(canonical: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < canonical.length; index += 1) {
+    hash ^= canonical.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/** Stable, non-reversible identity used to bind a human approval to one action. */
+export function actionFingerprint(action: ActionEnvelope): string {
+  return fingerprintCanonical(stableValue({ type: action.type, intentRef: action.intentRef, tool: action.tool ?? "", params: action.params ?? {} }));
+}
+
+export function canonicalActionParams(action: ActionEnvelope): string {
+  return stableValue(action.params ?? {});
+}
+
+export function paramsFingerprint(action: ActionEnvelope): string {
+  return fingerprintCanonical(canonicalActionParams(action));
 }

@@ -1,12 +1,18 @@
-import { applyObservedWorld, assembleContext, getProject, getToolSurface, getWorldSnapshot, recordBoundaryDecision, recordNonToolAction, recordObservedWorldRefresh, recordRuntimeFailure, runCycle } from "../src/runtime";
+import { applyObservedWorld, assembleContextAsync, getMatchingApprovalGrant, getProject, getToolSurface, getWorldSnapshot, recordBoundaryDecision, recordNonToolAction, recordObservedWorldRefresh, recordRuntimeFailure, runCycle } from "../src/runtime";
 import { redactSecretLikeText, validateActionBoundary } from "../src/security";
-import type { AppState, Observation } from "../src/types";
+import type { AppState, ContextPacket, Observation } from "../src/types";
+import type { ModelGateway } from "../src/ports";
 import { DeterministicEvaluator, DockerSandboxManager, LocalSandboxManager, LocalToolGateway, createLocalWorldAdapters, createModelGateway, estimateLocalActionCost } from "./localAdapters";
+import { hydrateManagedProcesses } from "./processManager";
 import { JsonlObservabilitySink } from "./observability";
 
 export interface LocalCycleOptions {
   workspacePath?: string;
   previewUrl?: string;
+  /** Research harnesses may inject the same provider across isolated variants. */
+  modelGateway?: ModelGateway;
+  /** Optional projection used by an explicit ablation; the persisted packet is what the model received. */
+  contextProjection?: (context: ContextPacket) => ContextPacket;
 }
 
 async function observeProject(state: AppState, projectId: string): Promise<{ state: AppState; observations: Observation[] }> {
@@ -36,7 +42,7 @@ async function observeProject(state: AppState, projectId: string): Promise<{ sta
 }
 
 /** Executes one real local closed-loop cycle for API-created workspace projects. */
-export async function executeLocalCycle(state: AppState, projectId: string, _options: LocalCycleOptions = {}): Promise<AppState> {
+export async function executeLocalCycle(state: AppState, projectId: string, options: LocalCycleOptions = {}): Promise<AppState> {
   const observability = new JsonlObservabilitySink();
   const cycleSpan = observability.span("runtime.cycle", { projectId, mode: "local" });
   let spanStatus = "unknown";
@@ -56,38 +62,53 @@ export async function executeLocalCycle(state: AppState, projectId: string, _opt
       spanStatus = `not-active:${project.status}`;
       return observed.state;
     }
-    const context = assembleContext(observed.state, projectId);
-    if (!context) {
+    const assembledContext = await assembleContextAsync(observed.state, projectId);
+    if (!assembledContext) {
       spanStatus = "missing-context";
       return observed.state;
     }
 
-    const model = createModelGateway(project);
-    const action = await model.decide(context);
+    const projectedContext = options.contextProjection?.(assembledContext) ?? assembledContext;
+    const context = projectedContext.projectId === projectId && projectedContext.intentRef === assembledContext.intentRef && projectedContext.worldCursor === assembledContext.worldCursor
+      ? projectedContext
+      : assembledContext;
+    const model = options.modelGateway ?? createModelGateway(project);
+    const capabilities = await model.capabilities();
+    // The packet sent to the provider must identify the provider that will
+    // actually decide. Keeping the default local value here would make a
+    // remote turn look deterministic in the context/evidence lineage.
+    const modelContext = context.modelVersion === capabilities.modelVersion
+      ? context
+      : { ...context, modelVersion: capabilities.modelVersion };
+    const action = await model.decide(modelContext);
     const modelUsage = await model.usage(run.id);
-    if (action.intentRef !== context.intentRef || action.worldCursor !== context.worldCursor) {
+    if (action.intentRef !== modelContext.intentRef || action.worldCursor !== modelContext.worldCursor) {
       spanStatus = "invalid-action-reference";
-      return recordBoundaryDecision(observed.state, projectId, action, "blocked", "model action references a stale intent or world cursor", context.id);
+      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
+      return recordBoundaryDecision(contextState, projectId, action, "blocked", "model action references a stale intent or world cursor", modelContext.id, modelUsage);
     }
     if (action.type !== "ACT") {
-      const next = recordNonToolAction(observed.state, projectId, action, context.id);
+      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
+      const next = recordNonToolAction(contextState, projectId, action, modelContext.id, modelUsage);
       spanStatus = `non-tool-action:${action.type}`;
       return next;
     }
-    const boundary = validateActionBoundary(project, action, getToolSurface(project), estimateLocalActionCost(action) + modelUsage.cost);
+    const boundary = validateActionBoundary(project, action, getToolSurface(project), estimateLocalActionCost(action) + modelUsage.cost, getMatchingApprovalGrant(observed.state, projectId, action));
     if (boundary.status !== "allowed") {
       spanStatus = boundary.status;
-      return recordBoundaryDecision(observed.state, projectId, action, boundary.status, boundary.reason, context.id);
+      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
+      return recordBoundaryDecision(contextState, projectId, action, boundary.status, boundary.reason, modelContext.id, modelUsage);
     }
 
     sandboxManager = project.settings.sandboxMode === "docker" ? new DockerSandboxManager() : new LocalSandboxManager();
     sandbox = await sandboxManager.create(project, run);
+    hydrateManagedProcesses(observed.state.processes);
     const toolGateway = new LocalToolGateway();
     const normalizedAction = { ...action, tool: boundary.normalizedTool ?? action.tool };
     const toolResult = await toolGateway.execute(normalizedAction, sandbox);
     const world = getWorldSnapshot(observed.state, projectId);
     const evaluation = world ? await new DeterministicEvaluator().evaluate(action.rationaleSummary, toolResult.evidence, world) : undefined;
-    const next = runCycle(state, projectId, { observations: observed.observations, action: normalizedAction, toolResult, evaluation, modelUsage });
+    const next = runCycle(observed.state, projectId, { action: normalizedAction, toolResult, evaluation, modelUsage, context: modelContext });
     observability.metric("runtime.cost", toolResult.cost + modelUsage.cost, { projectId, tool: toolResult.tool, status: toolResult.status });
     observability.metric("runtime.evidence", toolResult.evidence.length, { projectId, verdict: evaluation?.verdict ?? "UNCERTAIN" });
     spanStatus = toolResult.status;

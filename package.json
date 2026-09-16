@@ -17,6 +17,8 @@
     "acceptance": "tsx scripts/acceptance.ts",
     "acceptance:api": "tsx scripts/apiAcceptance.ts",
     "acceptance:ui": "tsx scripts/uiAcceptance.ts",
+    "acceptance:autonomous": "tsx scripts/autonomousAcceptance.ts",
+    "acceptance:experiments": "tsx scripts/experimentAcceptance.ts",
     "browser:install": "playwright install chromium",
     "security:check": "npm audit --audit-level=high"
   },

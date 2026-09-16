@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JsonJobQueue } from "./jobQueue";
@@ -48,5 +48,28 @@ describe("durable runtime job queue", () => {
     expect((await queue.lease("worker-other", 10_000))).toBeUndefined();
     await queue.ack(job.id, "worker-owner");
     expect((await queue.lease("worker-owner", 10_000))).toBeUndefined();
+  });
+
+  it("does not starve a delayed project by repeatedly pushing its ready time", async () => {
+    const root = mkdtempSync(join(tmpdir(), "intent-world-queue-"));
+    tempRoots.push(root);
+    const queue = new JsonJobQueue(join(root, "queue.json"));
+    const first = await queue.enqueue({ projectId: "project-delay", runId: "run-1", trigger: "signal", availableAt: new Date(Date.now() + 1_000).toISOString() });
+    const second = await queue.enqueue({ projectId: "project-delay", runId: "run-1", trigger: "signal", availableAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(second.id).toBe(first.id);
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    expect((await queue.lease("worker-delay", 10_000))?.id).toBe(first.id);
+  });
+
+  it("recovers a valid queue backup when the primary is truncated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "intent-world-queue-"));
+    tempRoots.push(root);
+    const path = join(root, "queue.json");
+    const first = new JsonJobQueue(path);
+    await first.enqueue({ projectId: "project-recovery", runId: "run-1", trigger: "intent" });
+    await first.enqueue({ projectId: "project-recovery-2", runId: "run-2", trigger: "intent" });
+    writeFileSync(path, "{broken", "utf8");
+    const recovered = new JsonJobQueue(path);
+    expect((await recovered.lease("worker-recovery", 10_000))?.projectId).toBe("project-recovery");
   });
 });

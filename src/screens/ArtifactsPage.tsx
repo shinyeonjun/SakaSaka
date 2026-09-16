@@ -12,7 +12,7 @@ export function ArtifactsPage({ projectId }: { projectId: string }) {
   const project = getProject(state, projectId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   if (!project) return <div className="screen"><Card className="empty-state"><h1>Artifacts를 표시할 수 없습니다.</h1></Card></div>;
-  const artifacts = state.artifacts.filter((artifact) => artifact.projectId === projectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const artifacts = state.artifacts.filter((artifact) => artifact.projectId === projectId).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.id.localeCompare(a.id));
   const selected = artifacts.find((artifact) => artifact.id === selectedId);
 
   return (

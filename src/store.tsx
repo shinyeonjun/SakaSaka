@@ -31,6 +31,30 @@ function loadState(): AppState {
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.projects) || !Array.isArray(parsed.events)) return createSeedState();
     return {
       ...parsed,
+      projects: parsed.projects.map((project) => ({
+        ...project,
+        settings: {
+          budgetLimit: 30,
+          maxHours: 12,
+          localActions: true,
+          requireExternalApproval: true,
+          productionBlocked: true,
+          networkPolicy: "allowlist" as const,
+          failureThreshold: 3,
+          noProgressThreshold: 5,
+          cycleDelayMs: 250,
+          approvalTtlMinutes: 60,
+          processMaxLifetimeMs: 1_800_000,
+          maxConcurrentProcesses: 4,
+          ...(project.settings as Partial<ProjectSettings>),
+        },
+      })),
+      runs: Array.isArray(parsed.runs) ? parsed.runs.map((run) => ({
+        ...run,
+        consecutiveFailures: Number.isFinite(run.consecutiveFailures) ? run.consecutiveFailures : 0,
+        noProgressCycles: Number.isFinite(run.noProgressCycles) ? run.noProgressCycles : 0,
+        activeProcessIds: Array.isArray(run.activeProcessIds) ? run.activeProcessIds : [],
+      })) : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions.map((action) => ({ ...action, schemaVersion: 1 as const })) : [],
       worldSnapshots: Array.isArray(parsed.worldSnapshots) ? parsed.worldSnapshots : [],
       evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
@@ -47,6 +71,8 @@ function loadState(): AppState {
       resourceLedger: Array.isArray(parsed.resourceLedger) ? parsed.resourceLedger : [],
       relations: Array.isArray(parsed.relations) ? parsed.relations : [],
       retrievalIndex: Array.isArray(parsed.retrievalIndex) ? parsed.retrievalIndex : [],
+      approvalGrants: Array.isArray(parsed.approvalGrants) ? parsed.approvalGrants : [],
+      processes: Array.isArray(parsed.processes) ? parsed.processes : [],
     };
   } catch {
     return createSeedState();

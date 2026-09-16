@@ -31,21 +31,53 @@ import {
   stallProject,
   wakeProject,
 } from "../src/runtime";
-import type { AppState, ArtifactKind, Experiment, ProjectSettings } from "../src/types";
+import type { AppState, ArtifactKind, Experiment, ProjectMetrics, ProjectSettings } from "../src/types";
+import type { RuntimeJob } from "../src/ports";
 import type { ExperimentInput } from "../src/runtime";
 import { evaluateProject } from "../src/evaluation";
 import { executeLocalCycle, observeLocalWorld } from "./localRuntime";
 import { normalizeWorkspacePath } from "./pathPolicy";
 import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
 import { withFileLock } from "./fileLock";
+import { JsonJobQueue } from "./jobQueue";
+import { provisionProjectWorkspace } from "./workspaceProvisioner";
+import { hydrateManagedProcesses, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
 const stateLockPath = `${statePath}.lock`;
 const eventJournal = new JsonlEventStore(`${statePath}.events.jsonl`);
+const queue = new JsonJobQueue(`${statePath}.queue.json`);
 const subscribers = new Map<string, Set<ServerResponse>>();
 const maxBodyBytes = 1_048_576;
+
+function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
+  return {
+    budgetLimit: raw?.budgetLimit ?? 30,
+    maxHours: raw?.maxHours ?? 12,
+    localActions: raw?.localActions ?? true,
+    requireExternalApproval: raw?.requireExternalApproval ?? true,
+    productionBlocked: raw?.productionBlocked ?? true,
+    networkPolicy: raw?.networkPolicy ?? "allowlist",
+    workspacePath: raw?.workspacePath,
+    previewUrl: raw?.previewUrl,
+    allowedDomains: raw?.allowedDomains,
+    sandboxMode: raw?.sandboxMode ?? "process",
+    modelProvider: raw?.modelProvider ?? "auto",
+    reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360,
+    failureThreshold: raw?.failureThreshold ?? 3,
+    noProgressThreshold: raw?.noProgressThreshold ?? 5,
+    cycleDelayMs: raw?.cycleDelayMs ?? 250,
+    approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60,
+    processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000,
+    maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4,
+  };
+}
+
+function normalizeProjectMetrics(raw: Partial<ProjectMetrics> | undefined): ProjectMetrics {
+  return { testsPassed: raw?.testsPassed ?? 0, testsTotal: raw?.testsTotal ?? 0, evidenceCoverage: raw?.evidenceCoverage ?? 0, humanOrchestrationCount: raw?.humanOrchestrationCount ?? 0, initiativeRecall: raw?.initiativeRecall ?? 0, initiativePrecision: raw?.initiativePrecision ?? 0 };
+}
 
 class BadRequestError extends Error {}
 
@@ -54,6 +86,17 @@ function normalizeState(candidate: unknown): AppState {
   if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) throw new Error("state snapshot is missing required collections");
   return {
     ...(value as AppState),
+    projects: value.projects.map((project) => ({
+      ...project,
+      settings: normalizeProjectSettings(project.settings),
+      metrics: normalizeProjectMetrics(project.metrics),
+    })),
+    runs: value.runs.map((run) => ({
+      ...run,
+      consecutiveFailures: Number.isFinite(run.consecutiveFailures) ? run.consecutiveFailures : 0,
+      noProgressCycles: Number.isFinite(run.noProgressCycles) ? run.noProgressCycles : 0,
+      activeProcessIds: Array.isArray(run.activeProcessIds) ? run.activeProcessIds : [],
+    })),
     actions: Array.isArray(value.actions) ? value.actions.map((action) => ({ ...action, schemaVersion: 1 as const })) : [],
     worldSnapshots: Array.isArray(value.worldSnapshots) ? value.worldSnapshots : [],
     evidence: Array.isArray(value.evidence) ? value.evidence : [],
@@ -70,6 +113,8 @@ function normalizeState(candidate: unknown): AppState {
     resourceLedger: Array.isArray(value.resourceLedger) ? value.resourceLedger : [],
     relations: Array.isArray(value.relations) ? value.relations : [],
     retrievalIndex: Array.isArray(value.retrievalIndex) ? value.retrievalIndex : [],
+    approvalGrants: Array.isArray(value.approvalGrants) ? value.approvalGrants : [],
+    processes: Array.isArray(value.processes) ? value.processes : [],
   };
 }
 
@@ -90,10 +135,11 @@ function loadState(): AppState {
 }
 
 let state = loadState();
+hydrateManagedProcesses(state.processes);
 mkdirSync(dirname(statePath), { recursive: true });
 
 function persistState(next: AppState): void {
-  writeJsonAtomically(statePath, next);
+  writeJsonAtomically(statePath, next, isRecoverableState);
   for (const event of next.events) eventJournal.appendSync(event);
 }
 
@@ -126,11 +172,21 @@ function writeSseEvent(response: ServerResponse, event: AppState["events"][numbe
 async function commitMutation(mutator: (current: AppState) => AppState | Promise<AppState>): Promise<AppState> {
   return withFileLock(stateLockPath, async () => {
     const previous = loadState();
-    const next = await mutator(previous);
+    let next = await mutator(previous);
+    for (const project of next.projects) {
+      if ((project.status === "PAUSED" || project.status === "KILLED") && getProject(previous, project.id)?.status !== project.status) {
+        const run = getRun(next, project.id);
+        if (run) {
+          await stopProcessesForRun(next.processes, run.id);
+          next = { ...next, runs: next.runs.map((candidate) => candidate.id === run.id ? { ...candidate, activeProcessIds: [] } : candidate) };
+        }
+      }
+    }
     state = next;
     if (next !== previous) {
       persistState(next);
       publishEvents(previous, next);
+      await scheduleJobs(previous, next);
     }
     return state;
   });
@@ -193,7 +249,39 @@ function projectPayload(projectId: string): Record<string, unknown> | undefined 
     ledger: getResourceLedger(state, projectId),
     relations: getProjectRelations(state, projectId),
     retrievalIndex: getProjectRetrievalEntries(state, projectId),
+    approvalGrants: state.approvalGrants.filter((grant) => grant.projectId === projectId),
+    processes: state.processes.filter((process) => process.projectId === projectId),
   };
+}
+
+const queueTriggers = new Map<string, RuntimeJob["trigger"]>([
+  ["PROJECT_CREATED", "intent"],
+  ["INTENT_CREATED", "intent"],
+  ["WAKE_TRIGGERED", "signal"],
+  ["HUMAN_ANSWERED", "human-answer"],
+  ["HUMAN_APPROVED", "human-answer"],
+  ["HUMAN_REJECTED", "human-answer"],
+  ["HUMAN_DEFERRED", "human-answer"],
+  ["HUMAN_ITEM_CREATED", "signal"],
+  ["QUESTION_CREATED", "signal"],
+  ["ACTION_EXECUTED", "signal"],
+  ["TOOL_RESULT", "signal"],
+]);
+
+async function scheduleJobs(previous: AppState, next: AppState): Promise<void> {
+  const previousIds = new Set(previous.events.map((event) => event.id));
+  const created = next.events.filter((event) => !previousIds.has(event.id));
+  const byProject = new Map<string, RuntimeJob["trigger"]>();
+  for (const event of created) {
+    const trigger = queueTriggers.get(event.type);
+    if (trigger) byProject.set(event.projectId, trigger);
+  }
+  for (const [projectId, trigger] of byProject) {
+    const project = getProject(next, projectId);
+    if (!project || project.status !== "ACTIVE" || !project.settings.workspacePath) continue;
+    const delay = Math.max(0, Number(project.settings.cycleDelayMs ?? 250));
+    await queue.enqueue({ projectId, runId: project.activeRunId, trigger, availableAt: new Date(Date.now() + delay).toISOString() });
+  }
 }
 
 function routeParts(pathname: string): string[] {
@@ -265,6 +353,25 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (typeof budgetLimit === "string") return { error: budgetLimit };
   if (typeof maxHours === "string") return { error: maxHours };
   if (typeof reviewIntervalMinutes === "string") return { error: reviewIntervalMinutes };
+  const optionalPositive = (key: string, fallback: number, maximum: number): number | string => {
+    const value = body[key];
+    if (value === undefined) return fallback;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > maximum) return `${key} must be a finite number between 0 and ${maximum}`;
+    return value;
+  };
+  const optionalNonNegative = (key: string, fallback: number, maximum: number): number | string => {
+    const value = body[key];
+    if (value === undefined) return fallback;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > maximum) return `${key} must be a finite number between 0 and ${maximum}`;
+    return value;
+  };
+  const failureThreshold = optionalPositive("failureThreshold", 3, 32);
+  const noProgressThreshold = optionalPositive("noProgressThreshold", 5, 128);
+  const cycleDelayMs = optionalNonNegative("cycleDelayMs", 250, 60_000);
+  const approvalTtlMinutes = optionalPositive("approvalTtlMinutes", 60, 10_080);
+  const processMaxLifetimeMs = optionalPositive("processMaxLifetimeMs", 1_800_000, 86_400_000);
+  const maxConcurrentProcesses = optionalPositive("maxConcurrentProcesses", 4, 32);
+  for (const value of [failureThreshold, noProgressThreshold, cycleDelayMs, approvalTtlMinutes, processMaxLifetimeMs, maxConcurrentProcesses]) if (typeof value === "string") return { error: value };
   const booleanSetting = (key: string, fallback: boolean): boolean | string => {
     const value = body[key];
     if (value === undefined) return fallback;
@@ -280,8 +387,8 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (networkPolicy !== "deny" && networkPolicy !== "allowlist") return { error: "networkPolicy must be deny or allowlist" };
   const sandboxMode = body.sandboxMode === undefined ? "process" : body.sandboxMode;
   if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
-  const modelProvider = body.modelProvider === undefined ? "deterministic" : body.modelProvider;
-  if (modelProvider !== "deterministic" && modelProvider !== "openai-compatible") return { error: "modelProvider is not supported" };
+  const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
+  if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible") return { error: "modelProvider is not supported" };
   const previewUrl = body.previewUrl === undefined ? undefined : body.previewUrl;
   let previewHost: string | undefined;
   if (previewUrl !== undefined) {
@@ -307,11 +414,11 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   };
   if (!Array.isArray(domains) || domains.length > 64 || domains.some((domain) => !isValidDomain(domain))) return { error: "allowedDomains contains an invalid host pattern" };
   const allowedDomains = [...new Set((domains as string[]).map((domain) => domain.trim().toLowerCase()))];
+  for (const localHost of ["registry.npmjs.org", "localhost", "127.0.0.1"]) if (!allowedDomains.includes(localHost)) allowedDomains.push(localHost);
   if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
-  const workspaceInput = body.workspacePath === undefined ? process.cwd() : body.workspacePath;
-  const workspacePath = normalizeWorkspacePath(workspaceInput);
-  if (!workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
-  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, workspacePath, previewUrl, allowedDomains } };
+  const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
+  if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
+  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, workspacePath, previewUrl, allowedDomains } };
 }
 
 function isSafeProjectId(value: string): boolean {
@@ -416,7 +523,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       sendError(response, 409, "projectId already exists");
       return;
     }
-    const committed = await commitMutation((current) => createProject(current, rawIntent, projectId, parsedSettings.settings));
+    let workspacePath = parsedSettings.settings.workspacePath;
+    try {
+      workspacePath = workspacePath ?? provisionProjectWorkspace(projectId);
+      mkdirSync(workspacePath, { recursive: true });
+    } catch (error: unknown) {
+      sendError(response, 400, error instanceof Error ? error.message : "workspace could not be provisioned");
+      return;
+    }
+    const projectSettings = { ...parsedSettings.settings, workspacePath };
+    const committed = await commitMutation((current) => createProject(current, rawIntent, projectId, projectSettings));
     if (!committed.projects.some((candidate) => candidate.id === projectId)) {
       sendError(response, 409, "projectId already exists");
       return;
@@ -745,3 +861,26 @@ const server = createServer((request, response) => {
 server.listen(port, "0.0.0.0", () => {
   console.log("Intent World control plane listening on http://localhost:" + port);
 });
+
+const shutdown = async () => {
+  await withFileLock(stateLockPath, async () => {
+    const current = loadState();
+    hydrateManagedProcesses(current.processes);
+    const stoppedRuns = new Set<string>();
+    for (const run of current.runs) {
+      if (!stoppedRuns.has(run.id)) {
+        await stopProcessesForRun(current.processes, run.id);
+        stoppedRuns.add(run.id);
+      }
+    }
+    const next: AppState = { ...current, runs: current.runs.map((run) => ({ ...run, activeProcessIds: [] })) };
+    state = next;
+    persistState(next);
+  }).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : "managed process shutdown persistence failed");
+    return stopAllManagedProcesses();
+  });
+  server.close(() => process.exit(0));
+};
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });

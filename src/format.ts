@@ -29,7 +29,7 @@ export function humanStatusLabel(status: HumanItemStatus): string {
 
 export function runtimeDescription(status: RuntimeStatus): string {
   return {
-    ACTIVE: "AI가 직접 World를 바꾸고 있음",
+    ACTIVE: "다음 cognition cycle을 실행할 수 있는 상태",
     WAITING: "Human answer/approval이 필요한 범위가 있음",
     EQUILIBRIUM: "현재 비용 대비 가치 높은 행동이 없음",
     STALLED: "반복 실패 또는 진전 없음",

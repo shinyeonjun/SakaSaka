@@ -11,6 +11,8 @@ npm run dev
 
 브라우저만 실행하면 localStorage 기반의 standalone UI가 열립니다. 실제 workspace 관찰·quality gate·영속 snapshot·SSE를 사용하려면 API와 worker를 함께 실행합니다.
 
+API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 greenfield Intent를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI-compatible gateway를 사용하고, 없으면 provider 종류가 명시된 deterministic baseline으로 동작합니다. deterministic baseline도 고정된 bounded capability를 실제로 실행하지만 model reasoning을 대체하지는 않습니다. 실제 AI 실행을 원하면 API/worker에 해당 환경 변수를 설정하세요.
+
 ```bash
 # terminal 1
 npm run api
@@ -68,12 +70,12 @@ Context에는 원문 Intent/constraints, fresh source-linked compact observation
 - `GET /evidence/:id`, `/evidence/:id/raw`
 - artifact와 experiment 생성/조회/실행 route
 
-API snapshot은 `.data/state.json`, 직전 정상 snapshot 백업은 `.data/state.json.bak`, append-only event journal은 `.data/state.json.events.jsonl`, worker queue는 `.data/state.json.queue.json`, local observability는 `.data/observability.jsonl`에 기록됩니다. snapshot writer와 API/worker 사이에는 atomic replace + cross-process lock이 있고, primary snapshot이 손상되면 마지막 백업을 우선 복구합니다. 이 로컬 persistence는 재현 가능한 개발/검증 adapter이며, production에서는 `src/ports.ts`의 Event Store/Job Queue 경계를 PostgreSQL·pgvector와 Redis/BullMQ 같은 운영 adapter로 교체해야 합니다.
+API snapshot은 `.data/state.json`, 직전 정상 snapshot 백업은 `.data/state.json.bak`, append-only event journal은 `.data/state.json.events.jsonl`, worker queue는 `.data/state.json.queue.json`, local observability는 `.data/observability.jsonl`에 기록됩니다. snapshot writer와 API/worker 사이에는 atomic replace + cross-process lock이 있고, primary snapshot이 손상되면 마지막 백업을 우선 복구합니다. 이 로컬 adapter의 현재 상태는 snapshot에 저장되고 event journal은 중복 방지된 변경 provenance/replay 보조 기록으로 유지됩니다. production에서는 `src/ports.ts`의 Event Store/Job Queue 경계를 PostgreSQL·pgvector와 Redis/BullMQ 같은 운영 adapter로 교체해야 합니다.
 
 ## Security boundary
 
 - workspace는 `WORKSPACE_ROOT` 내부로 정규화하고 symlink escape를 거부합니다.
-- shell은 fixed command ID만 허용하며 `repo.read`는 `repo-status`만 노출합니다.
+- shell은 process adapter에서 fixed command ID만 허용하며 `repo.read`는 status/diff/diff-check만 노출합니다. 임의의 개발 argv는 Docker sandbox에서만 allowlist를 통과합니다.
 - browser/network는 deny-by-default allowlist, credential URL 거부, redirect 재검사, Playwright route 차단을 사용합니다. DB source도 credential을 출력하지 않는 TCP health observation으로 실제 endpoint 상태를 확인합니다.
 - process 실행은 timeout/max-buffer와 환경 secret 제거를 적용합니다. `sandboxMode=docker`는 non-root, read-only, network none, CPU/memory/pid/tmpfs 제한을 추가합니다.
 - 외부/파괴적 작업은 P3 hard block 또는 Human approval item으로 전환됩니다.
@@ -84,18 +86,22 @@ API snapshot은 `.data/state.json`, 직전 정상 snapshot 백업은 `.data/stat
 ## Verification gates
 
 ```bash
+npm ci
+npm run lint
 npm run typecheck
 npm run build:api
 npm test -- --run
 npm run acceptance
 npm run acceptance:api
+npm run acceptance:autonomous
+npm run acceptance:experiments
 npm run acceptance:ui
 npm run build
 npm run security:check
 git diff --check
 ```
 
-`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
+`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:autonomous`는 빈 workspace와 실제 mock OpenAI-compatible HTTP server를 사용해 multi-cycle greenfield 파일 생성·build·test·managed process·Playwright 검증 및 maintenance patch를 실행합니다. `acceptance:experiments`는 동일 Intent·model·budget·starting digest를 유지한 격리 workspace A–E 실행을 수행하고 실제 run/evidence/evaluator 결과를 비교합니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
 
 ## Version control
 

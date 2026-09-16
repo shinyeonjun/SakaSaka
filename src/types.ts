@@ -59,7 +59,13 @@ export type EventType =
   | "EXPERIMENT_STARTED"
   | "EQUILIBRIUM_ENTERED"
   | "POLICY_CHANGED"
-  | "OBSERVATION_REFRESHED";
+  | "OBSERVATION_REFRESHED"
+  | "WORKSPACE_CHANGED"
+  | "PROCESS_STARTED"
+  | "PROCESS_EXITED"
+  | "APPROVAL_GRANT_ISSUED"
+  | "APPROVAL_GRANT_CONSUMED"
+  | "JOB_ENQUEUED";
 
 export type EventActor = "human" | "agent" | "system";
 export type EvidenceKind = "test" | "browser" | "screenshot" | "world" | "metric" | "human";
@@ -82,8 +88,14 @@ export interface ProjectSettings {
   previewUrl?: string;
   allowedDomains?: string[];
   sandboxMode?: "process" | "docker";
-  modelProvider?: "deterministic" | "openai-compatible";
+  modelProvider?: "auto" | "deterministic" | "openai-compatible";
   reviewIntervalMinutes?: number;
+  failureThreshold?: number;
+  noProgressThreshold?: number;
+  cycleDelayMs?: number;
+  approvalTtlMinutes?: number;
+  processMaxLifetimeMs?: number;
+  maxConcurrentProcesses?: number;
 }
 
 export interface ProjectMetrics {
@@ -140,7 +152,7 @@ export interface WorldSnapshot {
   sources: Record<WorldSourceKey, WorldSource>;
 }
 
-export type ObservationSource = WorldSourceKey | "shell";
+export type ObservationSource = WorldSourceKey | "shell" | "workspace" | "process";
 
 export interface Observation {
   id: string;
@@ -171,13 +183,15 @@ export interface Evidence {
   metadata?: Record<string, string | number | boolean>;
 }
 
+export type ActionParamValue = string | number | boolean | string[];
+
 export interface ActionEnvelope {
   type: ActionType;
   intentRef: string;
   worldCursor: string;
   rationaleSummary: string;
   tool?: string;
-  params?: Record<string, string | number | boolean>;
+  params?: Record<string, ActionParamValue>;
   expectedValue?: number;
   riskClass?: RiskClass;
   evidencePlan?: string[];
@@ -218,6 +232,7 @@ export interface AgentAction extends ActionEnvelope {
   completedAt?: string;
   toolResultRef?: string;
   boundaryDecision?: "allowed" | "blocked" | "human-approval";
+  approvalGrantId?: string;
 }
 
 export interface Run {
@@ -229,6 +244,11 @@ export interface Run {
   startedAt: string;
   lastCycleAt: string;
   leaseExpiresAt: string;
+  consecutiveFailures: number;
+  noProgressCycles: number;
+  lastMeaningfulProgressAt?: string;
+  lastFailureSignature?: string;
+  activeProcessIds: string[];
   stopReason?: string;
 }
 
@@ -306,6 +326,44 @@ export interface ContextPacket {
     evidenceIds: string[];
     risk: RiskClass;
     createdAt: string;
+  }>;
+  recentActionViews?: Array<{
+    id: string;
+    type: ActionType;
+    status: ActionStatus;
+    tool?: string;
+    params?: Record<string, ActionParamValue>;
+    rationaleSummary: string;
+    intentRef: string;
+    worldCursor: string;
+    approvalGrantId?: string;
+    createdAt: string;
+  }>;
+  recentEvidenceViews?: Array<{
+    id: string;
+    kind: EvidenceKind;
+    verdict: Verdict;
+    summary: string;
+    source: string;
+    actionId?: string;
+    rawRef?: string;
+    createdAt: string;
+  }>;
+  activeApprovalGrantViews?: Array<{
+    id: string;
+    actionFingerprint: string;
+    tool?: string;
+    expiresAt: string;
+  }>;
+  activeProcessViews?: Array<{
+    id: string;
+    argv: string[];
+    status: ManagedProcess["status"];
+    pid?: number;
+    port?: number;
+    previewUrl?: string;
+    stdoutRawRef?: string;
+    stderrRawRef?: string;
   }>;
   /** Runtime errors remain visible until a later verified cycle closes the gap. */
   activeIncidentRefs?: string[];
@@ -392,12 +450,47 @@ export interface HumanItem {
   blockingScope: string[];
   continuingScope: string[];
   options: HumanOption[];
+  responseMode?: "choice" | "free-text" | "choice-and-text";
   answer?: string;
   answerLabel?: string;
   priority: "high" | "medium" | "low";
   createdAt: string;
   updatedAt: string;
   evidenceRefs: string[];
+}
+
+export interface ApprovalGrant {
+  id: string;
+  projectId: string;
+  approvalItemId: string;
+  originalActionRef: string;
+  actionFingerprint: string;
+  tool?: string;
+  paramsFingerprint: string;
+  paramsCanonical: string;
+  issuedAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+  singleUse: true;
+}
+
+export interface ManagedProcess {
+  id: string;
+  projectId: string;
+  runId: string;
+  argv: string[];
+  cwd: string;
+  pid?: number;
+  containerId?: string;
+  port?: number;
+  previewUrl?: string;
+  status: "starting" | "running" | "exited" | "stopped" | "failed";
+  exitCode?: number;
+  startedAt: string;
+  endedAt?: string;
+  stdoutRawRef?: string;
+  stderrRawRef?: string;
+  error?: string;
 }
 
 export interface Artifact {
@@ -451,6 +544,7 @@ export interface Experiment {
   evaluatorRefs?: string[];
   variantConfig?: Record<string, string | number | boolean>;
   runIds?: string[];
+  evaluationEvidenceRefs?: string[];
 }
 
 export interface AppState {
@@ -473,4 +567,6 @@ export interface AppState {
   relations: Relation[];
   retrievalIndex: RetrievalIndexEntry[];
   experiments: Experiment[];
+  approvalGrants: ApprovalGrant[];
+  processes: ManagedProcess[];
 }
