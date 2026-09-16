@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createEmptyState } from "../src/emptyState";
 import { executeLocalCycle } from "./localRuntime";
-import { wakeProject } from "../src/runtime";
+import { recoverTransientProviderFailures, wakeProject } from "../src/runtime";
 import { JsonlEventStore } from "./jsonlEventStore";
 import { JsonJobQueue } from "./jobQueue";
 import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
@@ -88,7 +88,9 @@ function persistState(state: AppState): void {
 export async function runWorkerOnce(): Promise<{ processed: string[] }> {
   try {
     return await withFileLock(lockPath, async () => {
-      const state = loadState();
+      const loadedState = loadState();
+      const state = recoverTransientProviderFailures(loadedState);
+      if (state !== loadedState) persistState(state);
       hydrateManagedProcesses(state.processes);
       let next = state;
       const processed: string[] = [];

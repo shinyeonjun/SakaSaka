@@ -27,7 +27,7 @@ function contextFixture() {
   return context;
 }
 
-function writeCliFixture(output: string, exitCode = 0, requiredArgs: string[] = []): { binary: string; prefix: string[] } {
+function writeCliFixture(output: string, exitCode = 0, requiredArgs: string[] = [], stderr = ""): { binary: string; prefix: string[] } {
   const directory = mkdtempSync(join(tmpdir(), "sakasaka-codex-cli-test-"));
   temporaryDirectories.push(directory);
   const script = join(directory, "fixture.mjs");
@@ -36,6 +36,7 @@ const action = process.env.CODEX_GATEWAY_ACTION;
 if (!process.argv.slice(2).includes("exec")) process.exit(41);
 if (!${JSON.stringify(requiredArgs)}.every((argument) => process.argv.slice(2).includes(argument))) process.exit(42);
 process.stdout.write(${JSON.stringify(output)});
+process.stderr.write(${JSON.stringify(stderr)});
 if (${exitCode} !== 0) process.exit(${exitCode});
 `, "utf8");
   return { binary: process.execPath, prefix: [script] };
@@ -53,6 +54,29 @@ const hasPromptArgument = args.some((argument) => argument.includes("지속형 �
 if (hasPromptArgument && stdin.trim()) {
   process.stderr.write("Reading additional input from stdin...");
   process.exit(2);
+}
+process.stdout.write(${JSON.stringify(output)});
+`, "utf8");
+  return { binary: process.execPath, prefix: [script] };
+}
+
+function writeStrictSchemaFixture(output: string): { binary: string; prefix: string[] } {
+  const directory = mkdtempSync(join(tmpdir(), "sakasaka-codex-cli-schema-test-"));
+  temporaryDirectories.push(directory);
+  const script = join(directory, "fixture.mjs");
+  writeFileSync(script, `
+import { readFileSync } from "node:fs";
+let stdin = "";
+for await (const chunk of process.stdin) stdin += chunk;
+const args = process.argv.slice(2);
+const schemaPath = args[args.indexOf("--output-schema") + 1];
+const schema = JSON.parse(readFileSync(schemaPath, "utf8"));
+const properties = Object.keys(schema.properties ?? {});
+const required = new Set(schema.required ?? []);
+const missing = properties.find((property) => !required.has(property));
+if (missing) {
+  process.stdout.write(JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_json_schema", message: "Missing '" + missing + "'." } }) + "\\n");
+  process.exit(1);
 }
 process.stdout.write(${JSON.stringify(output)});
 `, "utf8");
@@ -125,5 +149,46 @@ describe("Codex CLI ModelGateway", () => {
     const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, timeoutMs: 5_000 });
 
     await expect(gateway.decide(context)).resolves.toEqual(action);
+  });
+
+  it("Codex strict output schema의 모든 속성을 required로 선언한다", async () => {
+    const context = contextFixture();
+    const action: ActionEnvelope = {
+      type: "ACT",
+      intentRef: context.intentRef,
+      worldCursor: context.worldCursor,
+      rationaleSummary: "현재 workspace를 관찰합니다.",
+      tool: "repo.read",
+      params: { commandId: "repo-status" },
+      expectedValue: 0.4,
+      riskClass: "P0",
+      evidencePlan: ["world"],
+    };
+    const fixture = writeStrictSchemaFixture([
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(action) } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } }),
+      "",
+    ].join("\n"));
+    process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
+    const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, timeoutMs: 5_000 });
+
+    await expect(gateway.decide(context)).resolves.toEqual(action);
+  });
+
+  it("stderr 경고가 stdout의 구조화된 provider 오류를 가리지 않는다", async () => {
+    const context = contextFixture();
+    const fixture = writeCliFixture(
+      JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_json_schema", message: "schema rejected" } }),
+      1,
+      [],
+      "Reading additional input from stdin...",
+    );
+    process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
+    const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, timeoutMs: 5_000 });
+
+    const action = await gateway.decide(context);
+    expect(action.type).toBe("WAIT");
+    expect(action.rationaleSummary).toContain("schema rejected");
+    expect(action.rationaleSummary).not.toContain("Reading additional input from stdin");
   });
 });

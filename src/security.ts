@@ -223,22 +223,23 @@ export function parseActionEnvelope(value: unknown): ActionEnvelope | undefined 
   const worldCursor = candidate.worldCursor;
   const rationaleSummary = candidate.rationaleSummary;
   if (!actionTypes.includes(type as ActionType) || typeof intentRef !== "string" || intentRef.length > 512 || typeof worldCursor !== "string" || worldCursor.length > 512 || typeof rationaleSummary !== "string" || !rationaleSummary.trim() || rationaleSummary.length > 4_000) return undefined;
-  if (type === "ACT" && (typeof candidate.tool !== "string" || !candidate.tool.trim())) return undefined;
-  if (type !== "ACT" && candidate.tool !== undefined) return undefined;
-  const params = candidate.params;
+  const tool = candidate.tool === null ? undefined : candidate.tool;
+  if (type === "ACT" && (typeof tool !== "string" || !tool.trim())) return undefined;
+  if (type !== "ACT" && tool !== undefined) return undefined;
+  const params = candidate.params === null ? undefined : candidate.params;
   if (params !== undefined && (!isBoundedParams(params) || JSON.stringify(params).length > maxActionPayloadBytes)) return undefined;
-  const riskClass = candidate.riskClass;
+  const riskClass = candidate.riskClass === null ? undefined : candidate.riskClass;
   if (riskClass !== undefined && !["P0", "P1", "P2", "P3"].includes(String(riskClass))) return undefined;
-  const evidencePlan = candidate.evidencePlan;
+  const evidencePlan = candidate.evidencePlan === null ? undefined : candidate.evidencePlan;
   if (evidencePlan !== undefined && (!Array.isArray(evidencePlan) || evidencePlan.length > 32 || evidencePlan.some((item) => typeof item !== "string" || item.length > 256))) return undefined;
-  const expectedValue = candidate.expectedValue;
+  const expectedValue = candidate.expectedValue === null ? undefined : candidate.expectedValue;
   if (expectedValue !== undefined && (typeof expectedValue !== "number" || !Number.isFinite(expectedValue) || expectedValue < 0 || expectedValue > 1)) return undefined;
   return {
     type: type as ActionType,
     intentRef,
     worldCursor,
     rationaleSummary,
-    tool: typeof candidate.tool === "string" && candidate.tool.length <= 256 ? candidate.tool : undefined,
+    tool: typeof tool === "string" && tool.length <= 256 ? tool : undefined,
     params: params as ActionEnvelope["params"],
     expectedValue,
     riskClass: riskClass as ActionEnvelope["riskClass"],

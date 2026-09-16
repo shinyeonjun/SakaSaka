@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyState } from "./emptyState";
-import { assembleContext, createProject, deleteProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordNonToolAction, resolveHumanItem, resumeProject, runCycle, updateProjectModelSettings } from "./runtime";
+import { assembleContext, createProject, deleteProject, getProject, getProjectEvents, getOpenHumanItems, getResourceLedger, getRun, getWorldSnapshot, pauseProject, recordNonToolAction, recoverTransientProviderFailures, resolveHumanItem, resumeProject, runCycle, updateProjectModelSettings } from "./runtime";
 import type { ActionEnvelope, AppState } from "./types";
 import type { ToolResult } from "./ports";
 
@@ -72,6 +72,41 @@ describe("Intent World runtime", () => {
     expect(getProject(next, projectId)?.settings.modelName).toBe("codex-test");
     expect(getProject(next, projectId)?.status).toBe("ACTIVE");
     expect(getProjectEvents(next, projectId).some((event) => event.type === "POLICY_CHANGED" && event.summary === "모델 설정 변경")).toBe(true);
+  });
+
+  it("provider 실패는 한 번에 중단하지 않고 한도까지 재시도하며 이전 중단 상태를 복구한다", () => {
+    const { state, projectId } = projectState("project-provider-recovery", "실제 모델 provider로 다음 행동을 선택해줘", { failureThreshold: 3 });
+    const providerFailure = (current: AppState) => {
+      const project = getProject(current, projectId)!;
+      return recordNonToolAction(current, projectId, {
+        type: "WAIT",
+        intentRef: project.intentId,
+        worldCursor: getWorldSnapshot(current, projectId)!.cursorEventId,
+        rationaleSummary: "모델 게이트웨이를 사용할 수 없습니다 · Codex CLI 실행 실패: provider unavailable",
+        riskClass: "P0",
+      });
+    };
+
+    const first = providerFailure(state);
+    expect(getProject(first, projectId)?.status).toBe("ACTIVE");
+    expect(getRun(first, projectId)?.consecutiveFailures).toBe(1);
+    expect(getProjectEvents(first, projectId).some((event) => event.type === "EQUILIBRIUM_ENTERED")).toBe(false);
+    const second = providerFailure(first);
+    expect(getProject(second, projectId)?.status).toBe("ACTIVE");
+    expect(getRun(second, projectId)?.consecutiveFailures).toBe(2);
+    const stalled = providerFailure(second);
+    expect(getProject(stalled, projectId)?.status).toBe("STALLED");
+    expect(getRun(stalled, projectId)?.consecutiveFailures).toBe(3);
+    expect(getProject(recoverTransientProviderFailures(stalled), projectId)?.status).toBe("STALLED");
+
+    const legacyStalled = {
+      ...stalled,
+      runs: stalled.runs.map((run) => run.id === getRun(stalled, projectId)!.id ? { ...run, consecutiveFailures: 0, noProgressCycles: 0, lastFailureSignature: undefined } : run),
+    };
+    const recovered = recoverTransientProviderFailures(legacyStalled);
+    expect(getProject(recovered, projectId)?.status).toBe("ACTIVE");
+    expect(getRun(recovered, projectId)).toMatchObject({ status: "ACTIVE", phase: "wake", consecutiveFailures: 0, noProgressCycles: 0 });
+    expect(getProjectEvents(recovered, projectId).some((event) => event.summary === "ACTIVE · provider failure recovery")).toBe(true);
   });
 
   it("프로젝트 삭제는 연결된 상태를 제거하고 작업 폴더 경로는 런타임 밖에서 보존한다", () => {

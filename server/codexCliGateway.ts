@@ -22,29 +22,35 @@ const actionSchema = {
     intentRef: { type: "string" },
     worldCursor: { type: "string" },
     rationaleSummary: { type: "string" },
-    tool: { type: "string" },
+    tool: { anyOf: [{ type: "string" }, { type: "null" }] },
     params: {
-      type: "object",
-      additionalProperties: {
-        anyOf: [
-          { type: "string" },
-          { type: "number" },
-          { type: "boolean" },
-          { type: "array", items: { type: "string" } },
-        ],
-      },
+      anyOf: [
+        {
+          type: "object",
+          additionalProperties: {
+            anyOf: [
+              { type: "string" },
+              { type: "number" },
+              { type: "boolean" },
+              { type: "array", items: { type: "string" } },
+            ],
+          },
+        },
+        { type: "null" },
+      ],
     },
-    expectedValue: { type: "number" },
-    riskClass: { type: "string", enum: ["P0", "P1", "P2", "P3"] },
-    evidencePlan: { type: "array", items: { type: "string" } },
+    expectedValue: { anyOf: [{ type: "number", minimum: 0, maximum: 1 }, { type: "null" }] },
+    riskClass: { anyOf: [{ type: "string", enum: ["P0", "P1", "P2", "P3"] }, { type: "null" }] },
+    evidencePlan: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "null" }] },
   },
-  required: ["type", "intentRef", "worldCursor", "rationaleSummary"],
+  required: ["type", "intentRef", "worldCursor", "rationaleSummary", "tool", "params", "expectedValue", "riskClass", "evidencePlan"],
 } as const;
 
 interface CodexEvent {
   type?: string;
   thread_id?: string;
-  item?: { type?: string; text?: string };
+  message?: string;
+  item?: { type?: string; text?: string; message?: string };
   usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
   error?: { message?: string } | string;
 }
@@ -174,6 +180,16 @@ function parseJsonLines(stdout: string): CodexEvent[] {
   });
 }
 
+function structuredFailure(stdout: string): string | undefined {
+  for (const event of parseJsonLines(stdout).reverse()) {
+    const message = typeof event.error === "string"
+      ? event.error
+      : event.error?.message ?? event.message ?? (event.item?.type === "error" ? event.item.message : undefined);
+    if (typeof message === "string" && message.trim()) return message.trim();
+  }
+  return undefined;
+}
+
 function finalAgentText(events: CodexEvent[]): string | undefined {
   for (const event of [...events].reverse()) {
     if (event.item?.type === "agent_message" && typeof event.item.text === "string") return event.item.text;
@@ -207,6 +223,7 @@ function modelInstruction(): string {
     "IDEA는 현재 필수 목표 밖의 선택적 개선 제안입니다.",
     "CONCERN은 아직 실패는 아니지만 인간에게 알려야 할 위험 또는 부채입니다.",
     "WAIT는 지금 이용 가능한 행동 중 충분한 가치가 있는 것이 없을 때만 선택하십시오.",
+    "모든 ActionEnvelope 필드를 반환하십시오. 현재 ActionType에 해당하지 않는 선택 필드는 null로 반환하십시오.",
     "반드시 정확히 하나의 ActionEnvelope JSON만 최종 답변으로 반환하십시오.",
     "ActionEnvelope의 type은 ACT, QUESTION, IDEA, CONCERN, WAIT 중 하나여야 합니다.",
   ].join("\n");
@@ -312,7 +329,7 @@ export class CodexCliModelGateway implements ModelGateway {
       const modelVersion = `codex-cli:${this.model ?? "configured"}`;
       this.usageByRun.set(key, { modelVersion, tokens: usage.totalTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, usageKnown: Boolean(events.find((event) => event.type === "turn.completed" && event.usage)), cost: modelCost(usage.totalTokens), latencyMs: Date.now() - startedAt, rawRef, requestId: usage.requestId ?? requestId });
       if (result.exitCode !== 0) {
-        const failure = redactSecretLikeText(result.stderr || result.stdout).replace(/\s+/g, " ").slice(0, 500) || `exit code ${result.exitCode ?? "unknown"}`;
+        const failure = redactSecretLikeText(structuredFailure(result.stdout) ?? (result.stderr || result.stdout)).replace(/\s+/g, " ").slice(0, 500) || `exit code ${result.exitCode ?? "unknown"}`;
         return { type: "WAIT", intentRef: context.intentRef, worldCursor: context.worldCursor, rationaleSummary: `모델 게이트웨이를 사용할 수 없습니다 · Codex CLI 실행 실패: ${failure}`, expectedValue: 0, riskClass: "P0", evidencePlan: ["world"] };
       }
       const text = finalAgentText(events);

@@ -97,6 +97,7 @@ describe("action boundary enforcement", () => {
     expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "테스트 실행", tool: "shell.sandbox", params: { commandId: "quality-test" } })?.type).toBe("ACT");
     expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "잘못된 값", params: { command: { injected: true } } })).toBeUndefined();
     expect(parseActionEnvelope({ type: "ACT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "도구 누락" })).toBeUndefined();
+    expect(parseActionEnvelope({ type: "WAIT", intentRef: "intent-1", worldCursor: "world-1", rationaleSummary: "대기", tool: null, params: null, expectedValue: null, riskClass: null, evidencePlan: null })).toMatchObject({ type: "WAIT", tool: undefined, params: undefined, expectedValue: undefined, riskClass: undefined, evidencePlan: undefined });
     const first = action(project());
     expect(actionFingerprint(first)).toBe(actionFingerprint(first));
     expect(actionFingerprint(first)).not.toBe(actionFingerprint({ ...first, params: { commandId: "repo-diff" } }));

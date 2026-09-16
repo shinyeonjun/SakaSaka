@@ -257,6 +257,55 @@ function updateProject(state: AppState, project: Project): AppState {
   return { ...state, projects: replaceById(state.projects, project) };
 }
 
+export function isProviderUnavailableReason(reason: string | undefined): boolean {
+  return typeof reason === "string" && /(?:model gateway unavailable|모델 게이트웨이를 사용할 수 없습니다)/i.test(reason);
+}
+
+/**
+ * A provider failure from an older runtime must not strand a project forever.
+ * Preserve the failed action and evidence, but reopen only this transient
+ * failure state so the worker can retry with the current gateway protocol.
+ */
+export function recoverTransientProviderFailures(state: AppState): AppState {
+  let next = state;
+  for (const project of state.projects) {
+    const run = getRun(next, project.id);
+    if (project.status !== "STALLED" || !run || run.status !== "STALLED" || run.consecutiveFailures !== 0 || run.lastFailureSignature || !isProviderUnavailableReason(run.stopReason)) continue;
+    const updatedAt = nowIso();
+    next = updateProject(next, { ...project, status: "ACTIVE", updatedAt, nextReviewAt: undefined });
+    next = updateRun(next, {
+      ...run,
+      status: "ACTIVE",
+      phase: "wake",
+      consecutiveFailures: 0,
+      noProgressCycles: 0,
+      lastFailureSignature: undefined,
+      stopReason: undefined,
+      leaseExpiresAt: nextLease(project, Date.parse(updatedAt)),
+    });
+    next = appendEvent(next, {
+      projectId: project.id,
+      type: "RUN_STATE_CHANGED",
+      actor: "system",
+      summary: "ACTIVE · provider failure recovery",
+      detail: "이전 모델 게이트웨이 실패 상태를 보존한 채 현재 Gateway 프로토콜로 재시도합니다.",
+      runId: run.id,
+      createdAt: updatedAt,
+    });
+    next = appendEvent(next, {
+      projectId: project.id,
+      type: "WAKE_TRIGGERED",
+      actor: "system",
+      summary: "wake · provider failure recovery",
+      detail: "프로젝트 재시작 없이 일시적인 provider 실패를 다시 관찰합니다.",
+      runId: run.id,
+      createdAt: updatedAt,
+      payload: { trigger: "provider-recovery" },
+    });
+  }
+  return next;
+}
+
 export function updateProjectModelSettings(
   state: AppState,
   projectId: string,
@@ -264,11 +313,13 @@ export function updateProjectModelSettings(
 ): AppState {
   const project = getProject(state, projectId);
   if (!project) return state;
+  const run = getRun(state, projectId);
+  const shouldRetryProvider = project.status === "STALLED" && run?.consecutiveFailures === 0 && !run.lastFailureSignature && isProviderUnavailableReason(run.stopReason);
   const modelProvider = settings.modelProvider ?? project.settings.modelProvider ?? "auto";
   if (!(["auto", "deterministic", "openai-compatible", "codex-cli"] as const).includes(modelProvider)) return state;
   const modelName = typeof settings.modelName === "string" ? settings.modelName.trim() || undefined : undefined;
   if (modelName && !modelIdPattern.test(modelName)) return state;
-  if (project.settings.modelProvider === modelProvider && project.settings.modelName === modelName) return state;
+  if (project.settings.modelProvider === modelProvider && project.settings.modelName === modelName) return shouldRetryProvider ? recoverTransientProviderFailures(state) : state;
   const updatedAt = nowIso();
   let next = updateProject(state, {
     ...project,
@@ -276,14 +327,15 @@ export function updateProjectModelSettings(
     updatedAt,
   });
   if (project.status === "EQUILIBRIUM") next = setRuntimeStatus(next, projectId, "ACTIVE", "wake", "모델 설정 변경으로 runtime을 다시 시작", "human");
-  const run = getRun(next, projectId);
+  if (shouldRetryProvider) next = recoverTransientProviderFailures(next);
+  const updatedRun = getRun(next, projectId);
   return appendEvent(next, {
     projectId,
     type: "POLICY_CHANGED",
     actor: "human",
     summary: "모델 설정 변경",
     detail: `${modelProvider}${modelName ? ` · ${modelName}` : " · provider 기본 모델"}`,
-    runId: run?.id,
+    runId: updatedRun?.id,
     createdAt: updatedAt,
   });
 }
@@ -1583,11 +1635,16 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   }
   next = refreshHumanWorld(next, projectId, createdAt);
   const hasBlocking = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
-  const noProgressCycles = action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
+  const providerUnavailable = action.type === "WAIT" && isProviderUnavailableReason(action.rationaleSummary);
+  const providerFailureSignature = providerUnavailable ? "model-provider-unavailable" : undefined;
+  const consecutiveFailures = providerUnavailable
+    ? (run.lastFailureSignature === providerFailureSignature ? run.consecutiveFailures : 0) + 1
+    : run.consecutiveFailures;
+  const noProgressCycles = providerUnavailable ? run.noProgressCycles + 1 : action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
   const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
-  const providerUnavailable = action.type === "WAIT" && /model gateway unavailable|모델 게이트웨이를 사용할 수 없습니다/i.test(action.rationaleSummary);
+  const failureThreshold = positiveSetting(project.settings.failureThreshold, 3, 32);
   const nextStatus: RuntimeStatus = providerUnavailable
-    ? "STALLED"
+    ? consecutiveFailures >= failureThreshold ? "STALLED" : "ACTIVE"
     : action.type === "WAIT"
       ? hasBlocking ? humanBoundaryStatus(next, projectId) : "EQUILIBRIUM"
     : noProgressCycles >= noProgressThreshold
@@ -1623,8 +1680,8 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   };
   const updatedProject: Project = { ...project, status: nextStatus, currentActionId: actionId, updatedAt: createdAt, nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined };
   next = updateProject(next, updatedProject);
-  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: providerUnavailable ? action.rationaleSummary : nextStatus === "STALLED" ? `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
-  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: providerUnavailable ? "모델 provider를 설정한 뒤 재개해야 합니다." : action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, consecutiveFailures, lastFailureSignature: providerFailureSignature ?? run.lastFailureSignature, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: nextStatus === "STALLED" ? providerUnavailable ? action.rationaleSummary : `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
+  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: providerUnavailable ? nextStatus === "STALLED" ? "모델 provider 실패 한도에 도달했습니다. 설정을 확인한 뒤 다시 깨울 수 있습니다." : `모델 provider를 사용할 수 없어 재시도합니다 · ${consecutiveFailures}/${failureThreshold}` : action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
   if (nextStatus === "EQUILIBRIUM") next = appendEvent(next, { projectId, type: "EQUILIBRIUM_ENTERED", actor: "system", summary: "EQUILIBRIUM · no tool dispatch required", detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.", runId: run.id, createdAt });
   return moveWorldCursor(next, projectId, next.events.at(-1)?.id ?? actionId, createdAt);
 }
