@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { CodexAppServer } from "../server/codexAppServer";
 import { runNativeEpisode } from "../server/nativeRuntime";
@@ -18,10 +18,6 @@ const acceptanceParent = process.env.GITHUB_WORKSPACE?.trim() || process.cwd();
 const root = mkdtempSync(join(acceptanceParent, ".sakasaka-native-acceptance-"));
 const workspace = join(root, "workspace"), home = join(root, "codex-home");
 mkdirSync(workspace); mkdirSync(home);
-// The CI fixture is launched through sudo because its outer runner blocks
-// unprivileged user namespaces. Keep the temporary bind source traversable
-// for the sandbox child while leaving the workspace boundary under test.
-chmodSync(root, 0o755); chmodSync(workspace, 0o777);
 process.env.WORKSPACE_ROOT = root;
 process.env.INTENT_WORLD_RAW_DIR = join(root, "raw");
 const binary = process.env.SAKASAKA_TEST_CODEX_BIN;

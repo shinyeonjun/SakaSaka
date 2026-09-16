@@ -47,7 +47,10 @@ jobs:
       - run: git diff --check
 
   native-codex-integration:
-    runs-on: ubuntu-latest
+    # Codex's Bubblewrap workspace sandbox needs unprivileged user namespaces.
+    # Keep this job on the supported 22.04 hosted image; ubuntu-latest may run
+    # under a hardened outer container that denies that kernel capability.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -62,20 +65,7 @@ jobs:
       - name: Install Linux sandbox prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends apparmor bubblewrap uidmap
-          if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
-            # GitHub-hosted Ubuntu may enforce the AppArmor userns restriction.
-            # Allow only the system Bubblewrap executable used by this fixture;
-            # do not disable the restriction globally on the runner.
-            printf '%s\n' \
-              'abi <abi/4.0>,' \
-              'include <tunables/global>' \
-              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
-              '  userns,' \
-              '  include if exists <local/bwrap>' \
-              '}' | sudo tee /etc/apparmor.d/bwrap > /dev/null
-            sudo apparmor_parser --replace /etc/apparmor.d/bwrap
-          fi
+          sudo apt-get install --yes --no-install-recommends bubblewrap uidmap
           bwrap --version
       - name: Install pinned public Codex binary (no login)
         run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
@@ -87,7 +77,4 @@ jobs:
         run: |
           export SAKASAKA_TEST_CODEX_BIN="$RUNNER_TEMP/native-codex/node_modules/.bin/codex"
           "$SAKASAKA_TEST_CODEX_BIN" --version
-          # The hosted runner's outer container denies unprivileged userns;
-          # this credential-free, disposable fixture needs root only so
-          # Bubblewrap can create its normal workspace-write sandbox.
-          sudo -E env "PATH=$PATH" npm run acceptance:native
+          npm run acceptance:native
