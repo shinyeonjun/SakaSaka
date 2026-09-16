@@ -123,6 +123,7 @@ try {
     : "Native acceptance passed: actual Codex App Server, native command/write/failure recovery, async human answer, real Chromium, workspace write boundary, persistent-thread maintenance. Model responses were scripted; no live-model ability claim.");
 } catch (error) {
   console.error("Native events", state.events.slice(-8));
+  console.error("Native evidence", state.evidence);
   const target = process.env.NATIVE_ACCEPTANCE_DEBUG_DIR;
   if (target) { mkdirSync(target, { recursive: true }); writeFileSync(join(target, "state.json"), JSON.stringify(state, null, 2)); console.error("Debug root:", root); }
   throw error;
