@@ -87,6 +87,7 @@ async function main(): Promise<void> {
     const newPage = await newContext.newPage();
     await open(newPage, baseUrl, "/projects/new");
     await assertNoHorizontalOverflow(newPage, "신규 프로젝트 데스크톱");
+    assert.equal(await newPage.getByLabel("작업 폴더 경로").isDisabled(), true, "브라우저 전용 모드가 OS 폴더를 연결하면 안 됩니다.");
     await newPage.getByLabel("의도").fill("팀이 함께 사용할 수 있는 품질 검증 workspace를 만들어줘");
     await newPage.getByRole("button", { name: "시작하기" }).click();
     await newPage.waitForURL(/\/projects\/[^/]+$/);
@@ -116,6 +117,7 @@ async function main(): Promise<void> {
       [`${projectPath}/world`, "현재 월드"],
       [`${projectPath}/artifacts`, "산출물"],
       [`${projectPath}/experiments`, "실험"],
+      [`${projectPath}/settings`, "프로젝트 설정"],
     ] as const) {
       await open(desktop, baseUrl, path);
       await assertNoHorizontalOverflow(desktop, `${heading} 데스크톱`);
@@ -125,6 +127,8 @@ async function main(): Promise<void> {
     assert.equal(await desktop.getByText("증거 연결").count(), 1);
     await open(desktop, baseUrl, `${projectPath}/world`);
     assert.equal(await desktop.getByText("런타임 경계").count(), 1);
+    await open(desktop, baseUrl, `${projectPath}/settings`);
+    assert.equal(await desktop.getByRole("heading", { name: "프로젝트 설정", exact: true }).count(), 1);
 
     const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     contexts.push(mobileContext);

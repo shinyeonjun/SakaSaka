@@ -3,6 +3,7 @@ import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, Label, PageHeading } from "../components/ui";
+import type { ProjectSettings } from "../types";
 
 export function NewProjectPage() {
   const { createProject } = useApp();
@@ -13,6 +14,7 @@ export function NewProjectPage() {
   const [maxHours, setMaxHours] = useState(12);
   const [modelProvider, setModelProvider] = useState<"auto" | "deterministic" | "openai-compatible" | "codex-cli">(isControlPlaneEnabled ? "auto" : "deterministic");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [showError, setShowError] = useState(false);
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -21,7 +23,9 @@ export function NewProjectPage() {
       setShowError(true);
       return;
     }
-    const id = createProject(intent, { budgetLimit: budget, maxHours, modelProvider, sandboxMode });
+    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, modelProvider, sandboxMode };
+    if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
+    const id = createProject(intent, settings);
     navigate(projectPath(id));
   };
 
@@ -40,6 +44,40 @@ export function NewProjectPage() {
           />
             <p id="intent-help" className="field-help">AI는 이 문장을 작업 목록으로 고정 변환하지 않습니다. 실제 월드를 보며 필요한 일을 스스로 발견합니다.</p>
           {showError && <p id="intent-error" className="field-error" role="alert">먼저 원하는 결과를 한 문장으로 남겨주세요.</p>}
+        </Card>
+
+        <Card className="workspace-binding-card">
+          <div className="workspace-binding-heading">
+            <div>
+              <Label htmlFor="workspace-path">작업 폴더 선택</Label>
+              <h2>이 프로젝트가 실제로 변경할 폴더</h2>
+            </div>
+            <span className={isControlPlaneEnabled ? "connection-mark connection-mark-ready" : "connection-mark connection-mark-muted"}>
+              {isControlPlaneEnabled ? "API 모드" : "브라우저 전용"}
+            </span>
+          </div>
+          <input
+            id="workspace-path"
+            className="workspace-path-input"
+            type="text"
+            value={workspacePath}
+            onChange={(event) => setWorkspacePath(event.target.value)}
+            placeholder="예: D:\\workspace\\my-project"
+            disabled={!isControlPlaneEnabled}
+            aria-label="작업 폴더 경로"
+            aria-describedby="workspace-path-help"
+          />
+          <div className="workspace-binding-footer">
+            <p id="workspace-path-help" className="field-help">
+              {isControlPlaneEnabled
+                ? "경로를 입력하면 이 프로젝트는 해당 폴더 하나만 사용합니다. 비워두면 WORKSPACE_ROOT 안에 전용 폴더를 자동으로 만듭니다."
+                : "브라우저 보안상 이 모드에서는 OS 폴더를 직접 연결할 수 없습니다. 실제 파일 작업은 API와 worker를 함께 실행한 뒤 시작하세요."}
+            </p>
+            {isControlPlaneEnabled && workspacePath && <Button variant="subtle" size="small" onClick={() => setWorkspacePath("")}>전용 폴더 자동 생성</Button>}
+          </div>
+          <InlineNotice tone={isControlPlaneEnabled ? "blue" : "yellow"} title="경계">
+            서버는 WORKSPACE_ROOT 밖의 경로, 심볼릭 링크 탈출, 쓰기 불가 폴더를 거부합니다.
+          </InlineNotice>
         </Card>
 
         <div className="split-grid split-grid-2">

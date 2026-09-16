@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { redactSecretLikeText, parseActionEnvelope } from "../src/security";
 import type { ModelCapabilities, ModelGateway, ModelUsage } from "../src/ports";
 import type { ActionEnvelope, ContextPacket } from "../src/types";
@@ -9,6 +10,7 @@ import type { ActionEnvelope, ContextPacket } from "../src/types";
 const defaultTimeoutMs = 120_000;
 const maxOutputBytes = 1_048_576;
 const maxPromptBytes = 512 * 1024;
+const execFileAsync = promisify(execFile);
 
 const actionSchema = {
   type: "object",
@@ -61,6 +63,69 @@ function safeCliEnvironment(): NodeJS.ProcessEnv {
 
 function configuredBinary(): string {
   return process.env.CODEX_CLI_BIN?.trim() || (process.platform === "win32" ? "codex.exe" : "codex");
+}
+
+export interface CodexCliDiagnostics {
+  binary: string;
+  installed: boolean;
+  version?: string;
+  authentication: "configured" | "verified" | "unverified" | "missing";
+  detail: string;
+}
+
+/**
+ * Reads the local CLI version and login status. It never starts a model turn,
+ * consumes model tokens, or returns credential material to the caller.
+ */
+export async function inspectCodexCli(): Promise<CodexCliDiagnostics> {
+  const binary = configuredBinary();
+  try {
+    const result = await execFileAsync(binary, ["--version"], {
+      env: safeCliEnvironment(),
+      shell: false,
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 8 * 1024,
+    });
+    const version = redactSecretLikeText(String(result.stdout || result.stderr || "").trim()).replace(/\s+/g, " ").slice(0, 160) || undefined;
+    let authentication: CodexCliDiagnostics["authentication"] = process.env.CODEX_API_KEY?.trim() ? "configured" : "unverified";
+    let detail = process.env.CODEX_API_KEY?.trim()
+      ? "CLI 실행 파일과 CODEX_API_KEY 설정을 확인했습니다."
+      : "CLI 실행 파일은 확인했습니다.";
+    try {
+      const login = await execFileAsync(binary, ["login", "status"], {
+        env: safeCliEnvironment(),
+        shell: false,
+        windowsHide: true,
+        timeout: 5_000,
+        maxBuffer: 8 * 1024,
+      });
+      const loginSummary = redactSecretLikeText(String(login.stdout || login.stderr || "").trim()).replace(/\s+/g, " ").slice(0, 160);
+      if (/logged\s+in/i.test(loginSummary)) {
+        authentication = "verified";
+        detail = "CLI 실행 파일과 Codex 로그인 상태를 확인했습니다. 실제 모델 응답은 다음 인지 주기에서 별도로 검증됩니다.";
+      } else {
+        detail = "CLI 실행 파일은 확인했지만 로그인 상태를 확인할 수 없습니다. codex login 후 다시 확인하세요.";
+      }
+    } catch {
+      detail = `${detail} 로그인 상태를 확인하지 못했습니다. codex login 후 다시 확인하세요.`;
+    }
+    return {
+      binary,
+      installed: true,
+      version,
+      authentication,
+      detail,
+    };
+  } catch (error: unknown) {
+    const reason = redactSecretLikeText(error instanceof Error ? error.message : "실행 파일을 찾지 못했습니다.").replace(/\s+/g, " ").slice(0, 240);
+    return {
+      binary,
+      installed: false,
+      authentication: "missing",
+      detail: `Codex CLI를 확인하지 못했습니다: ${reason}`,
+    };
+  }
 }
 
 function configuredTimeoutMs(): number {

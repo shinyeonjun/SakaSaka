@@ -1,6 +1,6 @@
 import { getRun } from "./runtime";
 import type { AppAction } from "./store";
-import type { AppState } from "./types";
+import type { AppState, RuntimeConnectionStatus } from "./types";
 
 const baseUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
 
@@ -30,6 +30,10 @@ function post(path: string, body?: unknown): Promise<unknown> {
 
 export function fetchServerState(): Promise<AppState> {
   return request<AppState>("/state");
+}
+
+export function fetchRuntimeConnectionStatus(projectId: string): Promise<RuntimeConnectionStatus> {
+  return request<RuntimeConnectionStatus>(`/projects/${encodeURIComponent(projectId)}/runtime-status`);
 }
 
 export async function mirrorAction(action: AppAction, state: AppState): Promise<void> {

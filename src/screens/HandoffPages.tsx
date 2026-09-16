@@ -9,9 +9,10 @@ const routes = [
   ["/projects/:id/world", "repo/app/db/log/browser/human 월드 상태"],
   ["/projects/:id/artifacts", "빌드·리포트·스크린샷·릴리스·문서"],
   ["/projects/:id/experiments", "아키텍처 A/B · 벤치마크 · 자기 개선 실험"],
+  ["/projects/:id/settings", "작업 폴더 바인딩 · 모델 provider 연결 · 실행 경계"],
 ];
 
-const coreComponents = ["AppShell", "SidebarNav", "ProjectStatusBadge", "IntentComposer", "NeedsYouSummary", "HumanItemCard", "HumanItemDetail", "EventTimeline", "WorldHealthGrid", "EvidenceChain", "BudgetMeter", "ArtifactViewer"];
+const coreComponents = ["AppShell", "SidebarNav", "ProjectStatusBadge", "IntentComposer", "NeedsYouSummary", "HumanItemCard", "HumanItemDetail", "EventTimeline", "WorldHealthGrid", "EvidenceChain", "BudgetMeter", "ArtifactViewer", "ProjectSettingsPage"];
 
 export function HandoffRoutesPage() {
   return <div className="spec-screen"><PageHeading title="UI 인계 · 경로와 구성요소" description="구현 시 화면 의미와 실시간 상태가 달라지지 않도록 하는 최소 계약." /><Card className="routes-contract-card"><SectionHeader title="경로" /><div className="route-table">{routes.map(([route, description]) => <div key={route} className="route-row"><strong>{route}</strong><span>{description}</span></div>)}</div></Card><div className="spec-split-grid"><Card><SectionHeader title="핵심 UI 구성요소" /><ul className="component-list">{coreComponents.map((component) => <li key={component}>{component}</li>)}</ul></Card><Card><SectionHeader title="실시간 데이터 계약" /><div className="contract-copy"><p>SSE/WebSocket가 event.created / run.state / world.changed / human-item.created / evidence.created를 전달합니다.</p><p>UI는 폴링된 “진행률 %”를 핵심으로 삼지 않고 실제 상태·증거·활동을 보여줍니다.</p><p>낙관적 갱신은 사람의 답변 저장에만 제한적으로 사용하고, 런타임 상태는 서버 이벤트와 원본 기록을 따릅니다.</p></div></Card></div></div>;

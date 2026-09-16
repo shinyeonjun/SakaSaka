@@ -11,6 +11,8 @@ npm run dev
 
 브라우저만 실행하면 프로젝트가 없는 빈 localStorage 기반 UI가 열립니다. 실제 workspace 관찰·quality gate·영속 snapshot·SSE를 사용하려면 API와 worker를 함께 실행합니다.
 
+신규 프로젝트 화면의 `작업 폴더 선택`에서 경로를 지정하면 해당 프로젝트는 그 폴더 하나만 사용합니다. 경로는 서버가 접근할 수 있는 `WORKSPACE_ROOT` 내부여야 하며, 비워두면 서버가 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 만들어 바인딩합니다. 브라우저 전용 모드의 폴더 입력은 OS 경로를 가장하지 않도록 비활성화됩니다. 실제 폴더 연결과 쓰기 권한은 프로젝트의 `설정` 화면에서 확인합니다.
+
 API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 그린필드 의도를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI 호환 게이트웨이를 사용하고, 그렇지 않으면 `CODEX_CLI_ENABLED=true`일 때 Codex CLI 게이트웨이를 사용합니다. `CODEX_CLI_ENABLED`를 명시하지 않은 경우에만 `CODEX_CLI_BIN` 설정으로 Codex CLI 자동 선택을 켤 수 있습니다. 어느 실제 provider도 설정되지 않으면 가짜 실행을 하지 않고 명확한 오류와 함께 `WAIT`로 기록합니다. 결정론적 기준선은 명시적으로 `modelProvider=deterministic`을 선택한 연구·오프라인 모드에서만 사용합니다.
 
 ```bash
@@ -66,6 +68,7 @@ Playwright를 실행할 수 없을 때 HTTP 관찰 fallback은 `UNCERTAIN` evide
 - `/projects/:id/world` — 저장소 / 런타임 / 브라우저 / DB / 로그 / 사람의 현재 관찰
 - `/projects/:id/artifacts` — 빌드, 리포트, 스크린샷, 릴리스, 문서 계보
 - `/projects/:id/experiments` — H1-H6, 벤치마크, 구성요소 비교, 정책 후보
+- `/projects/:id/settings` — 작업 폴더 바인딩, Codex/모델 provider 연결 상태, 샌드박스·네트워크 경계
 - `/handoff/routes`, `/handoff/runtime` — Figma UI 인계 계약
 
 ## Runtime and service contract
@@ -81,6 +84,7 @@ Context에는 원문 Intent/constraints, fresh source-linked compact observation
 - `GET /health`, `GET /state`, `GET /projects`
 - `POST /projects`, `GET /projects/:id`
 - `POST /projects/:id/wake`, `/run`, `/world/refresh`, `/stall`
+- `GET /projects/:id/runtime-status` — 실제 선택 provider, Codex CLI 설치 확인, 작업 폴더 존재·쓰기 권한
 - `POST /runs/:runId/pause|resume|kill`
 - `POST /human-items/:itemId/answer|approve|reject|defer|acknowledge`
 - `GET /projects/:id/events?after=...`, `/stream`, `/actions`, `/contexts`, `/relations`, `/retrieval-index`, `/evaluation`

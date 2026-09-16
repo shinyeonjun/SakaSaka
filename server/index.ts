@@ -42,6 +42,7 @@ import { withFileLock } from "./fileLock";
 import { JsonJobQueue } from "./jobQueue";
 import { provisionProjectWorkspace } from "./workspaceProvisioner";
 import { hydrateManagedProcesses, stopProcessesForRun, stopAllManagedProcesses } from "./processManager";
+import { inspectRuntimeConnection } from "./runtimeStatus";
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
@@ -569,6 +570,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
     if (method === "GET" && parts.length === 2) {
       sendJson(response, 200, projectPayload(projectId));
+      return;
+    }
+
+    if (method === "GET" && parts[2] === "runtime-status" && parts.length === 3) {
+      sendJson(response, 200, await inspectRuntimeConnection(project));
       return;
     }
 

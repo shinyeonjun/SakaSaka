@@ -114,6 +114,12 @@ async function main(): Promise<void> {
     assert.equal(created.body.project.id, projectId);
     assert.equal(created.body.project.status, "ACTIVE");
     assert.equal(created.body.intent.rawText, "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘");
+    const runtimeStatus = await request(baseUrl, `/projects/${encodeURIComponent(projectId)}/runtime-status`);
+    assert.equal(runtimeStatus.response.status, 200, JSON.stringify(runtimeStatus.body));
+    assert.equal(runtimeStatus.body.model.effective, "deterministic");
+    assert.equal(runtimeStatus.body.model.state, "connected");
+    assert.equal(runtimeStatus.body.workspace.state, "bound");
+    assert.equal(runtimeStatus.body.workspace.writable, true);
 
     const duplicate = await post(baseUrl, "/projects", { projectId, rawIntent: "duplicate", settings: { workspacePath: repoRoot } });
     assert.equal(duplicate.response.status, 409);

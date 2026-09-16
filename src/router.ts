@@ -9,6 +9,7 @@ export type RouteMatch =
   | { kind: "world"; projectId: string }
   | { kind: "artifacts"; projectId: string }
   | { kind: "experiments"; projectId: string }
+  | { kind: "settings"; projectId: string }
   | { kind: "handoff-routes" }
   | { kind: "handoff-runtime" }
   | { kind: "not-found" };
@@ -28,6 +29,7 @@ export function matchRoute(pathname: string): RouteMatch {
   if (parts[2] === "world" && parts.length === 3) return { kind: "world", projectId };
   if (parts[2] === "artifacts" && parts.length === 3) return { kind: "artifacts", projectId };
   if (parts[2] === "experiments" && parts.length === 3) return { kind: "experiments", projectId };
+  if (parts[2] === "settings" && parts.length === 3) return { kind: "settings", projectId };
   return { kind: "not-found" };
 }
 

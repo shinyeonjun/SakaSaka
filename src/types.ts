@@ -98,6 +98,39 @@ export interface ProjectSettings {
   maxConcurrentProcesses?: number;
 }
 
+export type ModelProvider = NonNullable<ProjectSettings["modelProvider"]>;
+export type ResolvedModelProvider = "deterministic" | "openai-compatible" | "codex-cli" | "unavailable";
+export type ProviderConnectionState = "connected" | "configured" | "unknown" | "needs-setup" | "unavailable";
+
+export interface ModelProviderStatus {
+  requested: ModelProvider;
+  effective: ResolvedModelProvider;
+  state: ProviderConnectionState;
+  displayName: string;
+  detail: string;
+  binary?: string;
+  version?: string;
+  authentication: "not-applicable" | "configured" | "verified" | "unverified" | "missing";
+  checkedAt: string;
+}
+
+export type WorkspaceBindingState = "bound" | "missing" | "inaccessible" | "unbound" | "rejected";
+
+export interface WorkspaceBindingStatus {
+  state: WorkspaceBindingState;
+  root: string;
+  configuredPath?: string;
+  resolvedPath?: string;
+  exists: boolean;
+  writable: boolean;
+  detail: string;
+}
+
+export interface RuntimeConnectionStatus {
+  model: ModelProviderStatus;
+  workspace: WorkspaceBindingStatus;
+}
+
 export interface ProjectMetrics {
   testsPassed: number;
   testsTotal: number;

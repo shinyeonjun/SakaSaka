@@ -8,6 +8,7 @@ import { HumanItemDetailPage } from "./screens/HumanItemDetailPage";
 import { NeedsYouPage } from "./screens/NeedsYouPage";
 import { NewProjectPage } from "./screens/NewProjectPage";
 import { OverviewPage } from "./screens/OverviewPage";
+import { SettingsPage } from "./screens/SettingsPage";
 import { WorldPage } from "./screens/WorldPage";
 import { Button, Card } from "./components/ui";
 
@@ -27,6 +28,7 @@ export function App() {
       case "world": return <WorldPage projectId={route.projectId} />;
       case "artifacts": return <ArtifactsPage projectId={route.projectId} />;
       case "experiments": return <ExperimentsPage projectId={route.projectId} />;
+      case "settings": return <SettingsPage projectId={route.projectId} />;
       default: return <NotFoundPage onHome={() => navigate("/projects/new")} />;
     }
   })();

@@ -11,6 +11,7 @@ const navItems = [
   { key: "world", label: "월드" },
   { key: "artifacts", label: "산출물" },
   { key: "experiments", label: "실험" },
+  { key: "settings", label: "설정" },
 ] as const;
 
 type NavKey = (typeof navItems)[number]["key"];
@@ -50,9 +51,9 @@ export function AppShell({ children }: PropsWithChildren) {
         <Divider />
         <nav className="sidebar-nav">
           {navItems.map((item) => {
-            const path = item.key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${item.key}`;
+            const path = !projectId ? "/projects/new" : item.key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${item.key}`;
             const isActive = selectedNav(item.key, route.kind);
-            return <button key={item.key} className={cn("nav-item", isActive && "nav-item-active")} onClick={() => go(path)} aria-current={isActive ? "page" : undefined}>{item.label}</button>;
+            return <button key={item.key} className={cn("nav-item", isActive && "nav-item-active")} onClick={() => go(path)} disabled={!projectId && item.key !== "overview"} aria-current={isActive ? "page" : undefined}>{item.label}</button>;
           })}
         </nav>
         <div className="sidebar-spacer" />

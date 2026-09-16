@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-function rootPath(): string {
+export function workspaceRootPath(): string {
   const configured = process.env.WORKSPACE_ROOT?.trim();
   const candidate = resolve(process.cwd(), configured || process.cwd());
   try { return realpathSync.native(candidate); } catch { return candidate; }
@@ -20,7 +20,7 @@ function isInside(root: string, candidate: string): boolean {
  */
 export function normalizeWorkspacePath(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  const root = rootPath();
+  const root = workspaceRootPath();
   const candidate = resolve(value);
   if (!isInside(root, candidate)) return undefined;
   if (!existsSync(candidate)) {

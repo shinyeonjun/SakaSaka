@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { assembleContext, createProject, getRun } from "../src/runtime";
 import { CodexCliModelGateway } from "./codexCliGateway";
-import { OpenAICompatibleModelGateway, UnavailableModelGateway, createModelGateway } from "./localAdapters";
+import { OpenAICompatibleModelGateway, UnavailableModelGateway, createModelGateway, inspectModelProvider } from "./localAdapters";
 import type { AppState, ContextPacket } from "../src/types";
 
 const servers: Server[] = [];
@@ -79,5 +79,17 @@ describe("OpenAI-compatible model gateway", () => {
     const project = state.projects.find((candidate) => candidate.id === "gateway-codex");
     expect(project).toBeDefined();
     expect(createModelGateway(project!)).toBeInstanceOf(CodexCliModelGateway);
+  });
+
+  it("exposes a truthful provider status without starting a model turn", async () => {
+    const state = createProject(emptyState(), "오프라인 기준선 상태를 확인해줘", "gateway-status", { modelProvider: "deterministic" });
+    const project = state.projects.find((candidate) => candidate.id === "gateway-status");
+    expect(project).toBeDefined();
+    await expect(inspectModelProvider(project!)).resolves.toMatchObject({
+      requested: "deterministic",
+      effective: "deterministic",
+      state: "connected",
+      authentication: "not-applicable",
+    });
   });
 });

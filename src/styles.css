@@ -128,6 +128,36 @@ ul { padding: 0; list-style: none; }
 .advanced-setting-row strong { font-size: 14px; }
 .advanced-setting-row span { color: var(--muted); font-size: 12px; }
 .advanced-setting-row input { width: 110px; padding: 8px 10px; border: 1px solid var(--input-border); border-radius: 8px; background: #fff; text-align: right; }
+.workspace-binding-card { display: flex; flex-direction: column; gap: 14px; padding: 22px; }
+.workspace-binding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.workspace-binding-heading > div { display: flex; flex-direction: column; gap: 5px; }
+.workspace-binding-heading h2 { font-size: 17px; font-weight: 700; line-height: 1.38; }
+.connection-mark { display: inline-flex; align-items: center; min-height: 28px; padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.connection-mark-ready { background: var(--mint); color: #175b37; }
+.connection-mark-muted { background: var(--yellow); color: #6b5115; }
+.workspace-path-input { width: 100%; min-height: 44px; padding: 10px 13px; border: 1px solid var(--input-border); border-radius: 10px; background: #fff; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.workspace-path-input:disabled { background: #f3f3f4; color: var(--muted); }
+.workspace-binding-footer { display: flex; align-items: center; gap: 12px; }
+.workspace-binding-footer .field-help { flex: 1 1 auto; }
+.workspace-binding-footer .button { flex: 0 0 auto; }
+.settings-stack { gap: 18px; }
+.settings-hero-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 22px; background: linear-gradient(115deg, #fff 0%, #f8fbff 100%); }
+.settings-hero-card > div { display: flex; flex-direction: column; gap: 5px; }
+.settings-hero-card h2 { font-size: 19px; line-height: 1.38; }
+.settings-hero-card p { max-width: 540px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.settings-overline { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+.settings-panel { display: flex; flex-direction: column; align-items: stretch; gap: 13px; padding: 22px; }
+.settings-panel-title { font-size: 16px; font-weight: 700; line-height: 1.4; }
+.settings-path { display: block; width: 100%; min-height: 42px; padding: 10px 12px; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 9px; background: #f8f9fb; color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
+.settings-definition-list { display: flex; flex-direction: column; gap: 8px; }
+.settings-definition-list > div { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; align-items: baseline; font-size: 13px; line-height: 1.4; }
+.settings-definition-list dt { color: var(--muted); }
+.settings-definition-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.settings-definition-list code { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.settings-boundary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.settings-boundary-grid > div { display: flex; flex-direction: column; gap: 5px; min-height: 70px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.settings-boundary-grid span { color: var(--muted); font-size: 11px; }
+.settings-boundary-grid strong { font-size: 13px; line-height: 1.4; }
 .inline-notice { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 12px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45; }
 .inline-notice strong { font-weight: 700; }
 .notice-blue { background: var(--blue); }
@@ -390,6 +420,9 @@ ul { padding: 0; list-style: none; }
   .intent-card { padding: 20px; }
   .intent-card textarea { min-height: 180px; padding: 18px; font-size: 16px; }
   .setting-card { min-height: 0; }
+  .workspace-binding-footer, .settings-hero-card { align-items: flex-start; flex-direction: column; }
+  .workspace-binding-footer .button { align-self: flex-start; }
+  .settings-boundary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filter-row { gap: 7px; }
   .filter-pill { min-width: 0; flex: 1 1 calc(50% - 7px); }
   .human-item-card h2 { font-size: 17px; }

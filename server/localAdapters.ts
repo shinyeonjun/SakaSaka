@@ -7,11 +7,11 @@ import { chromium } from "playwright";
 import { isAllowedNetworkHost, isAllowedNetworkUrl, isDeveloperArgv, parseActionEnvelope, redactSecretLikeText, safeCommandIds, type SafeCommandId } from "../src/security";
 import { MODEL_VERSION, TOOL_VERSION } from "../src/runtime";
 import type { Evaluator, EvaluatorResult, ModelCapabilities, ModelGateway, ModelUsage, SandboxContext, SandboxManager, ToolGateway, ToolResult, WorldAdapter, WorldAdapterInput } from "../src/ports";
-import type { ActionEnvelope, ContextPacket, Evidence, Observation, ObservationSource, Project, WorldSnapshot } from "../src/types";
+import type { ActionEnvelope, ContextPacket, Evidence, ModelProviderStatus, Observation, ObservationSource, Project, ResolvedModelProvider, WorldSnapshot } from "../src/types";
 import { normalizeWorkspacePath } from "./pathPolicy";
 import { executeProcessTool } from "./processManager";
 import { executeWorkspaceTool } from "./workspaceTools";
-import { CodexCliModelGateway } from "./codexCliGateway";
+import { CodexCliModelGateway, inspectCodexCli } from "./codexCliGateway";
 
 const execFileAsync = promisify(execFile);
 const commandTimeoutMs = 120_000;
@@ -574,18 +574,66 @@ export class UnavailableModelGateway implements ModelGateway {
   }
 }
 
+export function resolveModelProvider(project: Project): ResolvedModelProvider {
+  const requested = project.settings.modelProvider ?? "auto";
+  const configuredEndpoint = process.env.MODEL_API_URL?.trim();
+  const endpoint = configuredEndpoint && isSafeModelEndpoint(configuredEndpoint) ? configuredEndpoint : undefined;
+  const apiKey = process.env.MODEL_API_KEY?.trim();
+  if (requested === "deterministic") return "deterministic";
+  if (requested === "codex-cli") return "codex-cli";
+  if (requested === "openai-compatible") return endpoint && apiKey ? "openai-compatible" : "unavailable";
+  if (endpoint && apiKey) return "openai-compatible";
+  if (codexCliEnabled()) return "codex-cli";
+  return "unavailable";
+}
+
+export async function inspectModelProvider(project: Project): Promise<ModelProviderStatus> {
+  const requested = project.settings.modelProvider ?? "auto";
+  const effective = resolveModelProvider(project);
+  const checkedAt = new Date().toISOString();
+  if (effective === "deterministic") {
+    return { requested, effective, state: "connected", displayName: "결정론적 연구 기준선", detail: "외부 AI가 아닌 로컬 결정론적 게이트웨이입니다. 실제 AI 연결로 표시하지 않습니다.", authentication: "not-applicable", checkedAt };
+  }
+  if (effective === "openai-compatible") {
+    const endpoint = process.env.MODEL_API_URL?.trim() ?? "";
+    return { requested, effective, state: "configured", displayName: requested === "auto" ? "OpenAI 호환 API · 자동 선택" : "OpenAI 호환 API", detail: `엔드포인트와 API 키 설정을 확인했습니다. 실제 인증·응답은 첫 인지 주기에서 검증됩니다. (${endpoint})`, authentication: "configured", checkedAt };
+  }
+  if (effective === "codex-cli") {
+    const diagnostics = await inspectCodexCli();
+    return {
+      requested,
+      effective,
+      state: !diagnostics.installed ? "unavailable" : diagnostics.authentication === "verified" ? "connected" : "unknown",
+      displayName: requested === "auto" ? "Codex CLI · 자동 선택" : "Codex CLI",
+      detail: diagnostics.detail,
+      binary: diagnostics.binary,
+      version: diagnostics.version,
+      authentication: diagnostics.authentication,
+      checkedAt,
+    };
+  }
+  const configuredEndpoint = process.env.MODEL_API_URL?.trim();
+  const detail = requested === "openai-compatible" && configuredEndpoint && !isSafeModelEndpoint(configuredEndpoint)
+    ? "MODEL_API_URL은 사용자명·비밀번호가 없는 http/https URL이어야 합니다."
+    : "실제 모델 provider가 설정되지 않았습니다. OpenAI 호환 API 또는 Codex CLI를 설정하세요.";
+  return { requested, effective, state: "needs-setup", displayName: "사용 가능한 모델 없음", detail, authentication: "missing", checkedAt };
+}
+
 export function createModelGateway(project: Project): ModelGateway {
   const configuredEndpoint = process.env.MODEL_API_URL?.trim();
   const endpoint = configuredEndpoint && isSafeModelEndpoint(configuredEndpoint) ? configuredEndpoint : undefined;
   const apiKey = process.env.MODEL_API_KEY?.trim();
-  if (project.settings.modelProvider === "deterministic") return new DeterministicLocalModelGateway();
-  if (project.settings.modelProvider === "codex-cli") return new CodexCliModelGateway();
-  if (project.settings.modelProvider === "auto" && (!endpoint || !apiKey)) {
-    if (codexCliEnabled()) return new CodexCliModelGateway();
-    return new UnavailableModelGateway("실제 모델 provider가 설정되지 않았습니다. OpenAI-compatible 또는 Codex CLI를 설정하세요.");
+  switch (resolveModelProvider(project)) {
+    case "deterministic":
+      return new DeterministicLocalModelGateway();
+    case "codex-cli":
+      return new CodexCliModelGateway();
+    case "openai-compatible":
+      return new OpenAICompatibleModelGateway(endpoint as string, apiKey as string);
+    case "unavailable":
+    default:
+      return new UnavailableModelGateway(configuredEndpoint && !endpoint ? "MODEL_API_URL은 http/https URL이며 사용자명·비밀번호를 포함하지 않아야 합니다." : "MODEL_API_URL과 MODEL_API_KEY가 설정되지 않았습니다.");
   }
-  if (project.settings.modelProvider !== "openai-compatible" && project.settings.modelProvider !== "auto") return new UnavailableModelGateway("지원하지 않는 모델 provider입니다.");
-  return endpoint && apiKey ? new OpenAICompatibleModelGateway(endpoint, apiKey) : new UnavailableModelGateway(configuredEndpoint && !endpoint ? "MODEL_API_URL은 http/https URL이며 사용자명·비밀번호를 포함하지 않아야 합니다." : "MODEL_API_URL과 MODEL_API_KEY가 설정되지 않았습니다.");
 }
 
 function codexCliEnabled(): boolean {
