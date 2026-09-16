@@ -87,4 +87,7 @@ jobs:
         run: |
           export SAKASAKA_TEST_CODEX_BIN="$RUNNER_TEMP/native-codex/node_modules/.bin/codex"
           "$SAKASAKA_TEST_CODEX_BIN" --version
-          npm run acceptance:native
+          # The hosted runner's outer container denies unprivileged userns;
+          # this credential-free, disposable fixture needs root only so
+          # Bubblewrap can create its normal workspace-write sandbox.
+          sudo -E env "PATH=$PATH" npm run acceptance:native
