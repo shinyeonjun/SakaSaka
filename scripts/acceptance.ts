@@ -1,28 +1,15 @@
 import { strict as assert } from "node:assert";
-import { createSeedState } from "../src/seed";
+import { createEmptyState } from "../src/emptyState";
 import { createProject, getProject, getProjectEvents, getToolSurface, getWorldSnapshot, recordNonToolAction, resolveHumanItem } from "../src/runtime";
 import { validateActionBoundary } from "../src/security";
 import { executeLocalCycle } from "../server/localRuntime";
 
 async function main(): Promise<void> {
-  const seed = createSeedState();
-  const seededProject = getProject(seed, "project-trip-together");
-  assert.equal(seededProject?.status, "ACTIVE");
-
-  let asyncState = resolveHumanItem(seed, "Q-17", "answer", "B");
-  asyncState = resolveHumanItem(asyncState, "APPROVAL-12", "approve");
-  const asyncProject = getProject(asyncState, "project-trip-together")!;
-  asyncState = recordNonToolAction(asyncState, asyncProject.id, {
-    type: "WAIT",
-    intentRef: asyncProject.intentId,
-    worldCursor: getWorldSnapshot(asyncState, asyncProject.id)!.cursorEventId,
-    rationaleSummary: "all required decisions are resolved and no useful action is available",
-  });
-  assert.equal(getProject(asyncState, "project-trip-together")?.status, "EQUILIBRIUM");
-
   const projectId = `acceptance-${Date.now().toString(36)}`;
-  const local = createProject(seed, "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘", projectId, { workspacePath: process.cwd() });
-  const executed = await executeLocalCycle(local, projectId);
+  const initial = createProject(createEmptyState(), "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘", projectId, { workspacePath: process.cwd(), modelProvider: "deterministic" });
+  assert.equal(getProject(initial, projectId)?.status, "ACTIVE");
+
+  const executed = await executeLocalCycle(initial, projectId);
   assert.equal(getProject(executed, projectId)?.status, "ACTIVE");
   assert.equal(executed.actions.find((action) => action.projectId === projectId)?.status, "VERIFIED");
   assert.ok(executed.evidence.find((evidence) => evidence.projectId === projectId && evidence.verdict === "PASS"));
@@ -35,15 +22,35 @@ async function main(): Promise<void> {
     type: "WAIT",
     intentRef: activeProject.intentId,
     worldCursor: getWorldSnapshot(executed, projectId)!.cursorEventId,
-    rationaleSummary: "no useful next action is available right now",
+    rationaleSummary: "현재 즉시 가치 있는 다음 행동이 없음",
   });
   assert.equal(getProject(waited, projectId)?.status, "EQUILIBRIUM");
   assert.ok(getProjectEvents(waited, projectId).some((event) => event.type === "EQUILIBRIUM_ENTERED"));
 
-  const policyProject = getProject(seed, "project-trip-together")!;
-  const blocked = validateActionBoundary(policyProject, { type: "ACT", intentRef: policyProject.intentId, worldCursor: "event-816", rationaleSummary: "production delete", tool: "deploy.production" }, getToolSurface(policyProject));
-  assert.equal(blocked.status, "blocked");
-  console.log("Acceptance A-D/G smoke passed");
+  const questionState = recordNonToolAction(initial, projectId, {
+    type: "QUESTION",
+    intentRef: activeProject.intentId,
+    worldCursor: getWorldSnapshot(initial, projectId)!.cursorEventId,
+    rationaleSummary: "정책의 우선 기준을 알려주세요",
+    params: { blockingScope: ["정책"], continuingScope: ["관찰"] },
+  });
+  const question = questionState.humanItems.find((item) => item.kind === "QUESTION")!;
+  const deferred = resolveHumanItem(questionState, question.id, "defer");
+  assert.equal(deferred.humanItems.find((item) => item.id === question.id)?.status, "DEFERRED");
+  const answered = resolveHumanItem(deferred, question.id, "answer", "안전성과 되돌릴 수 있음을 우선");
+  assert.equal(answered.humanItems.find((item) => item.id === question.id)?.status, "ANSWERED");
+
+  const hardBlockedState = createProject(createEmptyState(), "운영 환경의 위험한 외부 작업을 확인해줘", "hard-blocked-project");
+  const hardBlockedProject = getProject(hardBlockedState, "hard-blocked-project")!;
+  const externalAction = { type: "ACT", intentRef: hardBlockedProject.intentId, worldCursor: getWorldSnapshot(hardBlockedState, hardBlockedProject.id)!.cursorEventId, rationaleSummary: "외부 배포", tool: "deploy.production", params: { url: "https://deploy.example.com" }, riskClass: "P3" } as const;
+  const hardBlock = validateActionBoundary(hardBlockedProject, externalAction, getToolSurface(hardBlockedProject));
+  assert.equal(hardBlock.status, "blocked");
+  const approvalState = createProject(createEmptyState(), "승인이 필요한 외부 작업을 확인해줘", "approval-project", { productionBlocked: false });
+  const approvalProject = getProject(approvalState, "approval-project")!;
+  const approval = validateActionBoundary(approvalProject, { ...externalAction, intentRef: approvalProject.intentId, worldCursor: getWorldSnapshot(approvalState, approvalProject.id)!.cursorEventId }, getToolSurface(approvalProject));
+  assert.equal(approval.status, "human-approval");
+
+  console.log("Acceptance passed: empty bootstrap, real local cycle, active continuation, WAIT stop, human defer/answer, and production boundary");
 }
 
 void main().catch((error: unknown) => {

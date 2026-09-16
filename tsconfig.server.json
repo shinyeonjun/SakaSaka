@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "strict": true
   },
-  "include": ["server/**/*.ts", "scripts/**/*.ts", "src/types.ts", "src/runtime.ts", "src/seed.ts"]
+  "include": ["server/**/*.ts", "scripts/**/*.ts", "src/types.ts", "src/runtime.ts", "src/emptyState.ts"]
 }

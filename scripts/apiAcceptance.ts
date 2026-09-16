@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     const created = await post(baseUrl, "/projects", {
       projectId,
       rawIntent: "현재 workspace의 품질을 검증하고 안전한 상태를 확인해줘",
-      settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, allowedDomains: [] },
+      settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, allowedDomains: [], modelProvider: "deterministic" },
     });
     assert.equal(created.response.status, 201, JSON.stringify(created.body));
     assert.equal(created.body.project.id, projectId);
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
     }
 
     const workerProjectId = `${projectId}-worker`;
-    const workerCreated = await post(baseUrl, "/projects", { projectId: workerProjectId, rawIntent: "worker가 quality gate를 실행해줘", settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, cycleDelayMs: 0 } });
+    const workerCreated = await post(baseUrl, "/projects", { projectId: workerProjectId, rawIntent: "worker가 quality gate를 실행해줘", settings: { workspacePath: repoRoot, budgetLimit: 5, maxHours: 1, cycleDelayMs: 0, modelProvider: "deterministic" } });
     assert.equal(workerCreated.response.status, 201);
     const oldStatePath = process.env.INTENT_WORLD_STATE_FILE;
     const oldRawDirectory = process.env.INTENT_WORLD_RAW_DIR;

@@ -9,9 +9,9 @@ npm install
 npm run dev
 ```
 
-브라우저만 실행하면 localStorage 기반의 standalone UI가 열립니다. 실제 workspace 관찰·quality gate·영속 snapshot·SSE를 사용하려면 API와 worker를 함께 실행합니다.
+브라우저만 실행하면 프로젝트가 없는 빈 localStorage 기반 UI가 열립니다. 실제 workspace 관찰·quality gate·영속 snapshot·SSE를 사용하려면 API와 worker를 함께 실행합니다.
 
-API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 greenfield Intent를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI-compatible gateway를 사용하고, 없으면 provider 종류가 명시된 deterministic baseline으로 동작합니다. deterministic baseline도 고정된 bounded capability를 실제로 실행하지만 model reasoning을 대체하지는 않습니다. 실제 AI 실행을 원하면 API/worker에 해당 환경 변수를 설정하세요.
+API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 그린필드 의도를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI 호환 게이트웨이를 사용하고, 그렇지 않으면 `CODEX_CLI_ENABLED=true`일 때 Codex CLI 게이트웨이를 사용합니다. `CODEX_CLI_ENABLED`를 명시하지 않은 경우에만 `CODEX_CLI_BIN` 설정으로 Codex CLI 자동 선택을 켤 수 있습니다. 어느 실제 provider도 설정되지 않으면 가짜 실행을 하지 않고 명확한 오류와 함께 `WAIT`로 기록합니다. 결정론적 기준선은 명시적으로 `modelProvider=deterministic`을 선택한 연구·오프라인 모드에서만 사용합니다.
 
 ```bash
 # terminal 1
@@ -31,6 +31,23 @@ $env:VITE_API_URL = "http://localhost:8787"
 npm run dev
 ```
 
+### Codex CLI를 모델 게이트웨이로 연결
+
+Codex CLI는 SakaSaka의 도구가 아니라 `ModelGateway`입니다. CLI는 현재 원문 의도·월드 관찰·경험·경계를 입력받아 `ActionEnvelope` 하나만 반환하고, 실제 파일 변경·명령·프로세스·브라우저 검증은 SakaSaka의 ToolGateway와 Governor가 수행합니다. CLI는 `codex exec`의 구조화 JSONL 출력과 읽기 전용 sandbox로 호출되어 프로젝트 workspace를 직접 수정하지 않습니다.
+
+1. Codex CLI를 설치하고 한 번 로그인합니다. 저장된 Codex 인증을 사용할 수 있습니다.
+2. API와 worker를 실행하기 전에 provider를 켭니다.
+
+```powershell
+codex login
+$env:CODEX_CLI_ENABLED = "true"
+$env:CODEX_CLI_BIN = "codex.exe" # PATH에 codex가 있으면 생략 가능
+$env:CODEX_CLI_MODEL = ""         # 선택 사항
+npm run api
+```
+
+프로젝트 생성 API에서 `"modelProvider":"codex-cli"`를 지정하면 환경 자동 선택과 관계없이 Codex CLI를 사용합니다. 응답이 malformed이거나 CLI가 설치되지 않았거나 시간이 초과되면 ACT로 위장하지 않고 WAIT와 원본 오류 참조를 남깁니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
+
 브라우저 binary가 설치되어 있지 않은 환경에서는 Playwright가 설치된 뒤 다음을 한 번 실행합니다.
 
 ```bash
@@ -41,15 +58,15 @@ Playwright를 실행할 수 없을 때 HTTP 관찰 fallback은 `UNCERTAIN` evide
 
 ## Product routes
 
-- `/projects/new` — Intent 입력, autonomy boundary, budget/max-hours 설정
-- `/projects/:id` — Overview와 ACTIVE / WAITING / EQUILIBRIUM / STALLED 상태
-- `/projects/:id/needs-you` — Questions / Ideas / Concerns / Approvals inbox
+- `/projects/new` — 의도 입력, 자율성 경계, 예산/최대 실행 시간 설정
+- `/projects/:id` — 개요와 ACTIVE / WAITING / EQUILIBRIUM / STALLED 상태
+- `/projects/:id/needs-you` — 질문 / 아이디어 / 우려 / 승인 목록
 - `/projects/:id/human-items/:itemId` — rationale, 영향 범위, 답변/승인
-- `/projects/:id/activity` — event timeline, version provenance, evidence chain
-- `/projects/:id/world` — Repo / Runtime / Browser / DB / Logs / Human 현재 관찰
-- `/projects/:id/artifacts` — build, report, screenshot, release, docs lineage
-- `/projects/:id/experiments` — H1-H6, benchmark, ablation, policy candidate
-- `/handoff/routes`, `/handoff/runtime` — Figma UI handoff contract
+- `/projects/:id/activity` — 이벤트 타임라인, 버전 provenance, 증거 연결
+- `/projects/:id/world` — 저장소 / 런타임 / 브라우저 / DB / 로그 / 사람의 현재 관찰
+- `/projects/:id/artifacts` — 빌드, 리포트, 스크린샷, 릴리스, 문서 계보
+- `/projects/:id/experiments` — H1-H6, 벤치마크, 구성요소 비교, 정책 후보
+- `/handoff/routes`, `/handoff/runtime` — Figma UI 인계 계약
 
 ## Runtime and service contract
 

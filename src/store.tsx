@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type Dispatch, type PropsWithChildren } from "react";
 import { fetchServerState, isControlPlaneEnabled, mirrorAction, subscribeToProject } from "./apiClient";
-import { createSeedState } from "./seed";
+import { createEmptyState } from "./emptyState";
 import {
   addIntent,
   createArtifact,
@@ -20,15 +20,15 @@ import {
 import type { AppState, ArtifactKind, ProjectSettings } from "./types";
 import type { ExperimentInput } from "./runtime";
 
-const STORAGE_KEY = "intent-world-agent-state-v1";
+const STORAGE_KEY = "intent-world-agent-state-v2";
 
 function loadState(): AppState {
-  if (typeof window === "undefined") return createSeedState();
+  if (typeof window === "undefined") return createEmptyState();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createSeedState();
+    if (!raw) return createEmptyState();
     const parsed = JSON.parse(raw) as AppState;
-    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.projects) || !Array.isArray(parsed.events)) return createSeedState();
+    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.projects) || !Array.isArray(parsed.events)) return createEmptyState();
     return {
       ...parsed,
       projects: parsed.projects.map((project) => ({
@@ -75,7 +75,7 @@ function loadState(): AppState {
       processes: Array.isArray(parsed.processes) ? parsed.processes : [],
     };
   } catch {
-    return createSeedState();
+    return createEmptyState();
   }
 }
 

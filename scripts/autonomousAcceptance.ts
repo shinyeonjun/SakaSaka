@@ -121,6 +121,7 @@ async function main(): Promise<void> {
     assert.ok(greenfieldContexts.every((context) => context.rawIntent.includes("숫자") && context.toolSurface.length > 0 && context.modelVersion.startsWith("openai-compatible:")));
     assert.ok(greenfieldState.actions.filter((action) => action.projectId === "greenfield-acceptance").every((action) => action.modelVersion.startsWith("openai-compatible:") && action.contextId && greenfieldState.contexts.some((context) => context.id === action.contextId)));
     assert.ok((greenfieldState.resourceLedger.find((ledger) => ledger.projectId === "greenfield-acceptance")?.tokens ?? 0) > 0, "provider usage was not recorded");
+    assert.ok(greenfieldState.events.some((event) => event.projectId === "greenfield-acceptance" && event.type === "MODEL_TURN" && typeof event.payload?.rawRef === "string" && event.payload.rawRef.startsWith("local-raw://")), "model raw response provenance was not persisted");
     assert.match(readFileSync(join(workspace, "index.html"), "utf8"), /Increment/);
     assert.match(readFileSync(join(workspace, "app.js"), "utf8"), /count \+= 1/);
     assert.ok(greenfieldState.evidence.some((item) => item.source.includes("local-command:quality-build") && item.verdict === "PASS"));

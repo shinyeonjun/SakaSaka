@@ -1,5 +1,5 @@
 import { applyObservedWorld, assembleContextAsync, getMatchingApprovalGrant, getProject, getToolSurface, getWorldSnapshot, recordBoundaryDecision, recordNonToolAction, recordObservedWorldRefresh, recordRuntimeFailure, runCycle } from "../src/runtime";
-import { redactSecretLikeText, validateActionBoundary } from "../src/security";
+import { isActiveProcessReference, redactSecretLikeText, validateActionBoundary } from "../src/security";
 import type { AppState, ContextPacket, Observation } from "../src/types";
 import type { ModelGateway } from "../src/ports";
 import { DeterministicEvaluator, DockerSandboxManager, LocalSandboxManager, LocalToolGateway, createLocalWorldAdapters, createModelGateway, estimateLocalActionCost } from "./localAdapters";
@@ -86,6 +86,11 @@ export async function executeLocalCycle(state: AppState, projectId: string, opti
       spanStatus = "invalid-action-reference";
       const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
       return recordBoundaryDecision(contextState, projectId, action, "blocked", "model action references a stale intent or world cursor", modelContext.id, modelUsage);
+    }
+    if (!isActiveProcessReference(action, modelContext.activeProcessViews?.map((process) => process.id) ?? [])) {
+      spanStatus = "invalid-process-reference";
+      const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };
+      return recordBoundaryDecision(contextState, projectId, action, "blocked", "process lifecycle action must reference an active process from the current context", modelContext.id, modelUsage);
     }
     if (action.type !== "ACT") {
       const contextState = observed.state.contexts.some((candidate) => candidate.id === modelContext.id) ? observed.state : { ...observed.state, contexts: [...observed.state.contexts, modelContext] };

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, mkdirSync, readFileSync, realpathSync, watch } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { URL } from "node:url";
-import { createSeedState } from "../src/seed";
+import { createEmptyState } from "../src/emptyState";
 import { JsonlEventStore } from "./jsonlEventStore";
 import {
   addIntent,
@@ -128,7 +128,7 @@ function isRecoverableState(candidate: unknown): boolean {
 }
 
 function loadState(): AppState {
-  if (!existsSync(statePath)) return createSeedState();
+  if (!existsSync(statePath)) return createEmptyState();
   const candidate = readJsonWithBackup<unknown>(statePath, isRecoverableState);
   if (candidate === undefined) throw new Error(`state snapshot is unreadable and no valid backup exists: ${statePath}`);
   return normalizeState(candidate);
@@ -388,7 +388,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const sandboxMode = body.sandboxMode === undefined ? "process" : body.sandboxMode;
   if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
   const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
-  if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible") return { error: "modelProvider is not supported" };
+  if (modelProvider !== "auto" && modelProvider !== "deterministic" && modelProvider !== "openai-compatible" && modelProvider !== "codex-cli") return { error: "modelProvider is not supported" };
   const previewUrl = body.previewUrl === undefined ? undefined : body.previewUrl;
   let previewHost: string | undefined;
   if (previewUrl !== undefined) {

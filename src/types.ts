@@ -88,7 +88,7 @@ export interface ProjectSettings {
   previewUrl?: string;
   allowedDomains?: string[];
   sandboxMode?: "process" | "docker";
-  modelProvider?: "auto" | "deterministic" | "openai-compatible";
+  modelProvider?: "auto" | "deterministic" | "openai-compatible" | "codex-cli";
   reviewIntervalMinutes?: number;
   failureThreshold?: number;
   noProgressThreshold?: number;

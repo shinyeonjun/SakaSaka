@@ -1,16 +1,16 @@
 import { useState, type PropsWithChildren } from "react";
-import { getProject } from "../runtime";
+import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { Button, cn, Divider } from "./ui";
 
 const navItems = [
-  { key: "overview", label: "Overview" },
-  { key: "needs-you", label: "Needs You" },
-  { key: "activity", label: "Activity" },
-  { key: "world", label: "World" },
-  { key: "artifacts", label: "Artifacts" },
-  { key: "experiments", label: "Experiments" },
+  { key: "overview", label: "개요" },
+  { key: "needs-you", label: "도움 필요" },
+  { key: "activity", label: "활동" },
+  { key: "world", label: "월드" },
+  { key: "artifacts", label: "산출물" },
+  { key: "experiments", label: "실험" },
 ] as const;
 
 type NavKey = (typeof navItems)[number]["key"];
@@ -45,7 +45,7 @@ export function AppShell({ children }: PropsWithChildren) {
       <aside className={cn("sidebar", mobileOpen && "sidebar-open")} aria-label="주요 탐색">
         <button className="brand-block" onClick={() => go("/projects/new")}>
           <span className="brand-title">INTENT WORLD</span>
-          <span className="brand-subtitle">Persistent AI Studio</span>
+          <span className="brand-subtitle">지속형 AI 개발 스튜디오</span>
         </button>
         <Divider />
         <nav className="sidebar-nav">
@@ -57,13 +57,13 @@ export function AppShell({ children }: PropsWithChildren) {
         </nav>
         <div className="sidebar-spacer" />
         <div className="sidebar-system-links">
-          <span className="sidebar-overline">SYSTEM CONTRACTS</span>
-          <button className={cn("sidebar-quiet-link", route.kind === "handoff-routes" && "sidebar-quiet-link-active")} onClick={() => go("/handoff/routes")}>Routes & Components</button>
-          <button className={cn("sidebar-quiet-link", route.kind === "handoff-runtime" && "sidebar-quiet-link-active")} onClick={() => go("/handoff/runtime")}>Runtime states</button>
+          <span className="sidebar-overline">시스템 계약</span>
+          <button className={cn("sidebar-quiet-link", route.kind === "handoff-routes" && "sidebar-quiet-link-active")} onClick={() => go("/handoff/routes")}>경로와 구성요소</button>
+          <button className={cn("sidebar-quiet-link", route.kind === "handoff-runtime" && "sidebar-quiet-link-active")} onClick={() => go("/handoff/runtime")}>런타임 상태</button>
         </div>
         <div className="sidebar-footer" aria-label="런타임 리소스">
-          <span>Budget&nbsp; {`$${budgetSpent.toFixed(2)} / $${budgetLimit}`}</span>
-          <span>Runtime&nbsp; {runtimeStatus}</span>
+          <span>예산&nbsp; {`$${budgetSpent.toFixed(2)} / $${budgetLimit}`}</span>
+          <span>런타임&nbsp; {statusLabel(runtimeStatus)}</span>
         </div>
       </aside>
       <main className="main-content">{children}</main>

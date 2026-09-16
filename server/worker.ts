@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { createSeedState } from "../src/seed";
+import { createEmptyState } from "../src/emptyState";
 import { executeLocalCycle } from "./localRuntime";
 import { wakeProject } from "../src/runtime";
 import { JsonlEventStore } from "./jsonlEventStore";
@@ -74,7 +74,7 @@ function isRecoverableState(candidate: unknown): boolean {
 }
 
 function loadState(): AppState {
-  if (!existsSync(statePath)) return createSeedState();
+  if (!existsSync(statePath)) return createEmptyState();
   const candidate = readJsonWithBackup<unknown>(statePath, isRecoverableState);
   if (candidate === undefined) throw new Error(`state snapshot is unreadable and no valid backup exists: ${statePath}`);
   return normalizeState(candidate);

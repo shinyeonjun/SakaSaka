@@ -95,7 +95,7 @@ function rankExperiences(
     const failure = currentFailure && /fail|uncertain|error|blocked|stalled/i.test(experience.outcome) ? 0.18 : 0;
     // Relevance is intentionally the dominant signal. A recent but unrelated
     // transition cannot outrank an older transition that matches the gap.
-    const score = lexical * 0.5 + semantic * 0.2 + outcome * 0.12 + recency * 0.08 + failure;
+    const score = lexical * 0.58 + semantic * 0.26 + outcome * 0.12 + recency * 0.04 + failure;
     return { experience, score };
   });
   return ranked

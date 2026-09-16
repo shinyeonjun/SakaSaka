@@ -27,6 +27,11 @@ export interface ModelUsage {
   tokens: number;
   cost: number;
   latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  usageKnown?: boolean;
+  rawRef?: string;
+  requestId?: string;
 }
 
 export interface ModelGateway {

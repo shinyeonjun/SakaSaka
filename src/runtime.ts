@@ -1,7 +1,7 @@
 import { worldSourceKeys } from "./types";
 import type { EvaluatorResult, ModelUsage, ToolResult } from "./ports";
 import { scoreExperiment, experimentDefinition } from "./experimentHarness";
-import { estimateActionCost, actionFingerprint, canonicalActionParams, paramsFingerprint, redactSecretLikeText, validateActionBoundary } from "./security";
+import { estimateActionCost, actionFingerprint, canonicalActionParams, isActiveProcessReference, paramsFingerprint, redactSecretLikeText, validateActionBoundary } from "./security";
 import { createConfiguredEmbeddingProvider, rebuildRetrievalIndex, retrieveRelevantExperiences, retrieveRelevantExperiencesWithEmbedding } from "./memory";
 import type {
   ActionStatus,
@@ -93,6 +93,22 @@ function sanitizeEvidence(evidence: Evidence, projectId: string, actionId: strin
     createdAt: evidence.createdAt || createdAt,
     metadata: evidence.metadata ? Object.fromEntries(Object.entries(evidence.metadata).map(([key, value]) => [key, typeof value === "string" ? redactSecretLikeText(value).slice(0, 1_000) : value])) : undefined,
   };
+}
+
+function modelUsagePayload(modelUsage?: ModelUsage): EventRecord["payload"] | undefined {
+  if (!modelUsage) return undefined;
+  const payload: NonNullable<EventRecord["payload"]> = {
+    modelVersion: redactSecretLikeText(modelUsage.modelVersion).slice(0, 256),
+    tokens: Number.isFinite(modelUsage.tokens) ? Math.max(0, modelUsage.tokens) : 0,
+    cost: Number.isFinite(modelUsage.cost) ? Math.max(0, modelUsage.cost) : 0,
+    latencyMs: Number.isFinite(modelUsage.latencyMs) ? Math.max(0, modelUsage.latencyMs) : 0,
+    usageKnown: modelUsage.usageKnown === true,
+  };
+  if (modelUsage.inputTokens !== undefined && Number.isFinite(modelUsage.inputTokens)) payload.inputTokens = Math.max(0, modelUsage.inputTokens);
+  if (modelUsage.outputTokens !== undefined && Number.isFinite(modelUsage.outputTokens)) payload.outputTokens = Math.max(0, modelUsage.outputTokens);
+  if (modelUsage.rawRef) payload.rawRef = redactSecretLikeText(modelUsage.rawRef).slice(0, 2_000);
+  if (modelUsage.requestId) payload.requestId = redactSecretLikeText(modelUsage.requestId).slice(0, 256);
+  return payload;
 }
 
 export interface RuntimeCycleInput {
@@ -187,9 +203,13 @@ export function modelProviderLabel(state: AppState, project: Project): string {
     .filter((action) => action.projectId === project.id)
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.id.localeCompare(left.id))[0];
   if (latest?.modelVersion.startsWith("openai-compatible:")) return latest.modelVersion;
-  if (latest?.modelVersion === "unavailable") return "unavailable";
-  if (latest?.modelVersion === MODEL_VERSION || project.settings.modelProvider === "deterministic") return "deterministic baseline";
-  return `${project.settings.modelProvider ?? "auto"} · not resolved`;
+  if (latest?.modelVersion.startsWith("codex-cli:")) return latest.modelVersion;
+  if (latest?.modelVersion === "unavailable") return "사용할 수 없음";
+  if (latest?.modelVersion === MODEL_VERSION || project.settings.modelProvider === "deterministic") return "결정론적 기준선";
+  if (project.settings.modelProvider === "codex-cli") return "Codex CLI · 아직 실행 전";
+  if (project.settings.modelProvider === "openai-compatible") return "OpenAI 호환 API · 아직 실행 전";
+  if (project.settings.modelProvider === "auto") return "자동 선택 · 아직 실행 전";
+  return `${project.settings.modelProvider ?? "auto"} · 아직 확인되지 않음`;
 }
 
 export function isOpenHumanItem(item: HumanItem): boolean {
@@ -617,23 +637,23 @@ function newWorldSnapshot(projectId: string, observedAt: string): WorldSnapshot 
     projectId,
     cursorEventId: "pending",
     observedAt,
-    summary: "새 프로젝트 workspace를 연결하는 중입니다. 직접 관찰 결과가 들어오면 World Snapshot이 갱신됩니다.",
+    summary: "새 프로젝트 작업공간을 연결하는 중입니다. 직접 관찰 결과가 들어오면 월드 스냅샷이 갱신됩니다.",
     sources: {
-      repo: source("repo", "Repo", "awaiting direct workspace observation", observedAt, "warning"),
-      runtime: source("runtime", "Runtime", "not started", observedAt, "warning"),
-      browser: source("browser", "Browser", "awaiting first observation", observedAt, "warning"),
-      db: source("db", "DB", "not connected", observedAt, "warning"),
-      logs: source("logs", "Logs", "no events yet", observedAt),
-      human: source("human", "Human", "no decisions yet", observedAt),
+      repo: source("repo", "저장소", "작업공간의 첫 직접 관찰을 기다리는 중", observedAt, "warning"),
+      runtime: source("runtime", "런타임", "아직 시작되지 않음", observedAt, "warning"),
+      browser: source("browser", "브라우저", "첫 관찰을 기다리는 중", observedAt, "warning"),
+      db: source("db", "데이터베이스", "연결되지 않음", observedAt, "warning"),
+      logs: source("logs", "로그", "아직 이벤트가 없음", observedAt),
+      human: source("human", "사람", "아직 결정이 없음", observedAt),
     },
   };
 }
 
 function deriveProjectName(rawIntent: string): { name: string; subtitle: string } {
-  const firstSentence = rawIntent.split(/[.!?\n]/)[0]?.trim() || "New Intent";
+  const firstSentence = rawIntent.split(/[.!?\n]/)[0]?.trim() || "새 의도";
   return {
     name: firstSentence.length > 24 ? `${firstSentence.slice(0, 24)}…` : firstSentence,
-    subtitle: "Intent에서 시작한 새로운 World",
+    subtitle: "의도에서 시작한 새로운 월드",
   };
 }
 
@@ -677,7 +697,7 @@ export function createProject(
       reviewIntervalMinutes: positiveSetting(settings.reviewIntervalMinutes, 360, 10_080),
       failureThreshold: positiveSetting(settings.failureThreshold, 3, 32),
       noProgressThreshold: positiveSetting(settings.noProgressThreshold, 5, 128),
-       cycleDelayMs: nonNegativeSetting(settings.cycleDelayMs, 250, 60_000),
+      cycleDelayMs: nonNegativeSetting(settings.cycleDelayMs, 250, 60_000),
       approvalTtlMinutes: positiveSetting(settings.approvalTtlMinutes, 60, 10_080),
       processMaxLifetimeMs: positiveSetting(settings.processMaxLifetimeMs, 1_800_000, 86_400_000),
       maxConcurrentProcesses: positiveSetting(settings.maxConcurrentProcesses, 4, 32),
@@ -1005,6 +1025,9 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   if (input.action && (input.action.intentRef !== context.intentRef || input.action.worldCursor !== context.worldCursor)) {
     return recordBoundaryDecision(observedState, projectId, input.action, "blocked", "model action references a stale intent or world cursor", context.id);
   }
+  if (input.action && !isActiveProcessReference(input.action, context.activeProcessViews?.map((process) => process.id) ?? [])) {
+    return recordBoundaryDecision(observedState, projectId, input.action, "blocked", "process lifecycle action must reference an active process from the current context", context.id);
+  }
   if (toolResult?.evidence.some((item) => item.projectId !== projectId)) {
     return recordRuntimeFailure(observedState, projectId, "verify", "tool returned evidence for a different project");
   }
@@ -1131,7 +1154,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     { type: "WAKE_TRIGGERED", summary: `cycle ${nextCycle} · lease and budget checked`, detail: "project/world cursor fixed before context assembly", payload: { trigger: "cycle", worldCursor: context.worldCursor } },
     { type: "OBSERVE", summary: input.observations?.length ? `${input.observations.length} direct source observations` : "current World sources re-observed", detail: copy.detail, payload: { observationRefs: input.observations?.map((observation) => observation.id) ?? context.observationRefs } },
     { type: "CONTEXT_ASSEMBLED", summary: "raw intent + fresh world + open human items + boundary", detail: "retrieved experience is evidence, not an instruction", payload: { contextId: context.id, observationRefs: context.observationRefs, openHumanItemRefs: context.openHumanItemRefs, experienceRefs: context.experienceRefs } },
-    { type: "MODEL_TURN", summary: "행동 후보를 evidence 기반으로 비교", detail: "hard constraints → risk → required gap → information gain → opportunity" },
+    { type: "MODEL_TURN", summary: "행동 후보를 evidence 기반으로 비교", detail: "hard constraints → risk → required gap → information gain → opportunity", payload: modelUsagePayload(modelUsage) },
     { type: "ACTION_SELECTED", summary: copy.summary, detail: `ActionEnvelope ACT · ${copy.tool}` },
     { type: "TOOL_CALLED", summary: `${copy.tool} 호출`, detail: "capability surface와 sandbox boundary를 통과한 실행 요청" },
     { type: "ACTION_EXECUTED", summary: "sandbox action dispatched", detail: toolResult ? `${toolResult.tool} · ${toolResult.status}` : "P1 local reversible action" },
@@ -1365,16 +1388,16 @@ export function recordBoundaryDecision(
     worldCursor: safeEnvelope.worldCursor || world.cursorEventId,
     status: "BLOCKED",
     cost: 0,
-     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
+    modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
-     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
+    policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
     contextId,
     createdAt,
     completedAt: createdAt,
     boundaryDecision: decision,
   };
   let next: AppState = { ...state, actions: [...state.actions, action] };
-  next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${safeEnvelope.type} blocked at boundary`, detail: safeReason, actionId, runId: run.id, createdAt });
+  next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${safeEnvelope.type} blocked at boundary`, detail: safeReason, actionId, runId: run.id, createdAt, payload: modelUsagePayload(modelUsage) });
   next = appendEvent(next, { projectId, type: "TOOL_RESULT", actor: "system", summary: `BLOCKED · ${safeEnvelope.tool ?? "side effect"}`, detail: safeReason, actionId, runId: run.id, createdAt });
   let nextStatus: RuntimeStatus = "STALLED";
   let duplicateApproval = false;
@@ -1439,7 +1462,7 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     worldCursor: safeEnvelope.worldCursor || world.cursorEventId,
     status: "PROPOSED",
     cost: 0,
-     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
+    modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
     contextId,
@@ -1453,10 +1476,10 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   next = appendEvent(next, { projectId, type: "WAKE_TRIGGERED", actor: "system", summary: `cycle ${run.cycleCount + 1} · wake`, detail: "persistent cognition cycle started", actionId, runId: run.id, createdAt });
   next = appendEvent(next, { projectId, type: "OBSERVE", actor: "agent", summary: "current World observed before non-tool decision", detail: `world cursor=${world.cursorEventId}`, actionId, runId: run.id, createdAt });
   next = appendEvent(next, { projectId, type: "CONTEXT_ASSEMBLED", actor: "agent", summary: "Intent + World + boundary context assembled", detail: contextId ? `context=${contextId}` : "context was not persisted by the caller", actionId, runId: run.id, createdAt });
-  next = appendEvent(next, { projectId, type: "MODEL_TURN", actor: "agent", summary: `${action.type} selected from the current context`, detail: "non-tool action protocol; no fixed role or workflow was imposed", actionId, runId: run.id, createdAt, modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION });
+  next = appendEvent(next, { projectId, type: "MODEL_TURN", actor: "agent", summary: `${action.type} selected from the current context`, detail: "non-tool action protocol; no fixed role or workflow was imposed", actionId, runId: run.id, createdAt, modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION, payload: modelUsagePayload(modelUsage) });
   next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${action.type} · ${action.rationaleSummary}`, detail: "model output is a proposal; no tool side effect was dispatched", actionId, runId: run.id, createdAt });
-  if (action.type === "WAIT" && /model gateway unavailable/i.test(action.rationaleSummary)) {
-    next = appendEvent(next, { projectId, type: "RUNTIME_ERROR", actor: "system", summary: "Model provider unavailable · WAIT recorded", detail: action.rationaleSummary, actionId, runId: run.id, createdAt });
+  if (action.type === "WAIT" && /model gateway unavailable|모델 게이트웨이를 사용할 수 없습니다/i.test(action.rationaleSummary)) {
+    next = appendEvent(next, { projectId, type: "RUNTIME_ERROR", actor: "system", summary: "모델 provider를 사용할 수 없음 · WAIT 기록", detail: action.rationaleSummary, actionId, runId: run.id, createdAt });
   }
   if (action.type === "QUESTION" || action.type === "IDEA" || action.type === "CONCERN") {
     const kind = action.type;
@@ -1499,8 +1522,11 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   const hasBlocking = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
   const noProgressCycles = action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
   const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
-  const nextStatus: RuntimeStatus = action.type === "WAIT"
-    ? hasBlocking ? humanBoundaryStatus(next, projectId) : "EQUILIBRIUM"
+  const providerUnavailable = action.type === "WAIT" && /model gateway unavailable|모델 게이트웨이를 사용할 수 없습니다/i.test(action.rationaleSummary);
+  const nextStatus: RuntimeStatus = providerUnavailable
+    ? "STALLED"
+    : action.type === "WAIT"
+      ? hasBlocking ? humanBoundaryStatus(next, projectId) : "EQUILIBRIUM"
     : noProgressCycles >= noProgressThreshold
       ? "STALLED"
       : hasBlocking ? humanBoundaryStatus(next, projectId) : "ACTIVE";
@@ -1510,7 +1536,7 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     situation: `context ${contextId ?? "unlinked"} · world cursor ${world.cursorEventId}`,
     decision: action.rationaleSummary,
     action: `${action.type} recorded without tool dispatch`,
-    outcome: nextStatus === "WAITING" ? "human boundary opened for the affected scope" : nextStatus === "EQUILIBRIUM" ? "model selected WAIT; signal-based wake remains enabled" : "non-tool decision recorded while independent work remains active",
+    outcome: providerUnavailable ? "model provider unavailable; no side effect was dispatched" : nextStatus === "WAITING" ? "human boundary opened for the affected scope" : nextStatus === "EQUILIBRIUM" ? "model selected WAIT; signal-based wake remains enabled" : "non-tool decision recorded while independent work remains active",
     evidenceIds: [],
     cost: 0,
     risk: action.riskClass ?? "P0",
@@ -1521,7 +1547,7 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     intentRef: intent.id,
     actionType: action.type,
     actionPayloadRef: actionId,
-     modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
+    modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION,
     toolVersion: TOOL_VERSION,
     policyVersion: getActivePolicy(state, projectId)?.version ?? POLICY_VERSION,
   };
@@ -1534,8 +1560,8 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   };
   const updatedProject: Project = { ...project, status: nextStatus, currentActionId: actionId, updatedAt: createdAt, nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined };
   next = updateProject(next, updatedProject);
-  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: nextStatus === "STALLED" ? `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
-  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: providerUnavailable ? action.rationaleSummary : nextStatus === "STALLED" ? `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
+  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: providerUnavailable ? "모델 provider를 설정한 뒤 재개해야 합니다." : action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
   if (nextStatus === "EQUILIBRIUM") next = appendEvent(next, { projectId, type: "EQUILIBRIUM_ENTERED", actor: "system", summary: "EQUILIBRIUM · no tool dispatch required", detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.", runId: run.id, createdAt });
   return moveWorldCursor(next, projectId, next.events.at(-1)?.id ?? actionId, createdAt);
 }
@@ -1764,42 +1790,44 @@ export function eventTone(type: EventType): string {
 
 export function eventLabel(type: EventType): string {
   const labels: Partial<Record<EventType, string>> = {
-    WAKE_TRIGGERED: "WAKE",
-    OBSERVE: "OBSERVE",
-    CONTEXT_ASSEMBLED: "CONTEXT",
-    MODEL_TURN: "DECIDE",
-    RUNTIME_ERROR: "ERROR",
-    GAP_FOUND: "GAP",
-    TOOL_CALLED: "TOOL",
-    TOOL_RESULT: "TOOL",
-    ACTION_SELECTED: "ACT",
-    ACTION_EXECUTED: "ACT",
-    VERIFY: "VERIFY",
-    EVIDENCE_RECORDED: "EVIDENCE",
-    WORLD_CHANGED: "WORLD",
-    OBSERVATION_REFRESHED: "WORLD",
-    WORKSPACE_CHANGED: "WORKSPACE",
-    PROCESS_STARTED: "PROCESS",
-    PROCESS_EXITED: "PROCESS",
-    APPROVAL_GRANT_ISSUED: "APPROVAL",
-    APPROVAL_GRANT_CONSUMED: "APPROVAL",
-    JOB_ENQUEUED: "QUEUE",
-    HUMAN_ITEM_CREATED: "HUMAN",
-    QUESTION_CREATED: "HUMAN",
-    HUMAN_ANSWERED: "HUMAN",
-    HUMAN_APPROVED: "HUMAN",
-    HUMAN_REJECTED: "HUMAN",
-    HUMAN_ACKNOWLEDGED: "HUMAN",
-    EXPERIMENT_CREATED: "EXPERIMENT",
-    EXPERIMENT_STARTED: "EXPERIMENT",
-    RUN_STATE_CHANGED: "STATE",
-    EQUILIBRIUM_ENTERED: "EQUILIBRIUM",
+    PROJECT_CREATED: "프로젝트",
+    INTENT_CREATED: "의도",
+    WAKE_TRIGGERED: "깨우기",
+    OBSERVE: "관찰",
+    CONTEXT_ASSEMBLED: "컨텍스트",
+    MODEL_TURN: "판단",
+    RUNTIME_ERROR: "오류",
+    GAP_FOUND: "공백",
+    TOOL_CALLED: "도구",
+    TOOL_RESULT: "도구 결과",
+    ACTION_SELECTED: "행동 선택",
+    ACTION_EXECUTED: "행동 실행",
+    VERIFY: "검증",
+    EVIDENCE_RECORDED: "증거",
+    WORLD_CHANGED: "월드",
+    OBSERVATION_REFRESHED: "월드 새로고침",
+    WORKSPACE_CHANGED: "작업공간",
+    PROCESS_STARTED: "프로세스 시작",
+    PROCESS_EXITED: "프로세스 종료",
+    APPROVAL_GRANT_ISSUED: "승인 발급",
+    APPROVAL_GRANT_CONSUMED: "승인 사용",
+    JOB_ENQUEUED: "큐",
+    HUMAN_ITEM_CREATED: "도움 필요",
+    QUESTION_CREATED: "질문",
+    HUMAN_ANSWERED: "답변",
+    HUMAN_APPROVED: "승인",
+    HUMAN_REJECTED: "거절",
+    HUMAN_ACKNOWLEDGED: "확인",
+    EXPERIMENT_CREATED: "실험 생성",
+    EXPERIMENT_STARTED: "실험 시작",
+    RUN_STATE_CHANGED: "상태 변경",
+    EQUILIBRIUM_ENTERED: "균형",
   };
   return labels[type] ?? type.replaceAll("_", " ");
 }
 
 export function statusLabel(status: RuntimeStatus): string {
-  return status;
+  return { ACTIVE: "활성", WAITING: "도움 필요", EQUILIBRIUM: "균형", STALLED: "중단", PAUSED: "일시 정지", KILLED: "종료" }[status];
 }
 
 export function statusTone(status: RuntimeStatus): string {
@@ -1818,19 +1846,19 @@ export function humanTone(kind: HumanItemKind): string {
 }
 
 export function humanLabel(kind: HumanItemKind): string {
-  return { QUESTION: "QUESTION", IDEA: "IDEA", CONCERN: "CONCERN", APPROVAL: "APPROVAL" }[kind];
+  return { QUESTION: "질문", IDEA: "아이디어", CONCERN: "우려", APPROVAL: "승인" }[kind];
 }
 
 export function actionStatusLabel(status: ActionStatus): string {
-  return { PROPOSED: "proposed", RUNNING: "running", VERIFIED: "verified", UNCERTAIN: "uncertain", FAILED: "failed", BLOCKED: "blocked" }[status];
+  return { PROPOSED: "제안됨", RUNNING: "실행 중", VERIFIED: "검증됨", UNCERTAIN: "확인 불가", FAILED: "실패", BLOCKED: "차단됨" }[status];
 }
 
 export function riskLabel(risk: RiskClass): string {
-  return { P0: "read-only", P1: "local reversible", P2: "external reversible", P3: "destructive / production" }[risk];
+  return { P0: "읽기 전용", P1: "로컬·되돌릴 수 있음", P2: "외부·되돌릴 수 있음", P3: "파괴적·운영 환경" }[risk];
 }
 
 export function phaseLabel(phase: RuntimePhase): string {
-  return phase.toUpperCase();
+  return { idle: "대기", wake: "깨우기", observe: "관찰", assemble: "컨텍스트 구성", decide: "판단", dispatch: "실행", verify: "검증", govern: "경계 적용", sleep: "대기" }[phase];
 }
 
 export function allWorldSources(snapshot: WorldSnapshot | undefined): WorldSource[] {

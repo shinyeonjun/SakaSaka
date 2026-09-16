@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isDeveloperArgv, redactSecretLikeText } from "../src/security";
+import { isDeveloperArgv, isManagedProcessArgv, redactSecretLikeText } from "../src/security";
 import type { SandboxContext, ToolResult } from "../src/ports";
 import type { ActionEnvelope, Evidence, ManagedProcess, Observation } from "../src/types";
 
@@ -91,7 +91,8 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
   try {
     if (action.tool === "process.start") {
       const argv = actionArgv(action);
-      if (!isDeveloperArgv(argv)) throw new Error("process.start argv is outside the developer command allowlist");
+      const validArgv = sandbox.mode === "docker" ? isDeveloperArgv(argv) : isManagedProcessArgv(argv);
+      if (!validArgv) throw new Error(sandbox.mode === "docker" ? "process.start argv is outside the Docker developer command allowlist" : "process.start argv is outside the process-mode dev-server allowlist");
       const requestedPort = typeof action.params?.port === "number" && Number.isInteger(action.params.port) && action.params.port >= 1 && action.params.port <= 65_535 ? action.params.port : undefined;
       const active = [...records.values()].filter((candidate) => candidate.projectId === sandbox.projectId && candidate.runId === sandbox.runId && (candidate.status === "starting" || candidate.status === "running"));
       const duplicate = active.find((candidate) => candidate.argv.length === argv.length && candidate.argv.every((value, index) => value === argv[index]) && candidate.port === requestedPort);

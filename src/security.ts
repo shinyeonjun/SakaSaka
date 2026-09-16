@@ -25,6 +25,8 @@ const safeCommandCost: Record<SafeCommandId, number> = {
 const maxActionPayloadBytes = 256 * 1024;
 const maxActionArrayLength = 128;
 const developerExecutables = new Set(["node", "node.exe", "npm", "npm.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd", "git", "python", "python3", "pytest", "tsc", "vite", "playwright"]);
+const managedProcessExecutables = new Set(["node", "node.exe", "vite"]);
+const managedPackageScripts = new Set(["dev", "start", "preview", "serve"]);
 const blockedDeveloperFlags = new Set(["-e", "--eval", "-p", "--print", "-r", "--require", "--loader", "--import", "--experimental-loader"]);
 
 export interface BoundaryDecision {
@@ -137,7 +139,7 @@ export function validateActionBoundary(
   if (capability.name === "workspace.patch" && typeof action.params?.patch !== "string") return { status: "blocked", reason: "workspace.patch requires a unified patch string", capability, normalizedTool };
   if (capability.name === "workspace.delete" && !isWorkspacePathParam(action.params?.path)) return { status: "blocked", reason: "workspace.delete requires a relative path", capability, normalizedTool };
   if (capability.name === "dependency.install" && !isPackageList(action.params?.packages)) return { status: "blocked", reason: "dependency.install requires validated package names", capability, normalizedTool };
-  if (capability.name === "process.start" && !isDeveloperArgv(action.params?.argv)) return { status: "blocked", reason: "process.start requires an argv array", capability, normalizedTool };
+  if (capability.name === "process.start" && !(project.settings.sandboxMode === "docker" ? isDeveloperArgv(action.params?.argv) : isManagedProcessArgv(action.params?.argv))) return { status: "blocked", reason: project.settings.sandboxMode === "docker" ? "process.start requires a valid Docker argv array" : "process.start only permits a managed dev-server argv in process mode", capability, normalizedTool };
   if ((capability.name === "process.status" || capability.name === "process.stop") && !isBoundedString(action.params?.processId, 256)) return { status: "blocked", reason: `${capability.name} requires a processId`, capability, normalizedTool };
   if (riskRank[capability.riskClass] >= riskRank.P3 && project.settings.productionBlocked) {
     return { status: "blocked", reason: "P3 production/destructive side effects are hard-blocked by project policy", capability, normalizedTool };
@@ -176,6 +178,25 @@ export function isDeveloperArgv(value: unknown): value is string[] {
       || /^[a-zA-Z]:[\\/]/.test(item)
       || /(?:^|[=:\\/]\s*)\.\.(?:[\\/]|$)/.test(item);
   });
+}
+
+/**
+ * Process mode may keep a real dev server alive, but it must not dispatch an
+ * arbitrary package script. Full developer argv remains a Docker-only path.
+ */
+export function isManagedProcessArgv(value: unknown): value is string[] {
+  if (!isDeveloperArgv(value)) return false;
+  const executable = value[0]!.toLowerCase();
+  if (managedProcessExecutables.has(executable)) return value.length >= 2;
+  if (!["npm", "npm.cmd", "pnpm", "pnpm.cmd", "yarn", "yarn.cmd"].includes(executable)) return false;
+  if (value.length === 2 && value[1] === "start") return true;
+  return value.length === 3 && value[1] === "run" && managedPackageScripts.has(value[2]!.toLowerCase());
+}
+
+/** Process lifecycle IDs must come from the current source-linked context. */
+export function isActiveProcessReference(action: ActionEnvelope, activeProcessIds: readonly string[]): boolean {
+  if (action.type !== "ACT" || (action.tool !== "process.status" && action.tool !== "process.stop")) return true;
+  return typeof action.params?.processId === "string" && activeProcessIds.includes(action.params.processId);
 }
 
 function isPackageList(value: unknown): value is string[] {

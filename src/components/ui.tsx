@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, PropsWithChildren, ReactNode } from "react";
 import type { RuntimeStatus } from "../types";
 import { runtimeDescription } from "../format";
-import { statusTone } from "../runtime";
+import { statusLabel, statusTone } from "../runtime";
 
 export function cn(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
@@ -28,7 +28,7 @@ export function Pill({ tone = "neutral", children, className, ...props }: PropsW
 }
 
 export function StatusBadge({ status, className }: { status: RuntimeStatus; className?: string }) {
-  return <Pill tone={statusTone(status)} className={cn("status-badge", className)} title={runtimeDescription(status)}>{status}</Pill>;
+  return <Pill tone={statusTone(status)} className={cn("status-badge", className)} title={runtimeDescription(status)}>{statusLabel(status)} <small>{status}</small></Pill>;
 }
 
 export function PageHeading({ title, description, status, actions }: { title: string; description?: string; status?: RuntimeStatus; actions?: ReactNode }) {

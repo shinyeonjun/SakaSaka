@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { assembleContext, createProject, getRun } from "../src/runtime";
-import { OpenAICompatibleModelGateway, UnavailableModelGateway } from "./localAdapters";
+import { CodexCliModelGateway } from "./codexCliGateway";
+import { OpenAICompatibleModelGateway, UnavailableModelGateway, createModelGateway } from "./localAdapters";
 import type { AppState, ContextPacket } from "../src/types";
 
 const servers: Server[] = [];
@@ -14,13 +15,13 @@ function emptyState(): AppState {
   return { schemaVersion: 1, activeProjectId: "", projects: [], intents: [], runs: [], actions: [], worldSnapshots: [], observations: [], contexts: [], events: [], evidence: [], humanItems: [], artifacts: [], experiences: [], policies: [], resourceLedger: [], relations: [], retrievalIndex: [], experiments: [], approvalGrants: [], processes: [] };
 }
 
-async function mockEndpoint(content: string, usage = { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 }): Promise<{ endpoint: string; requests: string[] }> {
+async function mockEndpoint(content: string, usage = { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 }, status = 200): Promise<{ endpoint: string; requests: string[] }> {
   const requests: string[] = [];
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     requests.push(Buffer.concat(chunks).toString("utf8"));
-    response.writeHead(200, { "Content-Type": "application/json" });
+    response.writeHead(status, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ choices: [{ message: { content } }], usage }));
   });
   servers.push(server);
@@ -44,7 +45,7 @@ describe("OpenAI-compatible model gateway", () => {
     const gateway = new OpenAICompatibleModelGateway(response.endpoint, "test-key", "test-model");
     await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", worldCursor: packet.worldCursor });
     const usage = await gateway.usage(runId);
-    expect(usage).toMatchObject({ modelVersion: "openai-compatible:test-model", tokens: 12 });
+    expect(usage).toMatchObject({ modelVersion: "openai-compatible:test-model", tokens: 12, inputTokens: 5, outputTokens: 7, usageKnown: true });
     expect(response.requests).toHaveLength(1);
     const payload = JSON.parse(response.requests[0]!) as { messages?: Array<{ role?: string; content?: string }> };
     const user = payload.messages?.find((message) => message.role === "user")?.content ?? "";
@@ -58,10 +59,25 @@ describe("OpenAI-compatible model gateway", () => {
     await expect(gateway.decide(packet)).rejects.toThrow("invalid JSON ActionEnvelope");
   });
 
+  it("returns WAIT and records the provider failure when the HTTP provider is unavailable", async () => {
+    const { context: packet, runId } = context();
+    const response = await mockEndpoint(JSON.stringify({ error: "temporarily unavailable" }), undefined, 503);
+    const gateway = new OpenAICompatibleModelGateway(response.endpoint, "test-key", "test-model");
+    await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", rationaleSummary: expect.stringContaining("모델 게이트웨이를 사용할 수 없습니다") });
+    await expect(gateway.usage(runId)).resolves.toMatchObject({ modelVersion: "openai-compatible:test-model", tokens: 0, usageKnown: false, rawRef: expect.stringMatching(/^local-raw:\/\//) });
+  });
+
   it("returns an explicit WAIT when a provider is unavailable", async () => {
     const { context: packet } = context();
-    const gateway = new UnavailableModelGateway("provider is not configured");
-    await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", rationaleSummary: expect.stringContaining("unavailable") });
-    await expect(gateway.usage("run")).resolves.toMatchObject({ modelVersion: "unavailable", tokens: 0 });
+    const gateway = new UnavailableModelGateway("provider가 설정되지 않았습니다.");
+    await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", rationaleSummary: expect.stringContaining("모델 게이트웨이를 사용할 수 없습니다") });
+    await expect(gateway.usage("run")).resolves.toMatchObject({ modelVersion: "unavailable", tokens: 0, usageKnown: false });
+  });
+
+  it("routes an explicit Codex CLI provider through ModelGateway", () => {
+    const state = createProject(emptyState(), "Codex CLI 모델 연결을 검증해줘", "gateway-codex", { modelProvider: "codex-cli" });
+    const project = state.projects.find((candidate) => candidate.id === "gateway-codex");
+    expect(project).toBeDefined();
+    expect(createModelGateway(project!)).toBeInstanceOf(CodexCliModelGateway);
   });
 });
