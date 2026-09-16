@@ -41,6 +41,24 @@ if (${exitCode} !== 0) process.exit(${exitCode});
   return { binary: process.execPath, prefix: [script] };
 }
 
+function writeMixedInputFailureFixture(output: string): { binary: string; prefix: string[] } {
+  const directory = mkdtempSync(join(tmpdir(), "sakasaka-codex-cli-mixed-input-test-"));
+  temporaryDirectories.push(directory);
+  const script = join(directory, "fixture.mjs");
+  writeFileSync(script, `
+let stdin = "";
+for await (const chunk of process.stdin) stdin += chunk;
+const args = process.argv.slice(2);
+const hasPromptArgument = args.some((argument) => argument.includes("지속형 소프트웨어 프로젝트"));
+if (hasPromptArgument && stdin.trim()) {
+  process.stderr.write("Reading additional input from stdin...");
+  process.exit(2);
+}
+process.stdout.write(${JSON.stringify(output)});
+`, "utf8");
+  return { binary: process.execPath, prefix: [script] };
+}
+
 describe("Codex CLI ModelGateway", () => {
   it("실제 codex exec 형식의 JSONL을 읽어 ActionEnvelope과 사용량 provenance를 만든다", async () => {
     const context = contextFixture();
@@ -85,5 +103,27 @@ describe("Codex CLI ModelGateway", () => {
     const unavailableAction = await unavailable.decide(context);
     expect(unavailableAction.type).toBe("WAIT");
     expect(unavailableAction.rationaleSummary).toMatch(/Codex CLI를 실행할 수 없습니다|모델 게이트웨이를 사용할 수 없습니다/);
+  });
+
+  it("모델 지시문과 ContextPacket을 하나의 stdin 입력으로 전달한다", async () => {
+    const context = contextFixture();
+    const action: ActionEnvelope = {
+      type: "WAIT",
+      intentRef: context.intentRef,
+      worldCursor: context.worldCursor,
+      rationaleSummary: "현재 이용 가능한 다음 행동이 없습니다.",
+      expectedValue: 0,
+      riskClass: "P0",
+      evidencePlan: ["world"],
+    };
+    const fixture = writeMixedInputFailureFixture([
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(action) } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 } }),
+      "",
+    ].join("\n"));
+    process.env.INTENT_WORLD_RAW_DIR = temporaryDirectories[0];
+    const gateway = new CodexCliModelGateway({ binary: fixture.binary, commandPrefix: fixture.prefix, timeoutMs: 5_000 });
+
+    await expect(gateway.decide(context)).resolves.toEqual(action);
   });
 });
