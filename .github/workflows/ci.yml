@@ -59,6 +59,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: Install Linux sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap uidmap
+          bwrap --version
       - name: Install pinned public Codex binary (no login)
         run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
       - name: Native agent and sandbox integration with local scripted model
