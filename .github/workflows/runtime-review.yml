@@ -1,0 +1,34 @@
+name: runtime-review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  review-bundle:
+    if: github.head_ref == 'fix/runtime-hardening-20260917'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Package tracked source and dependencies for offline verification
+        run: |
+          mkdir -p /tmp/runtime-review
+          git archive --format=tar.gz HEAD > /tmp/runtime-review/source.tar.gz
+          tar -czf /tmp/runtime-review/dependencies.tar.gz node_modules
+          git rev-parse HEAD > /tmp/runtime-review/commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-review-source
+          path: /tmp/runtime-review/
+          retention-days: 1
