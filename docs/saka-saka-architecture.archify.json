@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SakaSaka · 지속형 자율 개발 시스템",
+    "output": "saka-saka-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/shinyeonjun/SakaSaka",
+      "revision": "5ead4100af9fb3a1ac2499ae1e6a59f6f99bef9c"
+    },
+    "views": [
+      {
+        "id": "autonomous-loop",
+        "label": "자율 개발 루프",
+        "focus": ["user", "ui", "api", "runtime", "worker", "gateway", "codex"],
+        "note": "Intent와 실제 World를 바탕으로 다음 행동을 선택하고 다시 깨우는 경로입니다."
+      },
+      {
+        "id": "real-world-tools",
+        "label": "실제 World 변경",
+        "focus": ["runtime", "tools", "workspace", "browser"],
+        "note": "파일·프로세스·브라우저 결과가 다음 판단의 근거로 돌아옵니다."
+      },
+      {
+        "id": "durability-and-boundary",
+        "label": "지속성과 경계",
+        "focus": ["api", "worker", "persistence", "tools", "workspace"],
+        "note": "queue, journal, sandbox 경계가 재시작·중단·복구를 지탱합니다."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "사용자",
+      "pos": [40, 225],
+      "size": [160, 82],
+      "sources": [{ "path": "src/screens/NewProjectPage.tsx", "label": "프로젝트 시작" }]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "Tauri / React UI",
+      "sublabel": "프로젝트 · Needs You · Evidence",
+      "pos": [224, 225],
+      "size": [190, 82],
+      "sources": [
+        { "path": "src/screens/GlobalSettingsPage.tsx", "label": "모델 설정" },
+        { "path": "src/screens/SettingsPage.tsx", "label": "실행 설정" }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Local API",
+      "sublabel": "HTTP · event commit · wake",
+      "pos": [438, 225],
+      "size": [185, 82],
+      "sources": [{ "path": "server/index.ts", "label": "API 진입점" }]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "Runtime Core",
+      "sublabel": "World · Context · Action · Evidence",
+      "pos": [647, 70],
+      "size": [200, 82],
+      "tag": "한 번에 한 행동",
+      "sources": [{ "path": "src/runtime.ts", "label": "자율 판단 루프" }]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Durable Worker",
+      "sublabel": "lease · retry · continuation",
+      "pos": [647, 380],
+      "size": [200, 82],
+      "sources": [{ "path": "server/worker.ts", "label": "지속 실행" }]
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "Model Gateway",
+      "sublabel": "Codex CLI · strict JSON",
+      "pos": [871, 70],
+      "size": [190, 82],
+      "tag": "선택 모델 전달",
+      "sources": [{ "path": "server/codexCliGateway.ts", "label": "stdin 단일 입력" }]
+    },
+    {
+      "id": "codex",
+      "type": "external",
+      "label": "Codex CLI",
+      "sublabel": "실제 모델 추론",
+      "pos": [1085, 70],
+      "size": [160, 82],
+      "sources": [{ "path": ".env.example", "label": "provider 설정" }]
+    },
+    {
+      "id": "tools",
+      "type": "security",
+      "label": "Tool / Sandbox Layer",
+      "sublabel": "argv · path boundary · process",
+      "pos": [871, 380],
+      "size": [190, 82],
+      "tag": "실제 World 변경",
+      "sources": [
+        { "path": "server/workspaceTools.ts", "label": "workspace / shell" },
+        { "path": "server/processManager.ts", "label": "managed process" }
+      ]
+    },
+    {
+      "id": "workspace",
+      "type": "external",
+      "label": "Project Workspace",
+      "sublabel": "source · lockfile · git diff",
+      "pos": [1085, 380],
+      "size": [160, 82],
+      "sources": [{ "path": "server/workspaceTools.ts", "label": "파일 경계" }]
+    },
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser / Preview",
+      "sublabel": "Playwright · UI 증거",
+      "pos": [1085, 515],
+      "size": [160, 82],
+      "sources": [{ "path": "server/localAdapters.ts", "label": "browser adapter" }]
+    },
+    {
+      "id": "persistence",
+      "type": "database",
+      "label": "Local State",
+      "sublabel": "snapshot · JSONL journal · queue",
+      "pos": [438, 515],
+      "size": [185, 82],
+      "sources": [
+        { "path": "server/atomicFile.ts", "label": "crash-safe 파일" },
+        { "path": "server/localAdapters.ts", "label": "local persistence" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "SakaSaka 로컬 애플리케이션",
+      "wraps": ["ui", "api", "runtime", "worker", "gateway", "tools", "persistence"],
+      "pad": 28
+    },
+    {
+      "kind": "security-group",
+      "label": "작업공간·실행 샌드박스 경계",
+      "wraps": ["tools", "workspace", "browser"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "id": "user-ui", "from": "user", "to": "ui", "label": "Intent / 답변 / 승인", "variant": "emphasis", "labelAt": [120, 340] },
+    { "id": "ui-api", "from": "ui", "to": "api", "label": "HTTP API", "labelAt": [426, 340] },
+    { "id": "api-runtime", "from": "api", "to": "runtime", "label": "현재 World 조회", "fromSide": "top", "toSide": "left" },
+    { "id": "api-worker", "from": "api", "to": "worker", "label": "durable wake", "fromSide": "bottom", "toSide": "left" },
+    { "id": "api-persistence", "from": "api", "to": "persistence", "label": "event / snapshot", "fromSide": "bottom", "toSide": "top", "labelAt": [530, 485] },
+    { "id": "worker-runtime", "from": "worker", "to": "runtime", "label": "다음 cognition cycle", "fromSide": "top", "toSide": "bottom" },
+    { "id": "runtime-gateway", "from": "runtime", "to": "gateway", "label": "ContextPacket → ActionEnvelope", "variant": "emphasis", "labelAt": [859, 45] },
+    { "id": "gateway-codex", "from": "gateway", "to": "codex", "label": "Codex CLI stdin / stdout", "variant": "security", "labelAt": [1120, 175] },
+    { "id": "runtime-tools", "from": "runtime", "to": "tools", "label": "검증된 실제 tool 실행", "fromSide": "right", "toSide": "left", "labelDy": -55 },
+    { "id": "tools-workspace", "from": "tools", "to": "workspace", "label": "read / write / patch / git", "labelAt": [1120, 470] },
+    { "id": "tools-browser", "from": "tools", "to": "browser", "label": "start / inspect / evidence", "fromSide": "bottom", "toSide": "top" },
+    { "id": "runtime-evidence", "from": "tools", "to": "runtime", "label": "result → Observation / Evidence", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelDx": 210 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "자율 루프",
+      "items": ["모델은 고정된 PM·Coder 단계가 아니라 다음 한 행동을 선택", "ACT 성공 뒤에도 ACTIVE로 남아 다음 cycle을 예약", "WAIT와 실제 조건이 맞을 때만 EQUILIBRIUM"]
+    },
+    {
+      "dot": "emerald",
+      "title": "실제 근거",
+      "items": ["workspace와 managed process를 실제로 변경", "테스트·브라우저·로그 결과를 rawRef와 compact evidence로 보존", "다음 ContextPacket에 결과 lineage를 다시 주입"]
+    },
+    {
+      "dot": "amber",
+      "title": "사람과 경계",
+      "items": ["QUESTION은 답변을 기다리는 RPC가 아니며 DEFERRED 후에도 재답변 가능", "승인은 정확한 action fingerprint에 한 번만 적용", "path·argv·timeout·sandbox·process cleanup은 Governor가 강제"]
+    }
+  ]
+}
