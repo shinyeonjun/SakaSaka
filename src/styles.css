@@ -131,7 +131,7 @@ ul { padding: 0; list-style: none; }
 .model-setting-row { align-items: flex-start; }
 .model-setting-row > div:first-child { flex: 1 1 auto; }
 .model-picker { display: flex; flex: 0 1 300px; flex-direction: column; align-items: stretch; gap: 4px; }
-.model-picker input { width: 100%; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.model-picker input, .model-picker select { width: 100%; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .model-picker > span { font-size: 11px; line-height: 1.35; }
 .workspace-binding-card { display: flex; flex-direction: column; gap: 14px; padding: 22px; }
 .workspace-binding-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }

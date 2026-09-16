@@ -129,17 +129,23 @@ export function NewProjectPage() {
               <div className="advanced-setting-row model-setting-row">
                 <div><strong>{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</strong><span>{modelProvider === "codex-cli" ? "목록은 서버의 CODEX_CLI_MODELS 설정에서 읽습니다." : "선택한 provider가 지원하는 모델 ID를 입력합니다."} 비워두면 provider 기본 모델을 사용합니다.</span></div>
                 <div className="model-picker">
+                  <select
+                    value={availableModels.includes(modelName) ? modelName : ""}
+                    onChange={(event) => setModelName(event.target.value)}
+                    aria-label={modelProvider === "codex-cli" ? "Codex 모델 목록" : "모델 목록"}
+                  >
+                    <option value="">provider 기본 모델</option>
+                    {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                  </select>
                   <input
-                    list="codex-model-options"
                     value={modelName}
                     onChange={(event) => setModelName(event.target.value)}
                     maxLength={128}
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
-                    placeholder="provider 기본 모델"
+                    placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-label="모델 ID"
                   />
-                  <datalist id="codex-model-options">{availableModels.map((model) => <option key={model} value={model} />)}</datalist>
-                  <span>{availableModels.length ? `서버 선택 목록 ${availableModels.length}개 · 직접 입력 가능` : "서버 선택 목록 없음 · 직접 입력 가능"}</span>
+                  <span>{availableModels.length ? `서버 선택 목록 ${availableModels.length}개 · 직접 입력도 가능` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
                 </div>
               </div>
             )}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { fetchRuntimeConnectionStatus, isControlPlaneEnabled } from "../apiClient";
+import { fetchModelCatalog, fetchRuntimeConnectionStatus, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader } from "../components/ui";
 import { getProject } from "../runtime";
 import { useApp } from "../store";
@@ -77,6 +77,7 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const { navigate } = useRouter();
   const project = getProject(state, projectId);
   const [status, setStatus] = useState<RuntimeConnectionStatus | undefined>();
+  const [catalogModels, setCatalogModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [modelProvider, setModelProvider] = useState<ModelProvider>(project?.settings.modelProvider ?? "auto");
@@ -100,7 +101,9 @@ export function SettingsPage({ projectId }: { projectId: string }) {
     setLoading(true);
     setError(undefined);
     try {
-      setStatus(await fetchRuntimeConnectionStatus(projectId));
+      const connection = await fetchRuntimeConnectionStatus(projectId);
+      setStatus(connection);
+      try { setCatalogModels((await fetchModelCatalog()).models); } catch { setCatalogModels(connection.model.availableModels); }
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "런타임 연결 상태를 확인하지 못했습니다.");
     } finally {
@@ -140,6 +143,7 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const model = current.model;
   const workspace = current.workspace;
   const workspacePath = workspace.resolvedPath ?? workspace.configuredPath ?? "API가 프로젝트 전용 폴더를 자동 생성합니다.";
+  const modelOptions = [...new Set([...catalogModels, ...model.availableModels])];
 
   return (
     <div className="screen">
@@ -199,18 +203,20 @@ export function SettingsPage({ projectId }: { projectId: string }) {
               {modelProvider !== "deterministic" && (
                 <div className="settings-form-field">
                   <label htmlFor="settings-model-name">{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</label>
+                  <select id="settings-model-options" value={modelOptions.includes(modelName) ? modelName : ""} onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }} aria-label={modelProvider === "codex-cli" ? "Codex 모델 목록" : "모델 목록"}>
+                    <option value="">provider 기본 모델</option>
+                    {modelOptions.map((availableModel) => <option key={availableModel} value={availableModel}>{availableModel}</option>)}
+                  </select>
                   <input
                     id="settings-model-name"
-                    list="settings-codex-model-options"
                     value={modelName}
                     onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }}
                     maxLength={128}
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
-                    placeholder="provider 기본 모델"
+                    placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-describedby="settings-model-help"
                   />
-                  <datalist id="settings-codex-model-options">{model.availableModels.map((availableModel) => <option key={availableModel} value={availableModel} />)}</datalist>
-                  <span id="settings-model-help" className="field-help">{model.availableModels.length ? `서버가 제공한 선택 목록 ${model.availableModels.length}개 · 직접 입력 가능` : "서버 선택 목록 없음 · 직접 입력 가능"}</span>
+                  <span id="settings-model-help" className="field-help">{modelOptions.length ? `서버가 제공한 선택 목록 ${modelOptions.length}개 · 직접 입력도 가능` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
                 </div>
               )}
               <div className="button-row">
