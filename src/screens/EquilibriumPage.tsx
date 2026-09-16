@@ -21,7 +21,7 @@ export function EquilibriumPage({ projectId }: { projectId: string }) {
 
   const ideas = getProjectHumanItems(state, projectId).filter((item) => item.kind === "IDEA");
   const equilibriumEvent = getProjectEvents(state, projectId).find((event) => event.summary.startsWith("EQUILIBRIUM"));
-  const reviewTime = equilibriumEvent ? `오늘 ${formatClock(equilibriumEvent.createdAt)}` : "오늘 02:10";
+  const reviewTime = project.nextReviewAt ? `다음 review · ${formatClock(project.nextReviewAt)}` : equilibriumEvent ? `오늘 ${formatClock(equilibriumEvent.createdAt)}` : "scheduled review 대기";
   const isTripTogether = project.id === "project-trip-together";
   const primaryFallback = isTripTogether ? "IDEA-21 · 이동시간 자동 계산 · 예상 가치 높음 / 제품 방향 승인 대기" : "현재 보류 중인 Idea 없음";
   const secondaryFallback = isTripTogether ? "IDEA-18 · 여행 템플릿 공유 · 예상 가치 중간 / 사용자 evidence 부족" : "새로운 signal이 들어오면 추가 탐색을 다시 평가합니다.";

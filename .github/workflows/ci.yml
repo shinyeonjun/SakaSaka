@@ -24,6 +24,9 @@ jobs:
       - run: npm test -- --run
       - run: npm run build
       - run: npm run acceptance
+      - run: npm run acceptance:api
+      - run: npx playwright install --with-deps chromium
+      - run: npm run acceptance:ui
 
   security-and-gates:
     runs-on: ubuntu-latest

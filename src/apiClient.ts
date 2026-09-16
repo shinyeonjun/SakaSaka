@@ -90,7 +90,16 @@ export async function mirrorAction(action: AppAction, state: AppState): Promise<
 export function subscribeToProject(projectId: string, onEvent: () => void): () => void {
   if (!isControlPlaneEnabled || typeof EventSource === "undefined") return () => undefined;
   const source = new EventSource(`${baseUrl}/projects/${encodeURIComponent(projectId)}/stream`);
-  source.addEventListener("event.created", onEvent);
+  let scheduled = false;
+  const scheduleHydration = () => {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      onEvent();
+    });
+  };
+  for (const eventName of ["event.created", "run.state", "world.changed", "human-item.created", "evidence.created"]) source.addEventListener(eventName, scheduleHydration);
   source.onerror = () => {
     // EventSource reconnects itself; the next event will hydrate the state again.
   };

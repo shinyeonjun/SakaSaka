@@ -23,10 +23,11 @@ export function NeedsYouPage({ projectId }: { projectId: string }) {
   if (!project) return <div className="screen"><Card className="empty-state"><h1>프로젝트를 찾을 수 없습니다.</h1></Card></div>;
   const counts = getHumanCounts(state, projectId);
   const allItems = getProjectHumanItems(state, projectId);
-  const primaryItems = allItems
-    .filter((item) => item.status === "OPEN" && (item.kind === "QUESTION" || item.kind === "APPROVAL" || item.id === "IDEA-21"))
+  const openItems = allItems.filter((item) => item.status === "OPEN");
+  const primaryItems = openItems
+    .filter((item) => item.kind === "QUESTION" || item.kind === "APPROVAL" || item.id === "IDEA-21")
     .sort((a, b) => ["QUESTION", "IDEA", "CONCERN", "APPROVAL"].indexOf(a.kind) - ["QUESTION", "IDEA", "CONCERN", "APPROVAL"].indexOf(b.kind));
-  const items = filter === "ALL" ? primaryItems : allItems.filter((item) => item.kind === filter);
+  const items = filter === "ALL" ? primaryItems : openItems.filter((item) => item.kind === filter);
 
   return (
     <div className="screen">

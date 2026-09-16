@@ -50,6 +50,19 @@ export function WorldPage({ projectId }: { projectId: string }) {
             <div><strong>Resource Ledger</strong><span>{ledger ? `${ledger.tokens.toLocaleString()} tokens · ${ledger.toolCalls} tool calls · ${ledger.wallTimeMs}ms` : "아직 사용량이 기록되지 않음"}</span></div>
           </div>
         </Card>
+        <details className="runtime-controls">
+          <summary>Advanced runtime controls</summary>
+          <div className="runtime-controls-body">
+            <div><strong>{project.status}</strong><span>수동 제어는 현재 run의 lease와 boundary를 그대로 따릅니다.</span></div>
+            <div className="button-row">
+              <Button size="small" variant="primary" onClick={() => dispatch({ type: "RUN_CYCLE", projectId })} disabled={project.status !== "ACTIVE" && project.status !== "WAITING"}>한 cycle 실행</Button>
+              <Button size="small" variant="neutral" onClick={() => dispatch({ type: "WAKE_PROJECT", projectId })} disabled={project.status === "KILLED" || project.status === "ACTIVE"}>Wake</Button>
+              <Button size="small" variant="subtle" onClick={() => dispatch({ type: "PAUSE_PROJECT", projectId })} disabled={project.status !== "ACTIVE"}>Pause</Button>
+              <Button size="small" variant="neutral" onClick={() => dispatch({ type: "RESUME_PROJECT", projectId })} disabled={project.status !== "PAUSED" && project.status !== "STALLED"}>Resume</Button>
+              <Button size="small" variant="danger" onClick={() => { if (globalThis.confirm?.("현재 run을 종료할까요?")) dispatch({ type: "KILL_PROJECT", projectId }); }} disabled={project.status === "KILLED"}>Kill</Button>
+            </div>
+          </div>
+        </details>
         <InlineNotice tone="purple" title="World Snapshot">캐시·색인은 context를 구성하는 보조 수단입니다. 모델의 요약이 실제 상태보다 우선하지 않습니다.</InlineNotice>
       </div>
     </div>

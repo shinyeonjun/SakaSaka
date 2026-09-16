@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   assert.equal(executed.actions.find((action) => action.projectId === projectId)?.status, "VERIFIED");
   assert.ok(executed.evidence.find((evidence) => evidence.projectId === projectId && evidence.verdict === "PASS"));
   const eventTypes = new Set(getProjectEvents(executed, projectId).map((event) => event.type));
-  for (const type of ["OBSERVE", "CONTEXT_ASSEMBLED", "TOOL_CALLED", "TOOL_RESULT", "VERIFY", "EVIDENCE_RECORDED", "EQUILIBRIUM_ENTERED"]) assert.ok(eventTypes.has(type), `missing event ${type}`);
+  for (const type of ["OBSERVE", "CONTEXT_ASSEMBLED", "TOOL_CALLED", "TOOL_RESULT", "VERIFY", "EVIDENCE_RECORDED", "EQUILIBRIUM_ENTERED"] as const) assert.ok(eventTypes.has(type), `missing event ${type}`);
 
   const policyProject = getProject(seed, "project-trip-together")!;
   const blocked = validateActionBoundary(policyProject, { type: "ACT", intentRef: policyProject.intentId, worldCursor: "event-816", rationaleSummary: "production delete", tool: "deploy.production" }, getToolSurface(policyProject));

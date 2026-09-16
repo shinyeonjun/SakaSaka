@@ -174,6 +174,7 @@ const action: AgentAction = {
   id: "action-812",
   projectId,
   runId,
+  schemaVersion: 1,
   type: "ACT" as ActionType,
   intentRef: intentId,
   worldCursor: "event-816",
@@ -314,12 +315,12 @@ const experiences: Experience[] = [
 ];
 
 const experiments: Experiment[] = [
-  { id: "exp-h1", projectId, key: "H1", title: "Initiative", hypothesis: "Intent + World만으로 명시되지 않은 필수 작업을 스스로 발견하는가?", description: "hidden-work seed에서 필요한 UX·권한·운영 문제의 발견률을 비교합니다.", variant: "closed-loop", status: "running", score: "71% recall", updatedAt: time(34) },
-  { id: "exp-h2", projectId, key: "H2", title: "Closed loop", hypothesis: "Observe → Act → Verify가 Prompt → Response보다 복합 프로젝트 성과를 높이는가?", description: "동일 모델·도구·budget에서 실행 루프만 비교합니다.", variant: "observe-act-verify", status: "passed", score: "0.86 utility", updatedAt: time(32) },
-  { id: "exp-h3", projectId, key: "H3", title: "Discovery", hypothesis: "Information Gain을 고려하면 숨은 위험·요구·기회 발견이 증가하는가?", description: "Discovery force를 제거한 baseline과 precision을 비교합니다.", variant: "discovery-aware", status: "ready", score: "—", updatedAt: time(29) },
-  { id: "exp-h4", projectId, key: "H4", title: "Role emergence", hypothesis: "PM·QA·Designer·Architect 역할을 고정하지 않아도 기능이 나타나는가?", description: "명시적 role prompt 없이 결과와 evidence lineage를 분석합니다.", variant: "role-free", status: "ready", score: "—", updatedAt: time(29) },
-  { id: "exp-h5", projectId, key: "H5", title: "Experience memory", hypothesis: "상태→행동→결과 기억으로 반복 삽질과 인간 개입이 감소하는가?", description: "동일 failure family를 반복해 rework와 tool calls를 비교합니다.", variant: "experience-retrieval", status: "needs-review", score: "human count 0", updatedAt: time(33) },
-  { id: "exp-h6", projectId, key: "H6", title: "Meta improvement", hypothesis: "정책 평가·개선이 동일 모델의 effective intelligence를 높이는가?", description: "RSI는 필요성이 증명된 뒤 sandbox에서만 열어 둡니다.", variant: "policy-candidate", status: "ready", score: "not started", updatedAt: time(28) },
+  { id: "exp-h1", projectId, key: "H1", title: "Initiative", hypothesis: "Intent + World만으로 명시되지 않은 필수 작업을 스스로 발견하는가?", description: "hidden-work seed에서 필요한 UX·권한·운영 문제의 발견률을 비교합니다.", variant: "closed-loop", status: "running", score: "71% recall", updatedAt: time(34), benchmark: "hidden-work-ux", budgetLimit: 8, hiddenCriteria: ["mobile UX", "permission ambiguity", "operational readiness"], evaluatorRefs: ["initiative-recall", "initiative-precision"] },
+  { id: "exp-h2", projectId, key: "H2", title: "Closed loop", hypothesis: "Observe → Act → Verify가 Prompt → Response보다 복합 프로젝트 성과를 높이는가?", description: "동일 모델·도구·budget에서 실행 루프만 비교합니다.", variant: "observe-act-verify", status: "passed", score: "0.86 utility", updatedAt: time(32), benchmark: "greenfield-travel", budgetLimit: 8, hiddenCriteria: ["working app", "core E2E", "browser evidence"], evaluatorRefs: ["outcome-quality", "evidence-coverage"] },
+  { id: "exp-h3", projectId, key: "H3", title: "Discovery", hypothesis: "Information Gain을 고려하면 숨은 위험·요구·기회 발견이 증가하는가?", description: "Discovery force를 제거한 baseline과 precision을 비교합니다.", variant: "discovery-aware", status: "ready", score: "—", updatedAt: time(29), benchmark: "hidden-work-ux", budgetLimit: 8, hiddenCriteria: ["hidden work", "human-only question"], evaluatorRefs: ["question-precision", "hidden-work-recall"] },
+  { id: "exp-h4", projectId, key: "H4", title: "Role emergence", hypothesis: "PM·QA·Designer·Architect 역할을 고정하지 않아도 기능이 나타나는가?", description: "명시적 role prompt 없이 결과와 evidence lineage를 분석합니다.", variant: "role-free", status: "ready", score: "—", updatedAt: time(29), benchmark: "greenfield-travel", budgetLimit: 8, hiddenCriteria: ["cross-functional evidence", "no fixed roles"], evaluatorRefs: ["outcome-quality", "human-orchestration-count"] },
+  { id: "exp-h5", projectId, key: "H5", title: "Experience memory", hypothesis: "상태→행동→결과 기억으로 반복 삽질과 인간 개입이 감소하는가?", description: "동일 failure family를 반복해 rework와 tool calls를 비교합니다.", variant: "experience-retrieval", status: "needs-review", score: "human count 0", updatedAt: time(33), benchmark: "maintenance-hidden-bug", budgetLimit: 10, hiddenCriteria: ["repeat failure family", "quality maintained"], evaluatorRefs: ["rework-rate", "cost-normalized-utility"] },
+  { id: "exp-h6", projectId, key: "H6", title: "Meta improvement", hypothesis: "정책 평가·개선이 동일 모델의 effective intelligence를 높이는가?", description: "RSI는 필요성이 증명된 뒤 sandbox에서만 열어 둡니다.", variant: "policy-candidate", status: "ready", score: "not started", updatedAt: time(28), benchmark: "long-horizon-continuity", budgetLimit: 10, hiddenCriteria: ["replayable policy", "independent evidence", "rollback"], evaluatorRefs: ["stop-quality", "outcome-quality"] },
 ];
 
 const events: EventRecord[] = [
@@ -353,6 +354,7 @@ const observations: Observation[] = worldSourceKeys.map((key) => ({
   id: `observation-816-${key}`,
   projectId,
   source: key,
+  status: sources[key].status,
   observedAt: sources[key].observedAt,
   freshness: sources[key].freshness,
   rawRef: `world://world-816/${key}`,
@@ -432,10 +434,14 @@ const contexts: ContextPacket[] = [{
   schemaVersion: 1,
   modelVersion: "local-deterministic-0.1",
   policyVersion: 1,
+  runId,
+  observationViews: observations.map((observation) => ({ ...observation, relatedEntities: [...observation.relatedEntities] })),
+  openHumanItemViews: humanItems.filter((item) => item.status === "OPEN").map((item) => ({ id: item.id, kind: item.kind, status: item.status, title: item.title, summary: item.summary, blockingScope: [...item.blockingScope], continuingScope: [...item.continuingScope] })),
+  relevantExperienceViews: experiences.map((experience) => ({ id: experience.id, situation: experience.situation, decision: experience.decision, action: experience.action, outcome: experience.outcome, evidenceIds: [...experience.evidenceIds], risk: experience.risk, createdAt: experience.createdAt })),
 }];
 
 export function createSeedState(): AppState {
-  return {
+  const state: AppState = {
     schemaVersion: 1,
     activeProjectId: projectId,
     projects: [project],
@@ -456,4 +462,8 @@ export function createSeedState(): AppState {
     retrievalIndex,
     experiments,
   };
+  // The seed is used both as a browser fallback and as the API bootstrap. A
+  // fresh deep copy prevents one optimistic reducer or test from mutating the
+  // canonical fixture shared by later sessions.
+  return typeof globalThis.structuredClone === "function" ? structuredClone(state) : JSON.parse(JSON.stringify(state)) as AppState;
 }

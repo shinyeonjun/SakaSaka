@@ -3,6 +3,8 @@ services:
     build:
       context: .
       target: web
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8787}
     ports:
       - "4173:80"
     depends_on:

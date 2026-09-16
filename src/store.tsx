@@ -17,7 +17,8 @@ import {
   stallProject,
   wakeProject,
 } from "./runtime";
-import type { AppState, ArtifactKind, Experiment, ProjectSettings } from "./types";
+import type { AppState, ArtifactKind, ProjectSettings } from "./types";
+import type { ExperimentInput } from "./runtime";
 
 const STORAGE_KEY = "intent-world-agent-state-v1";
 
@@ -30,8 +31,18 @@ function loadState(): AppState {
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.projects) || !Array.isArray(parsed.events)) return createSeedState();
     return {
       ...parsed,
-      observations: Array.isArray(parsed.observations) ? parsed.observations : [],
-      contexts: Array.isArray(parsed.contexts) ? parsed.contexts : [],
+      actions: Array.isArray(parsed.actions) ? parsed.actions.map((action) => ({ ...action, schemaVersion: 1 as const })) : [],
+      worldSnapshots: Array.isArray(parsed.worldSnapshots) ? parsed.worldSnapshots : [],
+      evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+      humanItems: Array.isArray(parsed.humanItems) ? parsed.humanItems : [],
+      artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
+      experiences: Array.isArray(parsed.experiences) ? parsed.experiences : [],
+      experiments: Array.isArray(parsed.experiments) ? parsed.experiments : [],
+      observations: Array.isArray(parsed.observations) ? parsed.observations.map((observation) => ({
+        ...observation,
+        status: observation.status ?? (observation.trustLevel === "untrusted" || /unconfigured|unreachable|unanswered|awaiting|blocked|not connected/i.test(observation.compactView) ? "warning" : "healthy"),
+      })) : [],
+      contexts: Array.isArray(parsed.contexts) ? parsed.contexts.map((context) => ({ ...context, schemaVersion: 1 as const })) : [],
       policies: Array.isArray(parsed.policies) ? parsed.policies : [],
       resourceLedger: Array.isArray(parsed.resourceLedger) ? parsed.resourceLedger : [],
       relations: Array.isArray(parsed.relations) ? parsed.relations : [],
@@ -54,7 +65,7 @@ export type AppAction =
   | { type: "KILL_PROJECT"; projectId: string }
   | { type: "CREATE_ARTIFACT"; projectId: string; kind: ArtifactKind; name: string; description: string }
   | { type: "RUN_EXPERIMENT"; experimentId: string }
-  | { type: "CREATE_EXPERIMENT"; projectId: string; input: Pick<Experiment, "key" | "title" | "hypothesis" | "description" | "variant"> }
+  | { type: "CREATE_EXPERIMENT"; projectId: string; input: ExperimentInput }
   | { type: "ADD_INTENT"; projectId: string; rawText: string }
   | { type: "SET_ACTIVE_PROJECT"; projectId: string }
   | { type: "HYDRATE_STATE"; state: AppState };
@@ -108,12 +119,14 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: PropsWithChildren) {
   const [state, reducerDispatch] = useReducer(appReducer, undefined, loadState);
   const syncQueue = useRef(Promise.resolve());
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const dispatch = useCallback<Dispatch<AppAction>>((action) => {
     reducerDispatch(action);
     if (!isControlPlaneEnabled || action.type === "SET_ACTIVE_PROJECT" || action.type === "HYDRATE_STATE") return;
 
-    const stateAtDispatch = state;
+    const stateAtDispatch = stateRef.current;
     syncQueue.current = syncQueue.current
       .then(() => mirrorAction(action, stateAtDispatch))
       .then(() => fetchServerState())
@@ -121,7 +134,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       .catch((error: unknown) => {
         console.warn("Control plane sync failed; local runtime state is retained.", error);
       });
-  }, [reducerDispatch, state]);
+  }, [reducerDispatch]);
 
   useEffect(() => {
     if (!isControlPlaneEnabled) return;

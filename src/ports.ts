@@ -43,6 +43,8 @@ export interface SandboxContext {
   workspaceRef: string;
   sandboxId?: string;
   createdAt?: string;
+  mode?: "process" | "docker";
+  image?: string;
 }
 
 export interface ToolResult {
@@ -126,6 +128,24 @@ export interface RuntimePorts {
   sandbox: SandboxManager;
   memory: MemoryService;
   ledger: ResourceLedgerStore;
+}
+
+export interface RuntimeJob {
+  id: string;
+  projectId: string;
+  runId: string;
+  trigger: "intent" | "human-answer" | "incident" | "scheduled-review" | "user-feedback" | "dependency-security" | "signal" | "manual";
+  attempts: number;
+  availableAt: string;
+  leaseUntil?: string;
+  leasedBy?: string;
+}
+
+export interface JobQueue {
+  enqueue(job: Omit<RuntimeJob, "id" | "attempts" | "availableAt"> & Partial<Pick<RuntimeJob, "id" | "attempts" | "availableAt">>): Promise<RuntimeJob>;
+  lease(workerId: string, leaseMs: number): Promise<RuntimeJob | undefined>;
+  ack(jobId: string, workerId?: string): Promise<void>;
+  retry(jobId: string, delayMs: number, workerId?: string): Promise<void>;
 }
 
 export interface ControlPlane {

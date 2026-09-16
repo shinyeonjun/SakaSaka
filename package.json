@@ -15,9 +15,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "acceptance": "tsx scripts/acceptance.ts",
+    "acceptance:api": "tsx scripts/apiAcceptance.ts",
+    "acceptance:ui": "tsx scripts/uiAcceptance.ts",
+    "browser:install": "playwright install chromium",
     "security:check": "npm audit --audit-level=high"
   },
   "dependencies": {
+    "playwright": "^1.63.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },

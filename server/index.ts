@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, watch } from "node:fs";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 import { URL } from "node:url";
 import { createSeedState } from "../src/seed";
+import { JsonlEventStore } from "./jsonlEventStore";
 import {
   addIntent,
   createArtifact,
@@ -18,6 +19,7 @@ import {
   getResourceLedger,
   getRun,
   getWorldSnapshot,
+  isHumanActionAllowed,
   killProject,
   makeId,
   pauseProject,
@@ -30,19 +32,40 @@ import {
   wakeProject,
 } from "../src/runtime";
 import type { AppState, ArtifactKind, Experiment, ProjectSettings } from "../src/types";
+import type { ExperimentInput } from "../src/runtime";
+import { evaluateProject } from "../src/evaluation";
 import { executeLocalCycle, observeLocalWorld } from "./localRuntime";
+import { normalizeWorkspacePath } from "./pathPolicy";
+import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
+import { withFileLock } from "./fileLock";
 
-const port = Number(process.env.API_PORT ?? "8787");
+const configuredPort = Number(process.env.API_PORT ?? "8787");
+const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
+const stateLockPath = `${statePath}.lock`;
+const eventJournal = new JsonlEventStore(`${statePath}.events.jsonl`);
 const subscribers = new Map<string, Set<ServerResponse>>();
+const maxBodyBytes = 1_048_576;
+
+class BadRequestError extends Error {}
 
 function normalizeState(candidate: unknown): AppState {
   const value = candidate as Partial<AppState>;
-  if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) return createSeedState();
+  if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) throw new Error("state snapshot is missing required collections");
   return {
     ...(value as AppState),
-    observations: Array.isArray(value.observations) ? value.observations : [],
-    contexts: Array.isArray(value.contexts) ? value.contexts : [],
+    actions: Array.isArray(value.actions) ? value.actions.map((action) => ({ ...action, schemaVersion: 1 as const })) : [],
+    worldSnapshots: Array.isArray(value.worldSnapshots) ? value.worldSnapshots : [],
+    evidence: Array.isArray(value.evidence) ? value.evidence : [],
+    humanItems: Array.isArray(value.humanItems) ? value.humanItems : [],
+    artifacts: Array.isArray(value.artifacts) ? value.artifacts : [],
+    experiences: Array.isArray(value.experiences) ? value.experiences : [],
+    experiments: Array.isArray(value.experiments) ? value.experiments : [],
+    observations: Array.isArray(value.observations) ? value.observations.map((observation) => ({
+      ...observation,
+      status: observation.status ?? (observation.trustLevel === "untrusted" || /unconfigured|unreachable|unanswered|awaiting|blocked|not connected/i.test(observation.compactView) ? "warning" : "healthy"),
+    })) : [],
+    contexts: Array.isArray(value.contexts) ? value.contexts.map((context) => ({ ...context, schemaVersion: 1 as const })) : [],
     policies: Array.isArray(value.policies) ? value.policies : [],
     resourceLedger: Array.isArray(value.resourceLedger) ? value.resourceLedger : [],
     relations: Array.isArray(value.relations) ? value.relations : [],
@@ -50,20 +73,28 @@ function normalizeState(candidate: unknown): AppState {
   };
 }
 
-function loadState(): AppState {
-  if (!existsSync(statePath)) return createSeedState();
+function isRecoverableState(candidate: unknown): boolean {
   try {
-    return normalizeState(JSON.parse(readFileSync(statePath, "utf8")));
+    normalizeState(candidate);
+    return true;
   } catch {
-    return createSeedState();
+    return false;
   }
 }
 
+function loadState(): AppState {
+  if (!existsSync(statePath)) return createSeedState();
+  const candidate = readJsonWithBackup<unknown>(statePath, isRecoverableState);
+  if (candidate === undefined) throw new Error(`state snapshot is unreadable and no valid backup exists: ${statePath}`);
+  return normalizeState(candidate);
+}
+
 let state = loadState();
+mkdirSync(dirname(statePath), { recursive: true });
 
 function persistState(next: AppState): void {
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(next, null, 2), "utf8");
+  writeJsonAtomically(statePath, next);
+  for (const event of next.events) eventJournal.appendSync(event);
 }
 
 function publishEvents(previous: AppState, next: AppState): void {
@@ -72,23 +103,37 @@ function publishEvents(previous: AppState, next: AppState): void {
   for (const event of created) {
     const listeners = subscribers.get(event.projectId);
     if (!listeners) continue;
-    const eventNames = new Set(["event.created"]);
-    if (event.type === "RUN_STATE_CHANGED") eventNames.add("run.state");
-    if (event.type === "WORLD_CHANGED" || event.type === "OBSERVATION_REFRESHED") eventNames.add("world.changed");
-    if (event.type === "HUMAN_ITEM_CREATED") eventNames.add("human-item.created");
-    if (event.type === "EVIDENCE_RECORDED") eventNames.add("evidence.created");
-    const payload = [...eventNames]
-      .map((name) => `id: ${event.id}\nevent: ${name}\ndata: ${JSON.stringify(event)}\n\n`)
-      .join("");
-    for (const listener of listeners) listener.write(payload);
+    for (const listener of listeners) {
+      try { writeSseEvent(listener, event); } catch { listeners.delete(listener); }
+    }
+    if (!listeners.size) subscribers.delete(event.projectId);
   }
 }
 
-function commit(next: AppState): void {
-  const previous = state;
-  state = next;
-  persistState(state);
-  publishEvents(previous, state);
+function eventNames(event: AppState["events"][number]): string[] {
+  const names = ["event.created"];
+  if (event.type === "RUN_STATE_CHANGED") names.push("run.state");
+  if (event.type === "WORLD_CHANGED" || event.type === "OBSERVATION_REFRESHED") names.push("world.changed");
+  if (event.type === "HUMAN_ITEM_CREATED" || event.type === "QUESTION_CREATED") names.push("human-item.created");
+  if (event.type === "EVIDENCE_RECORDED") names.push("evidence.created");
+  return names;
+}
+
+function writeSseEvent(response: ServerResponse, event: AppState["events"][number]): void {
+  response.write(eventNames(event).map((name) => `id: ${event.id}\nevent: ${name}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+}
+
+async function commitMutation(mutator: (current: AppState) => AppState | Promise<AppState>): Promise<AppState> {
+  return withFileLock(stateLockPath, async () => {
+    const previous = loadState();
+    const next = await mutator(previous);
+    state = next;
+    if (next !== previous) {
+      persistState(next);
+      publishEvents(previous, next);
+    }
+    return state;
+  });
 }
 
 function headers(contentType = "application/json"): Record<string, string> {
@@ -111,10 +156,22 @@ function sendError(response: ServerResponse, status: number, message: string): v
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > maxBodyBytes) throw new BadRequestError("request body is too large");
+    chunks.push(buffer);
+  }
   if (!chunks.length) return {};
-  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new BadRequestError("request body must be valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new BadRequestError("request body must be a JSON object");
+  return parsed as Record<string, unknown>;
 }
 
 function projectPayload(projectId: string): Record<string, unknown> | undefined {
@@ -126,6 +183,7 @@ function projectPayload(projectId: string): Record<string, unknown> | undefined 
     run: getRun(state, projectId),
     world: getWorldSnapshot(state, projectId),
     needsYou: getProjectHumanItems(state, projectId),
+    actions: state.actions.filter((item) => item.projectId === projectId),
     evidence: state.evidence.filter((item) => item.projectId === projectId),
     artifacts: state.artifacts.filter((item) => item.projectId === projectId),
     events: getProjectEvents(state, projectId),
@@ -142,29 +200,167 @@ function routeParts(pathname: string): string[] {
   return pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
 }
 
+function refreshStateFromDisk(): void {
+  if (!existsSync(statePath)) return;
+  let next: AppState;
+  try {
+    next = loadState();
+  } catch (error: unknown) {
+    console.error(error instanceof Error ? error.message : "state snapshot reload failed");
+    return;
+  }
+  if (next.events.length === state.events.length && next.projects.length === state.projects.length && next.events.at(-1)?.id === state.events.at(-1)?.id) return;
+  const previous = state;
+  state = next;
+  publishEvents(previous, next);
+}
+
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+watch(dirname(statePath), (_event, filename) => {
+  if (filename && filename.toString() !== basename(statePath)) return;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = undefined;
+    refreshStateFromDisk();
+  }, 25);
+});
+
 function afterCursor(events: AppState["events"], cursor: string | null): AppState["events"] {
   if (!cursor) return events;
   const index = events.findIndex((event) => event.id === cursor);
   return index < 0 ? events : events.slice(index + 1);
 }
 
-function parseExperimentInput(body: Record<string, unknown>): Pick<Experiment, "key" | "title" | "hypothesis" | "description" | "variant"> {
+function parseExperimentInput(body: Record<string, unknown>): ExperimentInput {
+  const list = (value: unknown): string[] | undefined => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+  const variantConfig = body.variantConfig && typeof body.variantConfig === "object" ? Object.fromEntries(Object.entries(body.variantConfig).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))) as Record<string, string | number | boolean> : undefined;
   return {
     key: typeof body.key === "string" ? body.key : "H-custom",
     title: typeof body.title === "string" ? body.title : "Custom experiment",
     hypothesis: typeof body.hypothesis === "string" ? body.hypothesis : "Custom hypothesis",
     description: typeof body.description === "string" ? body.description : "Created by the control plane",
     variant: typeof body.variant === "string" ? body.variant : "local",
+    benchmark: typeof body.benchmark === "string" ? body.benchmark : undefined,
+    budgetLimit: typeof body.budgetLimit === "number" && body.budgetLimit > 0 ? body.budgetLimit : undefined,
+    hiddenCriteria: list(body.hiddenCriteria),
+    evaluatorRefs: list(body.evaluatorRefs),
+    variantConfig,
   };
+}
+
+function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSettings>; error?: string } {
+  if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw))) return { error: "settings must be a JSON object" };
+  const body = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const positiveNumber = (key: string, fallback: number, maximum: number): number | string => {
+    const value = body[key];
+    if (value === undefined) return fallback;
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > maximum) return `${key} must be a finite number between 0 and ${maximum}`;
+    return value;
+  };
+  const configuredBudget = Number(process.env.DEFAULT_RUN_BUDGET ?? "30");
+  const defaultBudget = Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 30;
+  const budgetLimit = positiveNumber("budgetLimit", defaultBudget, 1_000_000);
+  const maxHours = positiveNumber("maxHours", 12, 168);
+  const reviewIntervalMinutes = positiveNumber("reviewIntervalMinutes", 360, 10_080);
+  if (typeof budgetLimit === "string") return { error: budgetLimit };
+  if (typeof maxHours === "string") return { error: maxHours };
+  if (typeof reviewIntervalMinutes === "string") return { error: reviewIntervalMinutes };
+  const booleanSetting = (key: string, fallback: boolean): boolean | string => {
+    const value = body[key];
+    if (value === undefined) return fallback;
+    return typeof value === "boolean" ? value : `${key} must be boolean`;
+  };
+  const localActions = booleanSetting("localActions", true);
+  const requireExternalApproval = booleanSetting("requireExternalApproval", true);
+  const productionBlocked = booleanSetting("productionBlocked", true);
+  if (typeof localActions === "string") return { error: localActions };
+  if (typeof requireExternalApproval === "string") return { error: requireExternalApproval };
+  if (typeof productionBlocked === "string") return { error: productionBlocked };
+  const networkPolicy = body.networkPolicy === undefined ? "allowlist" : body.networkPolicy;
+  if (networkPolicy !== "deny" && networkPolicy !== "allowlist") return { error: "networkPolicy must be deny or allowlist" };
+  const sandboxMode = body.sandboxMode === undefined ? "process" : body.sandboxMode;
+  if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
+  const modelProvider = body.modelProvider === undefined ? "deterministic" : body.modelProvider;
+  if (modelProvider !== "deterministic" && modelProvider !== "openai-compatible") return { error: "modelProvider is not supported" };
+  const previewUrl = body.previewUrl === undefined ? undefined : body.previewUrl;
+  let previewHost: string | undefined;
+  if (previewUrl !== undefined) {
+    if (typeof previewUrl !== "string") return { error: "previewUrl must be a URL" };
+    try {
+      const parsed = new URL(previewUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { error: "previewUrl must use http or https" };
+      if (parsed.username || parsed.password) return { error: "previewUrl must not contain credentials" };
+      previewHost = parsed.hostname;
+    } catch {
+      return { error: "previewUrl must be a valid URL" };
+    }
+  }
+  const domains = body.allowedDomains === undefined ? [] : body.allowedDomains;
+  const isValidDomain = (value: unknown): value is string => {
+    if (typeof value !== "string") return false;
+    const domain = value.trim().toLowerCase();
+    const base = domain.startsWith("*.") ? domain.slice(2) : domain;
+    if (!base || domain.startsWith(".") || domain.endsWith(".")) return false;
+    if (base === "localhost") return true;
+    if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(base)) return base.split(".").every((part) => Number(part) <= 255);
+    return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(base);
+  };
+  if (!Array.isArray(domains) || domains.length > 64 || domains.some((domain) => !isValidDomain(domain))) return { error: "allowedDomains contains an invalid host pattern" };
+  const allowedDomains = [...new Set((domains as string[]).map((domain) => domain.trim().toLowerCase()))];
+  if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
+  const workspaceInput = body.workspacePath === undefined ? process.cwd() : body.workspacePath;
+  const workspacePath = normalizeWorkspacePath(workspaceInput);
+  if (!workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
+  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, workspacePath, previewUrl, allowedDomains } };
+}
+
+function isSafeProjectId(value: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value);
+}
+
+function isExperimentInputValid(input: ExperimentInput): boolean {
+  return [input.key, input.title, input.hypothesis, input.description, input.variant].every((value) => value.trim().length > 0 && value.length <= 4000);
 }
 
 function findProjectIdByRun(runId: string): string | undefined {
   return state.runs.find((run) => run.id === runId)?.projectId;
 }
 
+function parseWakeTrigger(value: unknown): string {
+  const allowed = new Set(["intent", "human-answer", "incident", "scheduled-review", "user-feedback", "dependency-security", "manual", "signal"]);
+  return typeof value === "string" && allowed.has(value) ? value : "manual";
+}
+
+function rawOutputFile(fileName: string): { path: string; contentType: string } | undefined {
+  if (!/^[a-zA-Z0-9_.-]+$/.test(fileName)) return undefined;
+  const directory = resolve(process.cwd(), process.env.INTENT_WORLD_RAW_DIR ?? ".data/raw");
+  const candidate = resolve(directory, fileName);
+  const distance = relative(directory, candidate);
+  if (distance.startsWith(`..${sep}`) || distance === ".." || !existsSync(candidate)) return undefined;
+  try {
+    if (!isInsideRawDirectory(directory, realpathSync.native(candidate))) return undefined;
+    const contentType = fileName.endsWith(".png") ? "image/png" : fileName.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+    return { path: candidate, contentType };
+  } catch {
+    return undefined;
+  }
+}
+
+function isInsideRawDirectory(directory: string, candidate: string): boolean {
+  const distance = relative(directory, candidate);
+  return distance === "" || (distance !== ".." && !distance.startsWith(`..${sep}`));
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  refreshStateFromDisk();
   const parsedUrl = new URL(request.url ?? "/", "http://" + (request.headers.host ?? "localhost"));
-  const parts = routeParts(parsedUrl.pathname);
+  let parts: string[];
+  try {
+    parts = routeParts(parsedUrl.pathname);
+  } catch {
+    sendError(response, 400, "path contains an invalid escape sequence");
+    return;
+  }
   const method = request.method ?? "GET";
 
   if (method === "OPTIONS") {
@@ -174,12 +370,28 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   if (method === "GET" && parsedUrl.pathname === "/health") {
-    sendJson(response, 200, { ok: true, service: "intent-world-control-plane", statePath });
+    sendJson(response, 200, { ok: true, service: "intent-world-control-plane", statePath, persistence: "json-snapshot+jsonl-event-journal", queue: "json-durable-queue", worker: "separate-process" });
     return;
   }
 
   if (method === "GET" && parsedUrl.pathname === "/state") {
     sendJson(response, 200, state);
+    return;
+  }
+
+  if (method === "GET" && parsedUrl.pathname === "/projects") {
+    sendJson(response, 200, { projects: state.projects });
+    return;
+  }
+
+  if (method === "GET" && parts[0] === "raw" && parts[1] && parts.length === 2) {
+    const raw = rawOutputFile(parts[1]);
+    if (!raw) {
+      sendError(response, 404, "raw output not found");
+      return;
+    }
+    response.writeHead(200, { ...headers(raw.contentType), "Cache-Control": "private, max-age=60" });
+    response.end(readFileSync(raw.path));
     return;
   }
 
@@ -191,10 +403,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const projectId = typeof body.projectId === "string" && body.projectId ? body.projectId : makeId("project");
-    const settings = body.settings && typeof body.settings === "object"
-      ? { ...(body.settings as Partial<ProjectSettings>), workspacePath: (body.settings as Partial<ProjectSettings>).workspacePath ?? process.cwd(), sandboxMode: (body.settings as Partial<ProjectSettings>).sandboxMode ?? "process", modelProvider: (body.settings as Partial<ProjectSettings>).modelProvider ?? "deterministic" }
-      : { workspacePath: process.cwd(), sandboxMode: "process" as const, modelProvider: "deterministic" as const };
-    commit(createProject(state, rawIntent, projectId, settings));
+    if (!isSafeProjectId(projectId)) {
+      sendError(response, 400, "projectId must contain only letters, numbers, dot, underscore, or hyphen");
+      return;
+    }
+    const parsedSettings = parseProjectSettings(body.settings);
+    if (parsedSettings.error || !parsedSettings.settings) {
+      sendError(response, 400, parsedSettings.error ?? "invalid project settings");
+      return;
+    }
+    if (state.projects.some((candidate) => candidate.id === projectId)) {
+      sendError(response, 409, "projectId already exists");
+      return;
+    }
+    const committed = await commitMutation((current) => createProject(current, rawIntent, projectId, parsedSettings.settings));
+    if (!committed.projects.some((candidate) => candidate.id === projectId)) {
+      sendError(response, 409, "projectId already exists");
+      return;
+    }
     sendJson(response, 201, projectPayload(projectId));
     return;
   }
@@ -206,8 +432,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       sendError(response, 400, "projectId is required and must reference an existing project");
       return;
     }
-    commit(createExperiment(state, projectId, parseExperimentInput(body)));
-    sendJson(response, 201, { experiment: state.experiments.at(-1), project: getProject(state, projectId) });
+    const input = parseExperimentInput(body);
+    if (!isExperimentInputValid(input)) {
+      sendError(response, 400, "experiment fields must be non-empty and at most 4000 characters");
+      return;
+    }
+    const committed = await commitMutation((current) => createExperiment(current, projectId, input));
+    const experiment = committed.experiments.filter((candidate) => candidate.projectId === projectId).at(-1);
+    sendJson(response, 201, { experiment, project: getProject(committed, projectId) });
     return;
   }
 
@@ -231,21 +463,40 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         sendError(response, 400, "rawText is required");
         return;
       }
-      commit(addIntent(state, projectId, rawText).state);
+      await commitMutation((current) => addIntent(current, projectId, rawText).state);
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
 
     if (method === "POST" && parts[2] === "wake" && parts.length === 3) {
-      let next = wakeProject(state, projectId);
-      if (getProject(next, projectId)?.status === "ACTIVE") next = getProject(next, projectId)?.settings.workspacePath ? await executeLocalCycle(next, projectId) : runCycle(next, projectId);
-      commit(next);
+      const body = await readJson(request);
+      await commitMutation(async (current) => {
+        let next = wakeProject(current, projectId, parseWakeTrigger(body.trigger));
+        if (getProject(next, projectId)?.status === "ACTIVE") next = getProject(next, projectId)?.settings.workspacePath ? await executeLocalCycle(next, projectId) : runCycle(next, projectId);
+        return next;
+      });
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
 
     if (method === "POST" && parts[2] === "run" && parts.length === 3) {
-      commit(getProject(state, projectId)?.settings.workspacePath ? await executeLocalCycle(state, projectId) : runCycle(state, projectId));
+      if (project.status !== "ACTIVE" && project.status !== "WAITING") {
+        sendError(response, 409, `project is ${project.status}; wake or resume it before running a cycle`);
+        return;
+      }
+      let rejectedStatus: string | undefined;
+      await commitMutation((current) => {
+        const currentProject = getProject(current, projectId);
+        if (!currentProject || (currentProject.status !== "ACTIVE" && currentProject.status !== "WAITING")) {
+          rejectedStatus = currentProject?.status ?? "missing";
+          return current;
+        }
+        return currentProject.settings.workspacePath ? executeLocalCycle(current, projectId) : runCycle(current, projectId);
+      });
+      if (rejectedStatus) {
+        sendError(response, 409, `project is ${rejectedStatus}; wake or resume it before running a cycle`);
+        return;
+      }
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
@@ -253,7 +504,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (method === "POST" && parts[2] === "stall" && parts.length === 3) {
       const body = await readJson(request);
       const reason = typeof body.reason === "string" ? body.reason : "manual stall review";
-      commit(stallProject(state, projectId, reason));
+      await commitMutation((current) => stallProject(current, projectId, reason));
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
@@ -268,8 +519,33 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
 
+    if (method === "GET" && parts[2] === "evidence" && parts.length === 3) {
+      sendJson(response, 200, { evidence: state.evidence.filter((item) => item.projectId === projectId) });
+      return;
+    }
+
+    if (method === "GET" && parts[2] === "actions" && parts.length === 3) {
+      sendJson(response, 200, { actions: state.actions.filter((item) => item.projectId === projectId) });
+      return;
+    }
+
+    if (method === "GET" && parts[2] === "contexts" && parts.length === 3) {
+      sendJson(response, 200, { contexts: getProjectContexts(state, projectId) });
+      return;
+    }
+
+    if (method === "GET" && parts[2] === "relations" && parts.length === 3) {
+      sendJson(response, 200, { relations: getProjectRelations(state, projectId) });
+      return;
+    }
+
+    if (method === "GET" && parts[2] === "retrieval-index" && parts.length === 3) {
+      sendJson(response, 200, { entries: getProjectRetrievalEntries(state, projectId) });
+      return;
+    }
+
     if (method === "POST" && parts[2] === "world" && parts[3] === "refresh" && parts.length === 4) {
-      commit(getProject(state, projectId)?.settings.workspacePath ? await observeLocalWorld(state, projectId) : refreshWorld(state, projectId));
+      await commitMutation((current) => getProject(current, projectId)?.settings.workspacePath ? observeLocalWorld(current, projectId) : refreshWorld(current, projectId));
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
@@ -281,17 +557,35 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
 
+    if (method === "GET" && parts[2] === "evaluation" && parts.length === 3) {
+      sendJson(response, 200, evaluateProject(state, projectId));
+      return;
+    }
+
     if (method === "GET" && parts[2] === "stream" && parts.length === 3) {
       response.writeHead(200, {
         ...headers("text/event-stream"),
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      response.write("event: ready\ndata: " + JSON.stringify({ projectId, cursor: getProjectEvents(state, projectId)[0]?.id ?? null }) + "\n\n");
+      const lastEventIdHeader = request.headers["last-event-id"];
+      const lastEventId = Array.isArray(lastEventIdHeader) ? lastEventIdHeader[0] : lastEventIdHeader;
+      const chronological = state.events.filter((event) => event.projectId === projectId);
+      for (const event of afterCursor(chronological, lastEventId ?? null)) writeSseEvent(response, event);
+      response.write("event: ready\ndata: " + JSON.stringify({ projectId, cursor: chronological.at(-1)?.id ?? null }) + "\n\n");
       const listeners = subscribers.get(projectId) ?? new Set<ServerResponse>();
       listeners.add(response);
       subscribers.set(projectId, listeners);
+      const heartbeat = setInterval(() => {
+        try { response.write(": keep-alive\n\n"); } catch { clearInterval(heartbeat); listeners.delete(response); }
+      }, 25_000);
       request.on("close", () => {
+        clearInterval(heartbeat);
+        listeners.delete(response);
+        if (!listeners.size) subscribers.delete(projectId);
+      });
+      response.on("error", () => {
+        clearInterval(heartbeat);
         listeners.delete(response);
         if (!listeners.size) subscribers.delete(projectId);
       });
@@ -305,10 +599,15 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
     if (method === "POST" && parts[2] === "artifacts" && parts.length === 3) {
       const body = await readJson(request);
-      const kind = typeof body.kind === "string" ? body.kind as ArtifactKind : "report";
+      const allowedKinds: ArtifactKind[] = ["build", "report", "screenshot", "release", "docs"];
+      const kind = body.kind === undefined ? "report" : body.kind;
+      if (typeof kind !== "string" || !allowedKinds.includes(kind as ArtifactKind)) {
+        sendError(response, 400, "artifact kind is not supported");
+        return;
+      }
       const name = typeof body.name === "string" && body.name ? body.name : "Runtime artifact";
       const description = typeof body.description === "string" ? body.description : "Created by the control plane";
-      commit(createArtifact(state, projectId, kind, name, description));
+      await commitMutation((current) => createArtifact(current, projectId, kind as ArtifactKind, name, description));
       sendJson(response, 201, projectPayload(projectId));
       return;
     }
@@ -320,7 +619,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
     if (method === "POST" && parts[2] === "experiments" && parts.length === 3) {
       const body = await readJson(request);
-      commit(createExperiment(state, projectId, parseExperimentInput(body)));
+      const input = parseExperimentInput(body);
+      if (!isExperimentInputValid(input)) {
+        sendError(response, 400, "experiment fields must be non-empty and at most 4000 characters");
+        return;
+      }
+      await commitMutation((current) => createExperiment(current, projectId, input));
       sendJson(response, 201, projectPayload(projectId));
       return;
     }
@@ -338,12 +642,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     if (method === "POST" && parts.length === 3) {
-      const next = parts[2] === "pause" ? pauseProject(state, projectId) : parts[2] === "resume" ? resumeProject(state, projectId) : parts[2] === "kill" ? killProject(state, projectId) : state;
-      if (next === state) {
+      const runAction = parts[2];
+      if (!["pause", "resume", "kill"].includes(runAction)) {
         sendError(response, 400, "unsupported run action");
         return;
       }
-      commit(next);
+      await commitMutation((current) => runAction === "pause" ? pauseProject(current, projectId) : runAction === "resume" ? resumeProject(current, projectId) : killProject(current, projectId));
       sendJson(response, 200, { run: getRun(state, projectId), project: getProject(state, projectId) });
       return;
     }
@@ -356,17 +660,42 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const body = await readJson(request);
-    const action = parts[2] === "answer" ? "answer" : parts[2] === "approve" ? "approve" : parts[2] === "reject" ? "reject" : parts[2] === "defer" ? "defer" : "acknowledge";
+    const action = parts[2] as "answer" | "approve" | "reject" | "defer" | "acknowledge";
     const answer = typeof body.answer === "string" ? body.answer : undefined;
-    commit(resolveHumanItem(state, item.id, action, answer));
-    sendJson(response, 200, projectPayload(item.projectId));
+    if (!["answer", "approve", "reject", "defer", "acknowledge"].includes(action)) {
+      sendError(response, 400, "unsupported human item action");
+      return;
+    }
+    let resolved = false;
+    let resolvedProjectId = item.projectId;
+    await commitMutation((current) => {
+      const currentItem = current.humanItems.find((candidate) => candidate.id === item.id);
+      if (!currentItem || !isHumanActionAllowed(currentItem, action, answer)) return current;
+      resolved = true;
+      resolvedProjectId = currentItem.projectId;
+      return resolveHumanItem(current, currentItem.id, action, answer);
+    });
+    if (!resolved) {
+      sendError(response, 409, "human item is already resolved or the action does not match its kind");
+      return;
+    }
+    sendJson(response, 200, projectPayload(resolvedProjectId));
     return;
   }
 
   if (parts[0] === "evidence" && parts[1] && method === "GET") {
     const evidence = state.evidence.find((item) => item.id === parts[1]);
-    if (!evidence) sendError(response, 404, "evidence not found");
-    else sendJson(response, 200, { evidence });
+    if (!evidence) {
+      sendError(response, 404, "evidence not found");
+    } else if (parts[2] === "raw" && parts.length === 3 && evidence.rawRef?.startsWith("local-raw://")) {
+      const raw = rawOutputFile(evidence.rawRef.slice("local-raw://".length));
+      if (!raw) sendError(response, 404, "raw output not found");
+      else {
+        response.writeHead(200, { ...headers(raw.contentType), "Cache-Control": "private, max-age=60" });
+        response.end(readFileSync(raw.path));
+      }
+    } else if (parts.length === 2) sendJson(response, 200, { evidence });
+    else sendError(response, 404, "route not found");
     return;
   }
 
@@ -388,7 +717,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     if (method === "POST" && parts[2] === "run") {
-      commit(runExperiment(state, experiment.id));
+      await commitMutation((current) => runExperiment(current, experiment.id));
       sendJson(response, 200, { experiment: state.experiments.find((item) => item.id === experiment.id) });
       return;
     }
@@ -408,7 +737,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 const server = createServer((request, response) => {
   void handle(request, response).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "internal server error";
-    if (!response.headersSent) sendError(response, 500, message);
+    if (!response.headersSent) sendError(response, error instanceof BadRequestError ? 400 : 500, message);
     else response.end();
   });
 });

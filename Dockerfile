@@ -4,6 +4,8 @@ COPY package*.json ./
 RUN npm ci
 
 FROM dependencies AS build
+ARG VITE_API_URL=http://localhost:8787
+ENV VITE_API_URL=$VITE_API_URL
 COPY . .
 RUN npm run build
 
