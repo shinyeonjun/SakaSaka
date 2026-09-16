@@ -1,0 +1,36 @@
+/* Full provenance IDs and provider diagnostics must remain readable on small screens. */
+.world-snapshot-banner > div:first-child {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.world-snapshot-banner .pill {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.world-source-card,
+.contract-columns > div,
+.boundary-list > div,
+.runtime-meta > span {
+  min-width: 0;
+}
+
+.world-snapshot-banner h2,
+.source-summary,
+.contract-columns span,
+.runtime-meta > span,
+.timeline-detail,
+.timeline-version-meta,
+.work-title,
+.work-discovery {
+  overflow-wrap: anywhere;
+}
+
+.boundary-list .pill {
+  min-width: 0;
+  max-width: 75%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
