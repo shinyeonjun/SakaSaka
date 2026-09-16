@@ -53,7 +53,6 @@ const server = createServer(async (req, res) => {
     let raw = ""; for await (const chunk of req) { raw += chunk; if (raw.length > 4000000) throw new Error("request too large"); }
     const payload = JSON.parse(raw);
     inputs.push(JSON.stringify(payload.input));
-    if (process.env.NATIVE_ACCEPTANCE_DEBUG_DIR) writeFileSync(join(process.env.NATIVE_ACCEPTANCE_DEBUG_DIR, `request-${maintenance}-${requestIndex}.json`), JSON.stringify(payload, null, 2));
     const names = (payload.tools ?? []).flatMap((tool: {type:string;name?:string;tools?:Array<{name:string}>}) => tool.type === "namespace" ? tool.tools?.map((t) => `${tool.name}.${t.name}`) ?? [] : [tool.name ?? ""]);
     if (requestIndex === 0 && !maintenance) console.log("Native tools:", names.join(","));
     const named = (suffix: string) => { const name = names.find((n: string) => n === suffix || n.endsWith(`.${suffix}`)); assert(name, `provider did not receive tool ${suffix}`); return name; };
@@ -122,15 +121,11 @@ try {
     ? "Native CORE acceptance passed: actual Codex App Server, native command/write/failure recovery, async human answer, workspace write boundary, persistent-thread maintenance. Browser integration NOT EXECUTED; this does not satisfy the full CI gate. Model responses were scripted."
     : "Native acceptance passed: actual Codex App Server, native command/write/failure recovery, async human answer, real Chromium, workspace write boundary, persistent-thread maintenance. Model responses were scripted; no live-model ability claim.");
 } catch (error) {
-  console.error("Native events", state.events.slice(-8));
-  console.error("Native evidence", state.evidence);
-  const target = process.env.NATIVE_ACCEPTANCE_DEBUG_DIR;
-  if (target) { mkdirSync(target, { recursive: true }); writeFileSync(join(target, "state.json"), JSON.stringify(state, null, 2)); console.error("Debug root:", root); }
   throw error;
 } finally {
   await stopProcessesForRun(state.processes, getRun(state, "native-acceptance")!.id);
   server.closeAllConnections(); server.close();
-  if (!process.env.NATIVE_ACCEPTANCE_DEBUG_DIR) rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 }
 
 async function freePort(): Promise<number> { const s = createServer(); s.listen(0, "127.0.0.1"); await once(s, "listening"); const p = (s.address() as {port:number}).port; await new Promise<void>((resolve) => s.close(() => resolve())); return p; }
