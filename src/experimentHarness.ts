@@ -35,10 +35,10 @@ export const hypothesisCatalog: HypothesisDefinition[] = [
 
 export const ablationLadder = [
   { key: "A", title: "단일 호출 대조군", detail: "1회만 호출 · 상용 에이전트 비교가 아님" },
-  { key: "B", title: "+ 지속형 폐쇄 루프", detail: "의도 + 월드 + 행동" },
-  { key: "C", title: "+ 발견·불확실성", detail: "독립 ablation 미구현 · 실행 불가" },
+  { key: "B", title: "+ 지속형 폐쇄 루프", detail: "의도 + 월드 + 행동 · 발견 신호 제외" },
+  { key: "C", title: "+ 발견·불확실성", detail: "관찰·human boundary·incident 신호" },
   { key: "D", title: "+ 경험 기억", detail: "전이 기억" },
-  { key: "E", title: "+ 메타 개선", detail: "자기개선 ablation 미구현 · 실행 불가" },
+  { key: "E", title: "+ 메타 개선", detail: "evidence-gated policy candidate context" },
 ] as const;
 
 export function experimentDefinition(key: string): HypothesisDefinition | undefined {

@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     projectIdPrefix: "experiment-acceptance",
   });
   try {
-    assert.equal(comparison.variants.length, 3);
+    assert.equal(comparison.variants.length, 5);
     assert.ok(comparison.sourceWorkspaceDigest.length === 64);
     assert.ok(comparison.variants.every((variant) => variant.startingWorkspaceDigest === comparison.sourceWorkspaceDigest));
     assert.ok(comparison.variants.every((variant) => variant.state.projects.find((project) => project.id === variant.projectId)?.settings.budgetLimit === 5));
@@ -64,7 +64,12 @@ async function main(): Promise<void> {
       return variant.state.contexts.filter((context) => actionContextIds.has(context.id)).every((context) => context.modelVersion === "scripted-experiment-model-v1");
     }));
     assert.ok(comparison.variants.every((variant) => variant.passed === false), "기술 통과를 연구 가설 통과로 표시하면 안 됩니다.");
-    console.log("Experiment acceptance passed: A/B/D infrastructure only; C/E unavailable; no hypothesis claim");
+    const contextsByVariant = new Map(comparison.variants.map((variant) => [variant.key, variant.state.contexts]));
+    assert.ok((contextsByVariant.get("B") ?? []).every((context) => context.openHumanItemViews?.length === 0 && context.policyCandidateViews?.length === 0));
+    assert.ok((contextsByVariant.get("C") ?? []).some((context) => (context.untrustedObservationRefs?.length ?? 0) > 0));
+    assert.ok((contextsByVariant.get("D") ?? []).every((context) => context.policyCandidateViews?.length === 0));
+    assert.ok((contextsByVariant.get("E") ?? []).every((context) => Array.isArray(context.policyCandidateViews)));
+    console.log("Experiment acceptance passed: A/B/C/D/E executed with distinct context projections; no hypothesis claim");
   } finally {
     comparison.cleanup();
     rmSync(source, { recursive: true, force: true });

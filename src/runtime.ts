@@ -544,6 +544,7 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
   const recentEvidence = state.evidence.filter((item) => item.projectId === projectId).reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 12);
   const activeGrants = state.approvalGrants.filter((grant) => grant.projectId === projectId && !grant.consumedAt && Date.parse(grant.expiresAt) > Date.now());
   const activeProcesses = state.processes.filter((process) => process.projectId === projectId && process.runId === run.id && (process.status === "starting" || process.status === "running")).slice(0, 16);
+  const policyCandidates = state.policies.filter((candidate) => candidate.projectId === projectId && candidate.status === "candidate").sort((left, right) => right.version - left.version).slice(0, 8);
   const preliminary: ContextPacket = {
     id: makeId("context"),
     projectId,
@@ -620,6 +621,7 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
     schemaVersion: RUNTIME_SCHEMA_VERSION,
     modelVersion: MODEL_VERSION,
     policyVersion: policy?.version ?? POLICY_VERSION,
+    policyCandidateViews: policyCandidates.map((candidate) => ({ id: candidate.id, version: candidate.version, representation: redactSecretLikeText(candidate.representation), parentPolicyId: candidate.parentPolicyId, evalRefs: [...candidate.evalRefs], createdAt: candidate.createdAt })),
     untrustedObservationRefs: observations.filter((observation) => observation.trustLevel === "untrusted" || observation.source === "browser" || observation.source === "shell" || observation.source === "logs").map((observation) => observation.id),
   };
   const experiences = retrieveRelevantExperiences(state, projectId, preliminary, 8);

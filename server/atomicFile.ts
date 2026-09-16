@@ -5,8 +5,11 @@ import { dirname } from "node:path";
 export function writeJsonAtomically(filePath: string, value: unknown, isCurrentValid?: (value: unknown) => boolean): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const recoveryPath = `${filePath}.recover`;
   writeFileSync(temporaryPath, JSON.stringify(value, null, 2), "utf8");
   try {
+    if (!existsSync(filePath) && existsSync(recoveryPath)) renameSync(recoveryPath, filePath);
+    if (existsSync(filePath) && existsSync(recoveryPath)) unlinkSync(recoveryPath);
     if (existsSync(filePath)) {
       let shouldBackup = true;
       if (isCurrentValid) {
@@ -18,17 +21,29 @@ export function writeJsonAtomically(filePath: string, value: unknown, isCurrentV
     }
     renameSync(temporaryPath, filePath);
   } catch (error: unknown) {
-    // Windows cannot always replace an existing file with renameSync. The
-    // caller holds the state lock, so this short replacement is recoverable.
+    // Windows cannot always replace an existing file with renameSync. Keep
+    // the previous file as a recovery point while the caller holds the state
+    // lock; never remove it before the replacement is ready.
     if (!existsSync(filePath)) throw error;
-    unlinkSync(filePath);
-    renameSync(temporaryPath, filePath);
+    try {
+      if (existsSync(recoveryPath)) unlinkSync(recoveryPath);
+      renameSync(filePath, recoveryPath);
+      try { renameSync(temporaryPath, filePath); }
+      catch (replacementError: unknown) {
+        if (!existsSync(filePath) && existsSync(recoveryPath)) renameSync(recoveryPath, filePath);
+        throw replacementError;
+      }
+      unlinkSync(recoveryPath);
+    } catch (replacementError: unknown) {
+      if (!existsSync(filePath) && existsSync(recoveryPath)) renameSync(recoveryPath, filePath);
+      throw replacementError;
+    }
   }
 }
 
 /** Reads the primary snapshot and falls back to the last complete backup. */
 export function readJsonWithBackup<T>(filePath: string, isValid?: (value: T) => boolean): T | undefined {
-  for (const candidate of [filePath, `${filePath}.bak`]) {
+  for (const candidate of [filePath, `${filePath}.bak`, `${filePath}.recover`]) {
     if (!existsSync(candidate)) continue;
     try {
       const value = JSON.parse(readFileSync(candidate, "utf8")) as T;

@@ -86,8 +86,6 @@ export function NewProjectPage() {
     navigate(projectPath(id));
   };
 
-  const showDirectModelInput = availableModels.length === 0 || (Boolean(modelName) && !availableModels.some((model) => model.id === modelName));
-
   return (
     <div className="screen screen-new-project">
       <PageHeading title="무엇을 원하나요?" description="방법은 정하지 않아도 됩니다. 원하는 결과와 꼭 지켜야 할 것만 남겨주세요." actions={<Button variant="neutral" size="small" onClick={() => navigate("/settings")}>시작 전 환경 설정</Button>} />
@@ -180,7 +178,7 @@ export function NewProjectPage() {
             </div>
             {modelProvider !== "deterministic" && (
               <div className="advanced-setting-row model-setting-row">
-                <div><strong>{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</strong><span>{modelProvider === "codex-cli" ? "목록은 서버의 CODEX_CLI_MODELS 설정에서 읽습니다." : "선택한 provider가 지원하는 모델 ID를 입력합니다."} 비워두면 provider 기본 모델을 사용합니다.</span></div>
+                <div><strong>{modelProvider === "codex-cli" ? "Codex 모델" : "모델 ID"}</strong><span>{modelProvider === "codex-cli" ? "기본 추천 목록을 제공하며 CODEX_CLI_MODELS로 서버별 목록을 바꿀 수 있습니다." : "선택한 provider가 지원하는 모델 ID를 입력합니다."} 비워두면 provider 기본 모델을 사용합니다.</span></div>
                 <div className="model-picker">
                   <select
                     value={availableModels.some((model) => model.id === (modelName || defaultModel)) ? modelName || defaultModel : ""}
@@ -195,15 +193,15 @@ export function NewProjectPage() {
                       {availableModels.filter((model) => model.group === "configured").map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
                     </optgroup>}
                   </select>
-                  {showDirectModelInput && <input
+                  <input
                     value={modelName}
                     onChange={(event) => setModelName(event.target.value)}
                     maxLength={128}
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
                     placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-label="모델 ID"
-                  />}
-                  <span>{availableModels.length && !showDirectModelInput ? `추천 모델 ${availableModels.length}개에서 선택` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
+                  />
+                  <span>{availableModels.length ? `드롭다운에서 선택하거나 목록 밖 모델 ID를 직접 입력할 수 있습니다 · ${availableModels.length}개 표시` : "provider 기본 모델 또는 모델 ID를 직접 입력할 수 있습니다."}</span>
                 </div>
               </div>
             )}

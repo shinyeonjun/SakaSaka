@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { executeProcessTool, stopManagedProcess } from "./processManager";
+import { executeProcessTool, reconcileManagedProcesses, stopManagedProcess } from "./processManager";
 import type { SandboxContext } from "../src/ports";
 import type { ActionEnvelope } from "../src/types";
 
@@ -39,6 +39,26 @@ describe("managed process lifecycle", () => {
       const stopped = await executeProcessTool(action("process.stop", { processId: processId ?? "missing" }), sandbox, 20_000);
       expect(stopped?.status).toBe("succeeded");
       expect(stopped?.process?.status).toBe("stopped");
+    } finally {
+      if (processId) await stopManagedProcess(processId);
+    }
+  });
+
+  it("reconciles a child that exits between cognition cycles", async () => {
+    const root = mkdtempSync(join(tmpdir(), "intent-world-process-"));
+    roots.push(root);
+    writeFileSync(join(root, "exit.js"), "process.exit(0);\n", "utf8");
+    const sandbox: SandboxContext = { projectId: "process-reconcile-test", runId: "run-process", permissionClass: "P1", networkPolicy: "deny", allowedDomains: [], workspaceRef: root, mode: "process" };
+    let processId: string | undefined;
+    try {
+      const started = await executeProcessTool(action("process.start", { argv: ["node", "exit.js"] }), sandbox, 20_000);
+      expect(started?.process?.id).toBeTruthy();
+      processId = started?.process?.id;
+      const saved = started?.process;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const reconciled = reconcileManagedProcesses(saved ? [{ ...saved }] : []);
+      expect(reconciled[0]?.status).toBe("exited");
+      expect(reconciled[0]?.endedAt).toBeTruthy();
     } finally {
       if (processId) await stopManagedProcess(processId);
     }

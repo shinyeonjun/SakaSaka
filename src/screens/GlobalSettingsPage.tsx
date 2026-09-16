@@ -70,7 +70,6 @@ export function GlobalSettingsPage() {
   const [error, setError] = useState<string | undefined>();
   const modelOptions = [...catalogModels, ...status.availableModels.filter((id) => !catalogModels.some((entry) => entry.id === id)).map((id) => ({ id, label: id, group: "configured" as const }))];
   const selectedDropdownModel = modelName || status.selectedModel || catalogDefaultModel;
-  const showDirectModelInput = modelOptions.length === 0 || (Boolean(modelName) && !modelOptions.some((entry) => entry.id === modelName));
 
   const loadStatus = useCallback(async (provider: ModelProvider, selectedModel: string) => {
     if (!isControlPlaneEnabled) {
@@ -162,7 +161,7 @@ export function GlobalSettingsPage() {
                       {modelOptions.filter((entry) => entry.group === "configured").map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
                     </optgroup>}
                   </select>
-                  {showDirectModelInput && <input
+                  <input
                     id="global-model-name"
                     value={modelName}
                     onChange={(event) => { setModelName(event.target.value); setSaved(false); }}
@@ -170,8 +169,8 @@ export function GlobalSettingsPage() {
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
                     placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-describedby="global-model-help"
-                  />}
-                  <span id="global-model-help" className="field-help">{modelOptions.length && !showDirectModelInput ? `추천 모델 ${modelOptions.length}개에서 선택` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
+                  />
+                  <span id="global-model-help" className="field-help">{modelOptions.length ? `드롭다운에서 선택하거나 목록 밖 모델 ID를 직접 입력할 수 있습니다 · ${modelOptions.length}개 표시` : "provider 기본 모델 또는 모델 ID를 직접 입력할 수 있습니다."}</span>
                 </div>
               )}
               <div className="button-row">
@@ -199,7 +198,7 @@ export function GlobalSettingsPage() {
         <InlineNotice tone={status.effective === "codex-cli" ? "blue" : status.effective === "deterministic" ? "yellow" : "orange"} title="연결 순서">
           {status.effective === "codex-cli"
             ? "Codex CLI는 도구가 아니라 ModelGateway로 다음 행동 하나를 결정합니다. 실제 파일 변경은 선택한 workspace 경계 안에서 실행됩니다."
-            : "실제 Codex를 사용하려면 API 서버를 실행하고 CODEX_CLI_ENABLED=true와 codex login을 설정하세요. 모델 목록은 서버의 CODEX_CLI_MODELS에서 읽습니다."}
+            : "실제 Codex를 사용하려면 API 서버를 실행하고 CODEX_CLI_ENABLED=true와 codex login을 설정하세요. 모델 목록은 기본 추천 목록을 먼저 표시하고, CODEX_CLI_MODELS로 서버별 목록을 바꿀 수 있습니다."}
         </InlineNotice>
 
         <Card className="settings-panel global-settings-next-step">

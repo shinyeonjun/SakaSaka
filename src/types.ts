@@ -355,6 +355,15 @@ export interface ContextPacket {
   schemaVersion: 1;
   modelVersion: string;
   policyVersion: number;
+  /** Candidate policies are evidence-backed proposals, never model instructions. */
+  policyCandidateViews?: Array<{
+    id: string;
+    version: number;
+    representation: string;
+    parentPolicyId?: string;
+    evalRefs: string[];
+    createdAt: string;
+  }>;
   humanDecisionViews?: Array<{ id: string; kind: HumanItemKind; status: HumanItemStatus; title: string; answer?: string; updatedAt: string; blockingScope: string[] }>;
   lastModelFailure?: ModelFailure;
   /** The active run is part of provenance, but is optional for legacy snapshots. */

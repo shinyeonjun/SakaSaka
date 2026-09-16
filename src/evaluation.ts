@@ -1,4 +1,4 @@
-import type { AppState, ProjectMetrics, Verdict } from "./types";
+import type { AppState, Evidence, ProjectMetrics, Verdict } from "./types";
 
 export interface EvaluationMetrics extends ProjectMetrics {
   outcomeQuality: number;
@@ -35,24 +35,28 @@ function clamp(value: number): number {
   return Math.max(0, Math.min(1, Number(value.toFixed(2))));
 }
 
-function meaningfulTokens(value: string): string[] {
-  return [...new Set(value.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])].filter((token) => !["the", "and", "with", "for", "from", "that", "this"].includes(token));
-}
-
 function criterionObserved(state: AppState, projectId: string, criterion: string): boolean {
   const normalized = criterion.toLocaleLowerCase();
   const evidence = state.evidence.filter((item) => item.projectId === projectId);
   const events = state.events.filter((event) => event.projectId === projectId);
   const humanItems = state.humanItems.filter((item) => item.projectId === projectId);
-  if (/browser|e2e|playwright|dom/.test(normalized)) return evidence.some((item) => item.projectId === projectId && item.verdict === "PASS" && (item.kind === "browser" || item.kind === "screenshot"));
-  if (/test|build|regression|quality/.test(normalized)) return evidence.some((item) => item.verdict === "PASS" && item.kind === "test");
+  const pass = (predicate: (item: Evidence) => boolean) => evidence.some((item) => item.verdict === "PASS" && predicate(item));
+  const testPass = pass((item) => item.kind === "test");
+  const browserPass = pass((item) => item.kind === "browser" || item.kind === "screenshot");
+  const workspaceChanged = events.some((event) => event.type === "WORKSPACE_CHANGED");
+  const processStarted = events.some((event) => event.type === "PROCESS_STARTED");
+  const humanEvents = events.filter((event) => ["HUMAN_ANSWERED", "HUMAN_APPROVED", "HUMAN_REJECTED", "HUMAN_DEFERRED"].includes(event.type));
+  if (/working app/.test(normalized)) return workspaceChanged && processStarted && browserPass;
+  if (/browser|e2e|playwright|dom/.test(normalized)) return browserPass;
+  if (/test|build|regression|quality/.test(normalized)) return testPass;
+  if (/human task orchestration 0/.test(normalized)) return humanEvents.length === 0;
   if (/human|question|preference|decision/.test(normalized)) return humanItems.some((item) => item.kind === "QUESTION" && ["ANSWERED", "OPEN", "DEFERRED"].includes(item.status));
   if (/risk|security|dependency|permission|operational/.test(normalized)) return evidence.some((item) => /risk|security|dependency|permission|operational/i.test(`${item.summary} ${item.source}`)) || humanItems.some((item) => (item.kind === "CONCERN" || item.kind === "APPROVAL") && item.evidenceRefs.length > 0);
   if (/stop|equilibrium|wake|continuity|lease/.test(normalized)) return events.some((event) => ["EQUILIBRIUM_ENTERED", "WAKE_TRIGGERED", "RUN_STATE_CHANGED"].includes(event.type));
-  const required = meaningfulTokens(criterion);
-  if (!required.length) return false;
-  const corpus = [...evidence.map((item) => `${item.summary} ${item.source}`), ...events.map((event) => `${event.summary} ${event.detail ?? ""}`), ...humanItems.map((item) => `${item.title} ${item.summary}`)].join(" ").toLocaleLowerCase();
-  return required.every((token) => corpus.includes(token));
+  // A benchmark criterion that has no explicit evaluator is not proven by a
+  // coincidental word match in an untrusted summary. Keep it unobserved until
+  // a criterion-specific evidence evaluator is added.
+  return false;
 }
 
 function initiativeMetrics(state: AppState, projectId: string, groundTruth: string[]): { recall: number; precision: number } {
@@ -100,6 +104,9 @@ export function evaluateProject(state: AppState, projectId: string, groundTruth:
   const failureEvents = events.filter((event) => event.type === "RUNTIME_ERROR");
   const uniqueFailureSignatures = new Set(failureEvents.map((event) => (event.detail ?? event.summary).toLowerCase().replace(/\d+/g, "#").slice(0, 180)));
   const equilibriumEvents = events.filter((event) => event.type === "EQUILIBRIUM_ENTERED");
+  const workspaceChanged = events.some((event) => event.type === "WORKSPACE_CHANGED");
+  const browserPass = passedEvidence.some((item) => item.kind === "browser" || item.kind === "screenshot");
+  const testPass = passedEvidence.some((item) => item.kind === "test");
   const lastAction = actions.at(-1);
   const initiative = initiativeMetrics(state, projectId, groundTruth);
   const metrics: EvaluationMetrics = {
@@ -118,7 +125,7 @@ export function evaluateProject(state: AppState, projectId: string, groundTruth:
 
   const refs = (predicate: (id: string) => boolean): string[] => evidence.filter((item) => predicate(item.id)).map((item) => item.id);
   const gates: AcceptanceGateResult[] = [
-    { key: "A", title: "Greenfield", passed: actions.some((action) => action.type === "ACT") && passedEvidence.length > 0, evidenceRefs: passedEvidence.map((item) => item.id), reason: "실제 action과 PASS evidence가 함께 있어야 합니다." },
+    { key: "A", title: "Greenfield", passed: workspaceChanged && testPass && browserPass, evidenceRefs: passedEvidence.map((item) => item.id), reason: "workspace 변경, 실제 테스트 PASS, 실제 브라우저 PASS가 모두 있어야 합니다." },
     { key: "B", title: "Hidden Work", passed: events.some((event) => event.type === "GAP_FOUND" && (event.evidenceIds?.length ?? 0) > 0) || humanItems.some((item) => (item.kind === "IDEA" || item.kind === "CONCERN") && item.evidenceRefs.length > 0), evidenceRefs: refs((id) => id.length > 0), reason: "실제 evidence에 연결된 gap discovery 또는 위험/기회 signal이 기록되어야 합니다." },
     { key: "C", title: "Async Human", passed: humanItems.some((item) => item.kind === "QUESTION") && metrics.humanOrchestrationCount <= 2, evidenceRefs: questions.flatMap((item) => item.evidenceRefs), reason: "질문은 human-only decision으로 남기고 workflow scheduler가 되지 않아야 합니다." },
     { key: "D", title: "Stop", passed: metrics.stopQuality === 1, evidenceRefs: events.filter((event) => event.type === "EQUILIBRIUM_ENTERED").map((event) => event.id), reason: "가치가 낮아졌을 때 EQUILIBRIUM과 wake 근거를 남겨야 합니다." },

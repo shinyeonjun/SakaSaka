@@ -21,6 +21,36 @@ export function hydrateManagedProcesses(persisted: ManagedProcess[]): void {
   }
 }
 
+function isProcessAlive(pid: number | undefined): boolean {
+  if (!Number.isInteger(pid) || (pid ?? 0) <= 0) return false;
+  try {
+    process.kill(pid as number, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copies the authoritative in-memory child state into the persisted snapshot
+ * and detects children that exited between cognition cycles. The worker calls
+ * this at the start of each tick so the UI and the next model context cannot
+ * keep treating a dead process as active forever.
+ */
+export function reconcileManagedProcesses(persisted: ManagedProcess[]): ManagedProcess[] {
+  hydrateManagedProcesses(persisted);
+  return persisted.map((saved) => {
+    const record = records.get(saved.id);
+    if (!record) return { ...saved, argv: [...saved.argv] };
+    if ((record.status === "starting" || record.status === "running") && record.pid && !isProcessAlive(record.pid)) {
+      record.status = "exited";
+      record.endedAt ??= new Date().toISOString();
+      children.delete(record.id);
+    }
+    return { ...record, argv: [...record.argv] };
+  });
+}
+
 function rawLogPath(key: string): { path: string; rawRef: string } {
   const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
   const fileName = `${Date.now()}-${safeKey}.txt`;
@@ -79,6 +109,14 @@ async function terminatePid(pid: number): Promise<void> {
   stopProcessTree(pid);
   await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   stopProcessTree(pid, true);
+}
+
+async function waitForChildClose(child: ChildProcess | undefined): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolveClose) => {
+    const timeout = setTimeout(resolveClose, 2_000);
+    child.once("close", () => { clearTimeout(timeout); resolveClose(); });
+  });
 }
 
 export async function executeProcessTool(action: ActionEnvelope, sandbox: SandboxContext, maxLifetimeMs = defaultLifetimeMs, options: { signal?: AbortSignal } = {}): Promise<ToolResult | undefined> {
@@ -161,12 +199,7 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
       try { process.kill(record.pid, 0); } catch { record.status = "exited"; record.endedAt = new Date().toISOString(); }
     }
     if (action.tool === "process.stop") {
-      record.status = "stopped";
-      if (record.containerId) await stopContainer(record.containerId);
-      await terminatePid(record.pid ?? 0);
-      children.get(record.id)?.kill();
-      children.delete(record.id);
-      record.endedAt = new Date().toISOString();
+      await stopManagedProcess(record.id);
       const ev = evidence(sandbox.projectId, "PASS", `process.stop · ${record.id}`, "process.stop", record);
       return { ...output(sandbox, record, ev, "meaningful"), tool: action.tool, cost: 0.02, wallTimeMs: Date.now() - startedAt };
     }
@@ -181,13 +214,15 @@ export async function executeProcessTool(action: ActionEnvelope, sandbox: Sandbo
 
 export async function stopManagedProcess(processId: string): Promise<void> {
   const record = records.get(processId);
-  if (!record || record.status === "exited" || record.status === "stopped" || record.status === "failed") return;
-  record.status = "stopped";
+  if (!record) return;
+  if (record.status === "starting" || record.status === "running") record.status = "stopped";
   if (record.containerId) await stopContainer(record.containerId);
   await terminatePid(record.pid ?? 0);
-  children.get(processId)?.kill();
+  const child = children.get(processId);
+  child?.kill();
+  await waitForChildClose(child);
   children.delete(processId);
-  record.endedAt = new Date().toISOString();
+  record.endedAt ??= new Date().toISOString();
 }
 
 export async function stopProcessesForRun(processes: ManagedProcess[], runId: string): Promise<void> {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createEmptyState } from "../src/emptyState";
@@ -7,8 +8,8 @@ import { JsonlEventStore } from "./jsonlEventStore";
 import { JsonJobQueue } from "./jobQueue";
 import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
 import { withFileLock } from "./fileLock";
-import { hydrateManagedProcesses, stopProcessesForRun } from "./processManager";
-import type { AppState, ProjectMetrics, ProjectSettings } from "../src/types";
+import { hydrateManagedProcesses, reconcileManagedProcesses, stopProcessesForRun } from "./processManager";
+import type { AppState, EventRecord, ProjectMetrics, ProjectSettings } from "../src/types";
 
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
 const lockPath = `${statePath}.lock`;
@@ -86,6 +87,40 @@ function persistState(state: AppState): void {
   for (const event of state.events) eventJournal.appendSync(event);
 }
 
+function reconcileProcessState(state: AppState): AppState {
+  const processes = reconcileManagedProcesses(state.processes);
+  const processById = new Map(processes.map((process) => [process.id, process]));
+  const changed = processes.some((process, index) => JSON.stringify(process) !== JSON.stringify(state.processes[index]));
+  const runs = state.runs.map((run) => ({
+    ...run,
+    activeProcessIds: run.activeProcessIds.filter((id) => {
+      const process = processById.get(id);
+      return process?.status === "starting" || process?.status === "running";
+    }),
+  }));
+  const runsChanged = runs.some((run, index) => JSON.stringify(run.activeProcessIds) !== JSON.stringify(state.runs[index]?.activeProcessIds));
+  if (!changed && !runsChanged) return state;
+
+  let sequence = state.events.reduce((max, event) => Math.max(max, event.sequence ?? -1), -1);
+  const exitedEvents: EventRecord[] = state.processes.flatMap((previous) => {
+    const current = processById.get(previous.id);
+    if (!current || (previous.status !== "starting" && previous.status !== "running") || !["exited", "stopped", "failed"].includes(current.status)) return [];
+    return [{
+      id: `event-${randomUUID()}`,
+      sequence: ++sequence,
+      projectId: current.projectId,
+      type: "PROCESS_EXITED",
+      actor: "system",
+      summary: `managed process ${current.status} · ${current.id}`,
+      detail: current.error ?? (current.exitCode === undefined ? "process lifecycle changed" : `exit code ${current.exitCode}`),
+      createdAt: current.endedAt ?? new Date().toISOString(),
+      runId: current.runId,
+      schemaVersion: 1,
+    }];
+  });
+  return { ...state, processes, runs, events: exitedEvents.length ? [...state.events, ...exitedEvents] : state.events };
+}
+
 let inFlight = false;
 const workerStop = new AbortController();
 
@@ -100,7 +135,9 @@ export async function runWorkerOnce(): Promise<{ processed: string[] }> {
   });
   try {
     await withFileLock(lockPath, async () => {
-      const loaded = loadState(), state = recoverTransientProviderFailures(loaded);
+      const loaded = loadState();
+      const recovered = recoverTransientProviderFailures(loaded);
+      const state = reconcileProcessState(recovered);
       if (state !== loaded) persistState(state);
       for (const project of state.projects.filter((item) => item.settings.workspacePath)) {
         const run = state.runs.find((item) => item.id === project.activeRunId);

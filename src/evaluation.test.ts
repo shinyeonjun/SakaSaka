@@ -29,6 +29,12 @@ describe("평가와 실험 계약", () => {
     expect(after.metrics.testsTotal).toBe(1);
   });
 
+  it("단일 action과 PASS 하나만으로 실제 제품 완성을 판정하지 않는다", () => {
+    const result = evaluateProject(passCycle(stateWithProject("greenfield-gate"), "greenfield-gate"), "greenfield-gate", ["working app"]);
+    expect(result.gates.find((gate) => gate.key === "A")?.passed).toBe(false);
+    expect(result.metrics.initiativeRecall).toBe(0);
+  });
+
   it("WAIT 이벤트가 실제로 기록된 뒤에만 equilibrium stop을 인정한다", () => {
     let state = passCycle(stateWithProject("stop-project"), "stop-project");
     const project = getProject(state, "stop-project")!;

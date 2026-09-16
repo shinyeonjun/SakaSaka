@@ -69,11 +69,11 @@ codex login
 $env:CODEX_CLI_ENABLED = "true"
 $env:CODEX_CLI_BIN = "codex.exe" # PATH에 codex가 있으면 생략 가능
 $env:CODEX_CLI_MODEL = ""         # 선택 사항 · 비워두면 Codex 기본 모델
-$env:CODEX_CLI_MODELS = ""        # 선택 사항 · 기본 catalog를 덮어쓸 실제 모델 ID 목록
+$env:CODEX_CLI_MODELS = ""        # 선택 사항 · 비우면 기본 추천, 지정하면 서버 catalog를 대체
 npm run api
 ```
 
-프로젝트 전 `환경 설정`과 프로젝트별 `설정`의 모델 선택기는 서버가 설정한 목록을 보여줍니다. 임의의 추천 모델 ID를 하드코딩하지 않습니다. 선택기는 `CODEX_CLI_MODELS`와 `CODEX_CLI_MODEL` 또는 Codex `config.toml`의 설정값에서 구성되며, `CODEX_CLI_MODELS`를 지정하면 서버 목록으로 덮어씁니다. 목록에 없는 유효한 모델 ID는 직접 입력할 수 있습니다. 모델 ID를 비워두면 Codex 기본 모델을 사용합니다. 선택한 값은 실제 `codex exec --model <선택값>`으로 전달됩니다. 응답이 잘못됐거나 CLI가 없거나 시간이 초과되면 `ModelGatewayError`/`MODEL_FAILED`와 원본 오류 참조를 남깁니다. 모델의 WAIT로 위장하지 않습니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
+프로젝트 전 `환경 설정`과 프로젝트별 `설정`의 모델 선택기는 기본 추천 목록을 먼저 보여주고, 서버가 `CODEX_CLI_MODELS`로 지정한 목록이 있으면 그 목록으로 대체합니다. 기본 목록은 계정 entitlement의 증명이 아니며 첫 실제 모델 호출이 지원 여부의 기준입니다. `CODEX_CLI_MODEL` 또는 Codex `config.toml`의 설정값은 기본 선택값으로 반영됩니다. 목록에 없는 유효한 모델 ID는 직접 입력할 수 있습니다. 모델 ID를 비워두면 Codex 기본 모델을 사용합니다. 선택한 값은 실제 `codex exec --model <선택값>`으로 전달됩니다. 응답이 잘못됐거나 CLI가 없거나 시간이 초과되면 `ModelGatewayError`/`MODEL_FAILED`와 원본 오류 참조를 남깁니다. 모델의 WAIT로 위장하지 않습니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
 
 실제 CLI 프로토콜은 다음 두 단계로 구분해서 확인합니다.
 
@@ -121,7 +121,7 @@ Context에는 원문 Intent/constraints, fresh source-linked compact observation
 - `POST /projects/:id/wake`, `/run` — 202 큐 등록; 실제 모델/도구는 worker에서 실행
 - `POST /projects/:id/world/refresh`, `/stall`
 - `GET /projects/:id/runtime-status` — 실제 선택 provider, Codex CLI 설치 확인, 작업 폴더 존재·쓰기 권한
-- `GET /runtime/model-catalog` — 서버에 설정된 모델 목록와 서버 설정 모델 목록
+- `GET /runtime/model-catalog` — Codex 기본 추천 모델 목록과 선택적 `CODEX_CLI_MODELS` 서버 목록
 - `GET /runtime/model-status?provider=...&model=...` — 프로젝트 없이 실제 provider·CLI·인증 상태 확인
 - `GET /runtime/workspace-root`, `POST /runtime/workspace-root` — 데스크톱에서 선택한 실제 작업 폴더 경계 확인/변경
 - `POST /runs/:runId/pause|resume|kill`
@@ -162,7 +162,7 @@ npm run security:check
 git diff --check
 ```
 
-`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:autonomous`는 빈 workspace와 실제 mock OpenAI-compatible HTTP server를 사용해 multi-cycle greenfield 파일 생성·build·test·managed process·Playwright 검증 및 maintenance patch를 실행합니다. `acceptance:experiments`는 동일 Intent·model·budget·starting digest를 유지한 격리 workspace A/B/D 실행과 provenance를 검사합니다. A는 1회 호출 대조군이고 C/E는 미구현으로 거절합니다. 점수는 관측 proxy이며 H1–H6를 자동 통과시키지 않습니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
+`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:autonomous`는 빈 workspace와 실제 mock OpenAI-compatible HTTP server를 사용해 multi-cycle greenfield 파일 생성·build·test·managed process·Playwright 검증 및 maintenance patch를 실행합니다. `acceptance:experiments`는 동일 Intent·model·budget·starting digest를 유지한 격리 workspace A/B/C/D/E 실행과 provenance를 검사합니다. A는 1회 호출 대조군이며 각 variant는 ContextPacket의 서로 다른 정보 범위를 사용합니다. E의 policy candidate는 실제 평가로 발급된 후보만 노출하며 후보가 없으면 빈 배열로 유지합니다. 점수는 관측 proxy이며 H1–H6를 자동 통과시키지 않습니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
 
 ## Version control
 

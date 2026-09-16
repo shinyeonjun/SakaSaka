@@ -20,8 +20,8 @@
 | STALLED UI가 마지막 정상 작업을 “지금 하는 일”로 표시 | 현재 오류·retry·rawRef와 마지막 정상 작업을 분리 | 진단 projection 테스트 |
 | API 실패에도 프런트가 성공처럼 로컬 state 전이 | API 모드는 서버 응답 후 반영, 동기화 오류 노출 | 단조 revision·선택 프로젝트 유지 검사 |
 | 루프 종료 후 오래된 응답이 최신 상태를 덮어씀 | `AppState.revision`과 hydrate 순서 검사 | 역순 응답 회귀 검사 |
-| 임의 추천 모델 목록이 실제 지원처럼 보임 | 정적 추천 목록 제거, 설정된 ID와 Codex 설정만 사용 | API 모델 목록 fixture |
-| 실험 B/C, D/E가 사실상 동일 | 실제 실행 가능한 A/B/D만 허용, C/E는 명시적으로 거절 | 실험 acceptance |
+| 임의 추천 모델 목록이 실제 지원처럼 보임 | 기본 목록은 entitlement가 아님을 표시하고, 서버 설정 목록은 명시적으로 override | API 모델 목록 fixture |
+| 실험 C/E가 실행 전에 거절됨 | A–E를 실제 ContextPacket 정보 범위로 분리하고, policy candidate가 없으면 빈 후보로 보존 | 실험 acceptance |
 | 관측 기반 점수를 가설 입증으로 표시 | instrumentation proxy로 명시, H1–H6 자동 PASS 금지 | evidence 없는/독립 검증 없는 가설은 미입증 |
 
 `production` 실행기가 없는 상태에서 도구 이름만 공개하지 않는다. `deploy.production`은 비활성화되어 있다. 복잡한 시스템을 새로 꾸미기보다는 기존의 실제 실행 경로를 고쳤다.
@@ -70,7 +70,7 @@ CLI는 `codex exec --json --ephemeral --sandbox read-only --output-schema ... -`
 
 `workspace.write PASS`는 파일 쓰기 성공이다. `browser PASS`는 실제 브라우저 관찰 또는 지정한 visible text 단언 성공이다. **제품 목표, UX 품질, 보안 또는 모델의 rationale 전체를 검증했다는 뜻이 아니다.** 브라우저 엔진 미설치는 HTTP fallback/UNCERTAIN으로, 실제 navigation/assertion 오류는 FAIL로 구분한다.
 
-프로젝트의 기존 평가 지표는 관측된 이벤트·증거로 계산한 proxy다. 별도의 독립 제품 평가자를 대체하지 않는다. A는 1회 모델 호출 대조군이며 Codex/Cursor 전체 제품과의 공정 비교군이 아니다. C의 discovery 제어와 E의 self-improvement 실험은 구현되지 않았으므로 실행 요청을 명시적으로 거절한다. `Intent Energy`, `Closure`, `Discovery`는 연구 프레임이며 물리적인 에너지나 검증된 일반 지능 수식이 아니다. H1–H6와 Dream-RSI 효과는 미입증이다.
+프로젝트의 기존 평가 지표는 관측된 이벤트·증거로 계산한 proxy다. 별도의 독립 제품 평가자를 대체하지 않는다. A는 1회 모델 호출 대조군이며 Codex/Cursor 전체 제품과의 공정 비교군이 아니다. C의 discovery 제어와 E의 evidence-gated policy-candidate context는 격리 실행할 수 있다. 다만 policy candidate가 실제 독립 평가로 발급되지 않은 상태에서는 E가 후보를 만들어 내지 않으며, `scoreExperiment`도 이를 가설 PASS로 승격하지 않는다. `Intent Energy`, `Closure`, `Discovery`는 연구 프레임이며 물리적인 에너지나 검증된 일반 지능 수식이 아니다. H1–H6와 Dream-RSI 효과는 미입증이다.
 
 ## 5. 보안 및 운영 제한
 

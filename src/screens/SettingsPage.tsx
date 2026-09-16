@@ -156,7 +156,6 @@ export function SettingsPage({ projectId }: { projectId: string }) {
   const workspacePath = workspace.resolvedPath ?? workspace.configuredPath ?? "API가 프로젝트 전용 폴더를 자동 생성합니다.";
   const modelOptions = [...catalogModels, ...model.availableModels.filter((id) => !catalogModels.some((entry) => entry.id === id)).map((id) => ({ id, label: id, group: "configured" as const }))];
   const selectedDropdownModel = modelName || model.selectedModel || catalogDefaultModel;
-  const showDirectModelInput = modelOptions.length === 0 || (Boolean(modelName) && !modelOptions.some((entry) => entry.id === modelName));
 
   return (
     <div className="screen">
@@ -225,7 +224,7 @@ export function SettingsPage({ projectId }: { projectId: string }) {
                       {modelOptions.filter((entry) => entry.group === "configured").map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
                     </optgroup>}
                   </select>
-                  {showDirectModelInput && <input
+                  <input
                     id="settings-model-name"
                     value={modelName}
                     onChange={(event) => { setModelName(event.target.value); setModelSaved(false); }}
@@ -233,8 +232,8 @@ export function SettingsPage({ projectId }: { projectId: string }) {
                     pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}"
                     placeholder="목록에 없는 모델 ID 직접 입력"
                     aria-describedby="settings-model-help"
-                  />}
-                  <span id="settings-model-help" className="field-help">{modelOptions.length && !showDirectModelInput ? `서버가 제공한 선택 목록 ${modelOptions.length}개에서 선택` : "서버 선택 목록 없음 · provider 기본 모델 또는 직접 입력 사용"}</span>
+                  />
+                  <span id="settings-model-help" className="field-help">{modelOptions.length ? `드롭다운에서 선택하거나 목록 밖 모델 ID를 직접 입력할 수 있습니다 · ${modelOptions.length}개 표시` : "provider 기본 모델 또는 모델 ID를 직접 입력할 수 있습니다."}</span>
                 </div>
               )}
               <div className="button-row">

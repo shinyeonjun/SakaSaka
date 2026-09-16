@@ -147,12 +147,23 @@ function atomicWrite(target: WorkspaceTarget, content: string): void {
   if (Buffer.byteLength(content, "utf8") > maxWriteBytes) throw new Error(`file exceeds ${maxWriteBytes} byte write limit`);
   mkdirSync(dirname(target.absolute), { recursive: true });
   const temporary = resolve(dirname(target.absolute), `.intent-world-${process.pid}-${Date.now().toString(36)}.tmp`);
+  const recovery = `${target.absolute}.intent-world-recovery`;
   writeFileSync(temporary, content, "utf8");
   try {
     try { renameSync(temporary, target.absolute); } catch {
       if (!existsSync(target.absolute)) throw new Error("atomic workspace rename failed");
-      rmSync(target.absolute, { force: true });
-      renameSync(temporary, target.absolute);
+      // Windows does not replace an existing file with renameSync. Move the
+      // old file to a same-directory recovery name first, then perform the
+      // second rename while the caller's state lock is held. If the second
+      // step fails, restore the original instead of deleting it permanently.
+      rmSync(recovery, { force: true });
+      renameSync(target.absolute, recovery);
+      try { renameSync(temporary, target.absolute); }
+      catch (error: unknown) {
+        if (!existsSync(target.absolute) && existsSync(recovery)) renameSync(recovery, target.absolute);
+        throw error;
+      }
+      rmSync(recovery, { force: true });
     }
   } finally {
     rmSync(temporary, { force: true });

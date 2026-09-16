@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { assembleContext, createProject, getRun } from "../src/runtime";
 import { CodexCliModelGateway } from "./codexCliGateway";
 import { OpenAICompatibleModelGateway, UnavailableModelGateway, createModelGateway, inspectModelProvider } from "./localAdapters";
+import { getRecommendedCodexModels } from "../src/modelCatalog";
 import type { AppState, ContextPacket } from "../src/types";
 
 const servers: Server[] = [];
@@ -80,6 +81,17 @@ describe("OpenAI-compatible model gateway", () => {
     const project = state.projects.find((candidate) => candidate.id === "gateway-codex");
     expect(project).toBeDefined();
     expect(createModelGateway(project!)).toBeInstanceOf(CodexCliModelGateway);
+  });
+
+  it("provides the selectable Codex model defaults when the CLI has no list command", () => {
+    expect(getRecommendedCodexModels().map((model) => model.id)).toEqual([
+      "gpt-6-astra",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-daybreak-blue-latest",
+      "gpt-5.5",
+    ]);
   });
 
   it("exposes a truthful provider status without starting a model turn", async () => {
