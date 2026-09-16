@@ -62,6 +62,10 @@ jobs:
       - name: Install pinned public Codex binary (no login)
         run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
       - name: Native agent and sandbox integration with local scripted model
+        env:
+          # The fixture has no credentials and only uses local mock/preview ports.
+          # GitHub-hosted runners may deny bwrap's network namespace setup.
+          NATIVE_ACCEPTANCE_SANDBOX_NETWORK: "1"
         run: |
           export SAKASAKA_TEST_CODEX_BIN="$RUNNER_TEMP/native-codex/node_modules/.bin/codex"
           "$SAKASAKA_TEST_CODEX_BIN" --version
