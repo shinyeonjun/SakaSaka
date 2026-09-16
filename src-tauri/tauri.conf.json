@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SakaSaka",
+  "version": "0.1.0",
+  "identifier": "com.shinyeonjun.sakasaka",
+  "build": {
+    "beforeDevCommand": {
+      "script": "npm run dev -- --host 127.0.0.1 --port 4173",
+      "wait": false
+    },
+    "beforeBuildCommand": "npm run build:desktop:assets",
+    "devUrl": "http://127.0.0.1:4173",
+    "frontendDist": "../dist",
+    "additionalWatchFolders": ["../src", "../server"]
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "SakaSaka · Intent World Agent",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' http://127.0.0.1:4173; connect-src 'self' http://127.0.0.1:8787 ws://127.0.0.1:4173; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; img-src 'self' data: blob:; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ],
+    "externalBin": ["binaries/sakasaka-api", "binaries/sakasaka-worker"],
+    "category": "DeveloperTool",
+    "shortDescription": "Intent를 실제 소프트웨어로 만드는 지속형 AI 개발 스튜디오",
+    "longDescription": "SakaSaka는 Human Intent와 실제 World evidence를 바탕으로 소프트웨어 프로젝트를 만들고 검증하는 데스크톱 앱입니다."
+  }
+}

@@ -38,7 +38,7 @@ import type { RuntimeJob } from "../src/ports";
 import type { ExperimentInput } from "../src/runtime";
 import { evaluateProject } from "../src/evaluation";
 import { executeLocalCycle, observeLocalWorld } from "./localRuntime";
-import { normalizeWorkspacePath } from "./pathPolicy";
+import { normalizeWorkspacePath, setWorkspaceRootPath, workspaceRootConfigPath, workspaceRootPath } from "./pathPolicy";
 import { readJsonWithBackup, writeJsonAtomically } from "./atomicFile";
 import { withFileLock } from "./fileLock";
 import { JsonJobQueue } from "./jobQueue";
@@ -48,6 +48,7 @@ import { inspectModelConnection, inspectRuntimeConnection, runtimeModelCatalog }
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
+const host = process.env.API_HOST?.trim() || "0.0.0.0";
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
 const stateLockPath = `${statePath}.lock`;
 const eventJournal = new JsonlEventStore(`${statePath}.events.jsonl`);
@@ -530,6 +531,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (method === "GET" && parsedUrl.pathname === "/runtime/workspace-root") {
+    sendJson(response, 200, { root: workspaceRootPath(), configPath: workspaceRootConfigPath() });
+    return;
+  }
+
+  if (method === "POST" && parsedUrl.pathname === "/runtime/workspace-root") {
+    if (process.env.DESKTOP_MODE?.trim().toLowerCase() !== "true") {
+      sendError(response, 403, "workspace root selection is available only in desktop mode");
+      return;
+    }
+    const body = await readJson(request);
+    const root = setWorkspaceRootPath(body.path);
+    if (!root) {
+      sendError(response, 400, "path must be an existing directory");
+      return;
+    }
+    sendJson(response, 200, { root, configPath: workspaceRootConfigPath() });
+    return;
+  }
+
   if (method === "GET" && parts[0] === "raw" && parts[1] && parts.length === 2) {
     const raw = rawOutputFile(parts[1]);
     if (!raw) {
@@ -945,8 +966,8 @@ const server = createServer((request, response) => {
   });
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log("Intent World control plane listening on http://localhost:" + port);
+server.listen(port, host, () => {
+  console.log("Intent World control plane listening on http://" + host + ":" + port);
 });
 
 const shutdown = async () => {

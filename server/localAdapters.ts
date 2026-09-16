@@ -3,7 +3,6 @@ import { dirname, resolve } from "node:path";
 import { createConnection } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chromium } from "playwright";
 import { isAllowedNetworkHost, isAllowedNetworkUrl, isDeveloperArgv, parseActionEnvelope, redactSecretLikeText, safeCommandIds, type SafeCommandId } from "../src/security";
 import { MODEL_VERSION, TOOL_VERSION } from "../src/runtime";
 import type { Evaluator, EvaluatorResult, ModelCapabilities, ModelGateway, ModelUsage, SandboxContext, SandboxManager, ToolGateway, ToolResult, WorldAdapter, WorldAdapterInput } from "../src/ports";
@@ -100,7 +99,29 @@ interface BrowserProbe {
 }
 
 async function playwrightProbe(url: string, projectId: string, runId: string, networkPolicy: Project["settings"]["networkPolicy"], allowedDomains: string[], viewport = { width: 1280, height: 800 }, clickText?: string): Promise<BrowserProbe> {
-  const browser = await chromium.launch({ headless: true });
+  const { chromium } = await import("playwright");
+  const configuredExecutable = process.env.SAKASAKA_BROWSER_EXECUTABLE?.trim();
+  let executablePath: string | undefined;
+  if (configuredExecutable && existsSync(configuredExecutable)) {
+    executablePath = configuredExecutable;
+  } else {
+    try {
+      const bundledExecutable = chromium.executablePath();
+      if (bundledExecutable && existsSync(bundledExecutable)) executablePath = bundledExecutable;
+    } catch {
+      // A packaged sidecar may not have Playwright's downloaded browser.
+    }
+  }
+  const launchOptions = { headless: true, ...(executablePath ? { executablePath } : {}) };
+  let browser: Awaited<ReturnType<typeof chromium.launch>>;
+  try {
+    browser = await chromium.launch(launchOptions);
+  } catch (error: unknown) {
+    if (process.platform !== "win32" || process.env.SAKASAKA_BROWSER_EXECUTABLE?.trim()) throw error;
+    // Windows installations usually include Edge even when the hermetic
+    // Playwright browser cannot be spawned by a packaged sidecar.
+    browser = await chromium.launch({ headless: true, channel: "msedge" });
+  }
   let browserContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
   try {
     browserContext = await browser.newContext({ viewport, deviceScaleFactor: 1 });

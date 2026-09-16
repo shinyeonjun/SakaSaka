@@ -3,6 +3,7 @@ import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { Button, cn, Divider } from "./ui";
+import { isDesktopApp } from "../desktop";
 
 const navItems = [
   { key: "overview", label: "개요" },
@@ -40,7 +41,7 @@ export function AppShell({ children }: PropsWithChildren) {
   };
 
   return (
-    <div className="app-frame">
+    <div className={cn("app-frame", isDesktopApp && "desktop-shell")}>
       <div className="mobile-bar">
         <button className="mobile-brand" onClick={() => go("/projects/new")} aria-label="새 프로젝트로 이동">INTENT WORLD</button>
         <button className="mobile-menu-button" onClick={() => setMobileOpen((open) => !open)} aria-expanded={mobileOpen} aria-label="메뉴 열기">{mobileOpen ? "×" : "☰"}</button>
@@ -66,6 +67,7 @@ export function AppShell({ children }: PropsWithChildren) {
           <button className={cn("sidebar-quiet-link", route.kind === "handoff-runtime" && "sidebar-quiet-link-active")} onClick={() => go("/handoff/runtime")}>런타임 상태</button>
         </div>
         <div className="sidebar-footer" aria-label="런타임 리소스">
+          {isDesktopApp && <span>데스크톱&nbsp; 로컬 API 연결</span>}
           <span>예산&nbsp; {`$${budgetSpent.toFixed(2)} / $${budgetLimit}`}</span>
           <span>런타임&nbsp; {statusLabel(runtimeStatus)}</span>
         </div>

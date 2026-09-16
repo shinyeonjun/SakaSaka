@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "SakaSaka 기본 데스크톱 권한",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "binaries/sakasaka-api", "sidecar": true, "args": true },
+        { "name": "binaries/sakasaka-worker", "sidecar": true, "args": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-kill",
+      "allow": ["binaries/sakasaka-api", "binaries/sakasaka-worker"]
+    }
+  ]
+}

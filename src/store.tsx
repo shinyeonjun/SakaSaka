@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type Dispatch, type PropsWithChildren } from "react";
-import { fetchServerState, isControlPlaneEnabled, mirrorAction, subscribeToProject } from "./apiClient";
+import { fetchServerState, fetchServerStateWithRetry, isControlPlaneEnabled, mirrorAction, subscribeToProject } from "./apiClient";
 import { createEmptyState } from "./emptyState";
 import {
   addIntent,
@@ -173,7 +173,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!isControlPlaneEnabled) return;
     let cancelled = false;
-    void fetchServerState()
+    void fetchServerStateWithRetry()
       .then((serverState) => {
         if (!cancelled) reducerDispatch({ type: "HYDRATE_STATE", state: serverState });
       })

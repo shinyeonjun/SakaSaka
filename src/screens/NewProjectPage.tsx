@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
-import { fetchModelCatalog, isControlPlaneEnabled } from "../apiClient";
+import { fetchModelCatalog, fetchWorkspaceRoot, isControlPlaneEnabled, setWorkspaceRoot } from "../apiClient";
 import { Button, Card, InlineNotice, Label, PageHeading } from "../components/ui";
 import { getRecommendedCodexModels } from "../modelCatalog";
 import { loadUserPreferences, saveUserPreferences } from "../preferences";
 import type { ModelCatalogEntry, ProjectSettings } from "../types";
+import { isDesktopApp, pickDirectory } from "../desktop";
 
 export function NewProjectPage() {
   const { createProject } = useApp();
@@ -20,7 +21,38 @@ export function NewProjectPage() {
   const [defaultModel, setDefaultModel] = useState("");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
   const [workspacePath, setWorkspacePath] = useState("");
+  const [workspaceRoot, setWorkspaceRootValue] = useState("");
+  const [workspacePicking, setWorkspacePicking] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string>();
   const [showError, setShowError] = useState(false);
+
+  useEffect(() => {
+    if (!isControlPlaneEnabled) return;
+    let cancelled = false;
+    void fetchWorkspaceRoot().then((status) => {
+      if (!cancelled) setWorkspaceRootValue(status.root);
+    }).catch(() => {
+      // The API may still be starting with the desktop shell.
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const chooseWorkspaceFolder = async () => {
+    if (!isDesktopApp || workspacePicking) return;
+    setWorkspacePicking(true);
+    setWorkspaceError(undefined);
+    try {
+      const selected = await pickDirectory();
+      if (!selected) return;
+      const status = await setWorkspaceRoot(selected);
+      setWorkspaceRootValue(status.root);
+      setWorkspacePath(status.root);
+    } catch (reason: unknown) {
+      setWorkspaceError(reason instanceof Error ? reason.message : "작업 폴더를 연결하지 못했습니다.");
+    } finally {
+      setWorkspacePicking(false);
+    }
+  };
 
   useEffect(() => {
     if (!isControlPlaneEnabled) {
@@ -100,7 +132,10 @@ export function NewProjectPage() {
                 : "브라우저 보안상 이 모드에서는 OS 폴더를 직접 연결할 수 없습니다. 실제 파일 작업은 API와 worker를 함께 실행한 뒤 시작하세요."}
             </p>
             {isControlPlaneEnabled && workspacePath && <Button variant="subtle" size="small" onClick={() => setWorkspacePath("")}>전용 폴더 자동 생성</Button>}
+            {isDesktopApp && <Button variant="neutral" size="small" onClick={() => void chooseWorkspaceFolder()} disabled={workspacePicking}>{workspacePicking ? "폴더 연결 중…" : "폴더 선택"}</Button>}
           </div>
+          {workspaceRoot && <p className="field-help workspace-root-status">현재 데스크톱 작업 경계: <code>{workspaceRoot}</code></p>}
+          {workspaceError && <p className="field-error" role="alert">{workspaceError}</p>}
           <InlineNotice tone={isControlPlaneEnabled ? "blue" : "yellow"} title="경계">
             서버는 WORKSPACE_ROOT 밖의 경로, 심볼릭 링크 탈출, 쓰기 불가 폴더를 거부합니다.
           </InlineNotice>

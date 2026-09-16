@@ -1,0 +1,25 @@
+[package]
+name = "sakasaka"
+version = "0.1.0"
+description = "SakaSaka · Intent World Agent"
+authors = ["SakaSaka"]
+edition = "2021"
+
+[lib]
+name = "sakasaka_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.9.5", features = ["devtools"] }
+tauri-plugin-dialog = "2.3.0"
+tauri-plugin-shell = "2.2.0"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -139,7 +139,7 @@ export async function runWorkerOnce(): Promise<{ processed: string[] }> {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname.replace(/^\//, ""))) {
+export function startWorker(): void {
   console.log(`Intent World worker polling every ${intervalMs}ms`);
   void runWorkerOnce();
   const timer = setInterval(() => { void runWorkerOnce(); }, intervalMs);

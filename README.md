@@ -11,6 +11,22 @@ npm run dev
 
 브라우저만 실행하면 프로젝트가 없는 빈 localStorage 기반 UI가 열립니다. 실제 workspace 관찰·quality gate·영속 snapshot·SSE를 사용하려면 API와 worker를 함께 실행합니다.
 
+### 데스크톱 앱으로 실행
+
+Tauri 데스크톱 앱은 API와 worker를 앱 수명에 맞춰 자동으로 시작하고 종료합니다. 앱 안의 `폴더 선택`은 네이티브 디렉터리 선택기를 사용하며, 선택한 폴더가 실제 프로젝트 변경 경계가 됩니다. 상태·raw evidence·로그는 OS별 앱 데이터 폴더에 저장됩니다.
+
+```bash
+npm run desktop:dev
+```
+
+설치용 번들은 프런트엔드와 API/worker Node sidecar를 함께 생성합니다. 별도 `npm run api`나 `npm run worker`가 필요하지 않습니다.
+
+```bash
+npm run desktop:build
+```
+
+개발 모드에서는 저장소의 Node 실행 환경으로 sidecar를 띄우고, 배포 빌드에서는 `src-tauri/binaries`에 현재 플랫폼용 self-contained Node sidecar를 생성해 Tauri 번들에 포함합니다. Codex CLI는 모델 gateway로 계속 host의 `codex` 인증을 사용합니다.
+
 프로젝트가 하나도 없어도 사이드바의 `환경 설정`에서 모델 provider와 Codex 기본 모델을 먼저 선택할 수 있습니다. 저장한 값은 브라우저의 다음 프로젝트 기본값으로 사용되고, 프로젝트 생성 후에는 프로젝트별 `설정`에서 덮어쓸 수 있습니다.
 
 신규 프로젝트 화면의 `작업 폴더 선택`에서 경로를 지정하면 해당 프로젝트는 그 폴더 하나만 사용합니다. 경로는 서버가 접근할 수 있는 `WORKSPACE_ROOT` 내부여야 하며, 비워두면 서버가 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 만들어 바인딩합니다. 브라우저 전용 모드의 폴더 입력은 OS 경로를 가장하지 않도록 비활성화됩니다. 실제 폴더 연결과 쓰기 권한은 프로젝트의 `설정` 화면에서 확인합니다.
@@ -91,6 +107,7 @@ Context에는 원문 Intent/constraints, fresh source-linked compact observation
 - `GET /projects/:id/runtime-status` — 실제 선택 provider, Codex CLI 설치 확인, 작업 폴더 존재·쓰기 권한
 - `GET /runtime/model-catalog` — Codex provider 기본 catalog와 서버 설정 모델 목록
 - `GET /runtime/model-status?provider=...&model=...` — 프로젝트 없이 실제 provider·CLI·인증 상태 확인
+- `GET /runtime/workspace-root`, `POST /runtime/workspace-root` — 데스크톱에서 선택한 실제 작업 폴더 경계 확인/변경
 - `POST /runs/:runId/pause|resume|kill`
 - `POST /human-items/:itemId/answer|approve|reject|defer|acknowledge`
 - `GET /projects/:id/events?after=...`, `/stream`, `/actions`, `/contexts`, `/relations`, `/retrieval-index`, `/evaluation`
@@ -123,6 +140,7 @@ npm run acceptance:api
 npm run acceptance:autonomous
 npm run acceptance:experiments
 npm run acceptance:ui
+npm run acceptance:desktop
 npm run build
 npm run security:check
 git diff --check

@@ -1,8 +1,23 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
+const defaultWorkspaceRootConfig = ".data/workspace-root.txt";
+
+export function workspaceRootConfigPath(): string {
+  return resolve(process.env.INTENT_WORLD_WORKSPACE_ROOT_FILE?.trim() || defaultWorkspaceRootConfig);
+}
+
+function configuredWorkspaceRoot(): string | undefined {
+  try {
+    const value = readFileSync(workspaceRootConfigPath(), "utf8").trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function workspaceRootPath(): string {
-  const configured = process.env.WORKSPACE_ROOT?.trim();
+  const configured = configuredWorkspaceRoot() || process.env.WORKSPACE_ROOT?.trim();
   const candidate = resolve(process.cwd(), configured || process.cwd());
   try { return realpathSync.native(candidate); } catch { return candidate; }
 }
@@ -49,4 +64,28 @@ export function normalizeWorkspacePath(value: unknown): string | undefined {
 
 export function workspacePathIsAllowed(value: unknown): boolean {
   return normalizeWorkspacePath(value) !== undefined;
+}
+
+/**
+ * Changes the explicit desktop workspace boundary. The selected directory
+ * itself becomes the root; project workspaces must remain below it.
+ */
+export function setWorkspaceRootPath(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const candidate = resolve(value);
+  let root: string;
+  try {
+    root = realpathSync.native(candidate);
+    if (!statSync(root).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const configPath = workspaceRootConfigPath();
+  mkdirSync(dirname(configPath), { recursive: true });
+  const temporaryPath = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporaryPath, `${root}\n`, "utf8");
+  renameSync(temporaryPath, configPath);
+  process.env.WORKSPACE_ROOT = root;
+  return root;
 }

@@ -4,3 +4,6 @@ dist
 *.local
 .data
 .intent-world
+src-tauri/binaries
+src-tauri/target
+dist-desktop

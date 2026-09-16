@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createProject, getProject, getRun } from "../src/runtime";
@@ -20,6 +20,21 @@ async function freePort(): Promise<number> {
   await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
   assert.ok(port > 0);
   return port;
+}
+
+async function removeTemporaryRoot(path: string): Promise<void> {
+  try {
+    await fsPromises.rm(path, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    return;
+  } catch (error: unknown) {
+    for (const entry of readdirSync(path)) rmSync(join(path, entry), { recursive: true, force: true });
+    try {
+      rmdirSync(path);
+      return;
+    } catch {
+      throw error;
+    }
+  }
 }
 
 function action(context: ContextPacket, type: ActionEnvelope["type"], tool?: string, params?: ActionEnvelope["params"], riskClass: ActionEnvelope["riskClass"] = tool?.startsWith("workspace.") ? "P1" : tool === "process.start" ? "P1" : tool === "browser.playwright" ? "P1" : tool === "shell.sandbox" ? "P1" : "P0"): ActionEnvelope {
@@ -164,7 +179,7 @@ async function main(): Promise<void> {
     if (previousEnv.modelUrl === undefined) delete process.env.MODEL_API_URL; else process.env.MODEL_API_URL = previousEnv.modelUrl;
     if (previousEnv.modelKey === undefined) delete process.env.MODEL_API_KEY; else process.env.MODEL_API_KEY = previousEnv.modelKey;
     if (previousEnv.preview === undefined) delete process.env.ACCEPTANCE_PREVIEW_PORT; else process.env.ACCEPTANCE_PREVIEW_PORT = previousEnv.preview;
-    rmSync(temporaryRoot, { recursive: true, force: true });
+    await removeTemporaryRoot(temporaryRoot);
   }
 }
 

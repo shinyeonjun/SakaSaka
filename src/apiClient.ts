@@ -1,8 +1,9 @@
 import { getRun } from "./runtime";
 import type { AppAction } from "./store";
 import type { AppState, ModelCatalog, ModelProvider, ModelProviderStatus, RuntimeConnectionStatus } from "./types";
+import { isDesktopApp } from "./desktop";
 
-const baseUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
+const baseUrl = (import.meta.env.VITE_API_URL ?? (isDesktopApp ? "http://127.0.0.1:8787" : "")).replace(/\/+$/, "");
 
 export const isControlPlaneEnabled = baseUrl.length > 0;
 
@@ -32,6 +33,20 @@ export function fetchServerState(): Promise<AppState> {
   return request<AppState>("/state");
 }
 
+export async function fetchServerStateWithRetry(attempts = 24, delayMs = 250): Promise<AppState> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetchServerState();
+    } catch (error: unknown) {
+      lastError = error;
+      if (!(error instanceof TypeError) || attempt === attempts - 1) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Control plane state를 읽지 못했습니다.");
+}
+
 export function fetchRuntimeConnectionStatus(projectId: string): Promise<RuntimeConnectionStatus> {
   return request<RuntimeConnectionStatus>(`/projects/${encodeURIComponent(projectId)}/runtime-status`);
 }
@@ -44,6 +59,22 @@ export function fetchModelConnectionStatus(provider: ModelProvider, modelName?: 
   const query = new URLSearchParams({ provider });
   if (modelName?.trim()) query.set("model", modelName.trim());
   return request<ModelProviderStatus>(`/runtime/model-status?${query.toString()}`);
+}
+
+export interface WorkspaceRootStatus {
+  root: string;
+  configPath: string;
+}
+
+export function fetchWorkspaceRoot(): Promise<WorkspaceRootStatus> {
+  return request<WorkspaceRootStatus>("/runtime/workspace-root");
+}
+
+export function setWorkspaceRoot(path: string): Promise<WorkspaceRootStatus> {
+  return request<WorkspaceRootStatus>("/runtime/workspace-root", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
 }
 
 export async function mirrorAction(action: AppAction, state: AppState): Promise<void> {

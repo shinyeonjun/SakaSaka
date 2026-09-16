@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "api": "tsx server/index.ts",
-    "worker": "tsx server/worker.ts",
+    "worker": "tsx server/workerCli.ts",
     "build": "tsc -b && vite build",
     "build:api": "tsc --noEmit -p tsconfig.server.json",
     "typecheck": "tsc -b --pretty false",
@@ -19,19 +19,29 @@
     "acceptance:ui": "tsx scripts/uiAcceptance.ts",
     "acceptance:autonomous": "tsx scripts/autonomousAcceptance.ts",
     "acceptance:experiments": "tsx scripts/experimentAcceptance.ts",
+    "acceptance:desktop": "npm run build:desktop:assets && tsx scripts/desktopAcceptance.ts",
     "browser:install": "playwright install chromium",
-    "security:check": "npm audit --audit-level=high"
+    "security:check": "npm audit --audit-level=high",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "build:desktop:assets": "npm run build && tsx scripts/buildDesktopServer.ts"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
     "playwright": "^1.63.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@yao-pkg/pkg": "^6.22.0",
     "@types/node": "^24.3.1",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "esbuild": "^0.28.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
