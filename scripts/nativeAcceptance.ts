@@ -85,7 +85,7 @@ const port = (server.address() as {port:number}).port;
 writeFileSync(join(home, "config.toml"), `model="test-native-model"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Local scripted test only"\nbase_url="http://127.0.0.1:${port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n${process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" ? "\n# GitHub-hosted runners may not permit bwrap to create a loopback network namespace.\n[sandbox_workspace_write]\nnetwork_access=true\n" : ""}`);
 const makeClient = (cwd: string) => new CodexAppServer({ binary, cwd, env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: home, RUST_LOG: "error" }, requestTimeoutMs: 10000 });
 try {
-  await runNativeEpisode(store, "native-acceptance", { clientFactory: makeClient, pollMs: 100 });
+  await runNativeEpisode(store, "native-acceptance", { clientFactory: makeClient, pollMs: 100, sandboxNetworkAccess: process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" });
   console.log("Native first result", getProject(state, "native-acceptance")?.status, getRun(state, "native-acceptance")?.stopReason);
   assert.equal(getProject(state, "native-acceptance")?.status, "EQUILIBRIUM");
   assert.equal(readFileSync(join(workspace, "logic.mjs"), "utf8"), "export const increment = n => n + 1;\n");
@@ -100,7 +100,7 @@ try {
   writeFileSync(join(workspace, "logic.mjs"), "export const increment = n => n + 3;\n");
   maintenance = true; requestIndex = 0;
   await store.transact((s) => wakeProject(s, "native-acceptance", "incident"));
-  await runNativeEpisode(store, "native-acceptance", { clientFactory: makeClient, pollMs: 100 });
+  await runNativeEpisode(store, "native-acceptance", { clientFactory: makeClient, pollMs: 100, sandboxNetworkAccess: process.env.NATIVE_ACCEPTANCE_SANDBOX_NETWORK === "1" });
   assert.equal(getProject(state, "native-acceptance")?.status, "EQUILIBRIUM");
   assert.equal(getRun(state, "native-acceptance")?.nativeSession?.threadId, thread);
   assert((getRun(state, "native-acceptance")?.nativeSession?.accountedTokens ?? 0) > initialTokens, "resumed thread usage must continue accounting, not reset or disappear");

@@ -71,6 +71,18 @@ describe("mission native runtime", () => {
     expect(store.read().events.some((e) => e.type === "CONTEXT_ASSEMBLED" && e.payload?.rawRef)).toBe(true);
   });
 
+  it("Native sandbox 네트워크는 기본 차단이고 acceptance에서만 명시적으로 열 수 있다", async () => {
+    const lockedStore = fixture();
+    const locked = new FakeClient(async (c) => c.finish());
+    await runNativeEpisode(lockedStore, "native-test", { clientFactory: () => locked });
+    expect((locked.calls.find((c) => c.method === "turn/start")?.params.sandboxPolicy as RpcRecord).networkAccess).toBe(false);
+
+    const acceptanceStore = fixture();
+    const acceptance = new FakeClient(async (c) => c.finish());
+    await runNativeEpisode(acceptanceStore, "native-test", { clientFactory: () => acceptance, sandboxNetworkAccess: true });
+    expect((acceptance.calls.find((c) => c.method === "turn/start")?.params.sandboxPolicy as RpcRecord).networkAccess).toBe(true);
+  });
+
   it("여러 native 행동과 오류 복구는 같은 turn에서 이어지고 명령 실패 1회로 중단하지 않는다", async () => {
     const store = fixture();
     const client = new FakeClient(async (c) => {

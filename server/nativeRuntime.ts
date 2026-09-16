@@ -22,6 +22,11 @@ export interface NativeRuntimeOptions {
   pollMs?: number;
   /** Integration tests can provide an actual or fault-injecting tool transport. */
   executeTool?: (action: ActionEnvelope, project: Project, state: AppState, signal: AbortSignal) => Promise<ToolResult>;
+  /**
+   * Acceptance-only override for Codex's Linux sandbox fixture. Production
+   * callers leave this unset so Native commands keep network access disabled.
+   */
+  sandboxNetworkAccess?: boolean;
 }
 
 const capabilityMap: Readonly<Record<string, string>> = {
@@ -351,7 +356,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     await mutation((s) => missionEvent(s, projectId, "CONTEXT_ASSEMBLED", "Native 프로젝트 컨텍스트 전달", "원문 의도의 안전한 투영, 실제 관찰, 사람 답변, 관련 경험을 같은 thread에 전달합니다.", { payload: { rawRef, contextId: context?.id ?? "unknown", threadId: threadId! } }));
     const turnResponse = asRecord(await client.request("turn/start", { threadId, input: [{ type: "text", text: JSON.stringify(prompt) }],
       outputSchema: strictInputSchema(checkpointSchema), approvalPolicy: "never",
-      sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace], networkAccess: options.sandboxNetworkAccess === true, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
     }));
     const returnedTurn = asRecord(turnResponse.turn).id;
     if (typeof returnedTurn !== "string" || !returnedTurn || returnedTurn.length > 512) throw new Error("Codex turn 응답이 올바르지 않습니다.");
