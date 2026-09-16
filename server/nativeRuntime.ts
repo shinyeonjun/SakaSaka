@@ -94,7 +94,11 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
   const ignoredRawCalls = new Set<string>();
   const deliveryReceipts = new Map<string, number>();
   let operations = Promise.resolve(), polling = false;
-  const mutation = async (update: (state: AppState) => AppState): Promise<AppState> => store.transact((state) => getRun(state, projectId)?.execution?.id === leaseId ? update(state) : state);
+  const leaseMutation = async (update: (state: AppState) => AppState): Promise<AppState> => store.transact((state) => getRun(state, projectId)?.execution?.id === leaseId ? update(state) : state);
+  const mutation = async (update: (state: AppState) => AppState): Promise<AppState> => store.transact((state) => {
+    const currentProject = getProject(state, projectId);
+    return getRun(state, projectId)?.execution?.id === leaseId && sameControl(initial, currentProject) ? update(state) : state;
+  });
   let finishTurn!: () => void;
   const completed = new Promise<void>((resolve) => { finishTurn = resolve; });
   const fail = (error: unknown) => { fatal = error instanceof Error ? error : new Error(String(error)); controller.abort(); finishTurn(); };
@@ -231,6 +235,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
         if (item.type === "reasoning") return;
         enqueue(async () => {
           persist(method, params);
+          const protocolViolation = item.type === "webSearch" || item.type === "mcpToolCall";
           if (item.type === "dynamicToolCall" && method === "item/completed" && item.status === "completed") {
             const received = deliveryReceipts.get(String(item.id));
             if (received !== undefined) await mutation((s) => patchNativeSession(s, projectId, { deliveredHumanSequence: Math.max(getRun(s, projectId)?.nativeSession?.deliveredHumanSequence ?? -1, received) }));
@@ -244,6 +249,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
             const next = recordNativeItem(s, projectId, String(params.threadId ?? threadId), String(params.turnId ?? turnId), item, method === "item/completed", rawRef);
             return { ...next, runs: next.runs.map((r) => r.id === initialRun.id ? { ...r, phase: method === "item/started" ? "dispatch" : "decide" } : r) };
           });
+          if (protocolViolation) interrupt("Native 프로토콜 위반: 검색/MCP 이벤트는 허용되지 않아 작업 구간을 중단했습니다.");
         });
       } else if (method === "thread/tokenUsage/updated") enqueue(async () => {
         persist(method, params);
@@ -379,11 +385,14 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
       if (blocked) return stallProject(patchNativeSession(s, projectId, { checkpoint, state: "resting", turnId: undefined }), projectId, blocked);
       const unreceived = humanSignals(s, projectId, run.nativeSession?.deliveredHumanSequence ?? -1).length > 0;
       const status: RuntimeStatus = unreceived ? "ACTIVE" : checkpointStatus(s, projectId, checkpoint);
+      const checkpointProtocolError = status === "STALLED" && checkpoint.disposition === "waiting"
+        ? "waiting checkpoint에 대응하는 열린 사람 질문/승인이 없습니다. 무한 재시도를 중단했습니다."
+        : undefined;
       const repeats = JSON.stringify(run.nativeSession?.checkpoint) === JSON.stringify(checkpoint);
       const noProgress = repeats ? run.noProgressCycles + 1 : 0;
       let next = patchNativeSession(s, projectId, { checkpoint, state: "resting", turnId: undefined });
       next = { ...next, projects: next.projects.map((p) => p.id === projectId ? { ...p, status, updatedAt: new Date().toISOString(), nextReviewAt: status === "EQUILIBRIUM" ? new Date(Date.now() + (p.settings.reviewIntervalMinutes ?? 360) * 60000).toISOString() : undefined } : p),
-        runs: next.runs.map((r) => r.id === run.id ? { ...r, status, phase: "sleep", cycleCount: r.cycleCount + 1, lastCycleAt: new Date().toISOString(), noProgressCycles: noProgress, consecutiveFailures: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, stopReason: undefined } : r) };
+        runs: next.runs.map((r) => r.id === run.id ? { ...r, status, phase: "sleep", cycleCount: r.cycleCount + 1, lastCycleAt: new Date().toISOString(), noProgressCycles: noProgress, consecutiveFailures: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, stopReason: checkpointProtocolError } : r) };
       next = missionEvent(next, projectId, status === "EQUILIBRIUM" ? "EQUILIBRIUM_ENTERED" : "RUN_STATE_CHANGED", `${status} · 에이전트 checkpoint`, checkpoint.summary, { payload: { rawRef, disposition: checkpoint.disposition, evidenceRefs: checkpoint.evidenceRefs } });
       return noProgress >= (initial.settings.noProgressThreshold ?? 5) ? stallProject(next, projectId, "같은 checkpoint가 반복됩니다. 이전 작업 증거를 보존했습니다.") : next;
     });
@@ -407,7 +416,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     if (controller.signal.aborted) {
       const s = store.read(); await stopProcessesForRun(s.processes, initialRun.id);
     }
-    await mutation((state) => ({ ...state, runs: state.runs.map((r) => r.id === initialRun.id ? { ...r, execution: undefined } : r) }));
+    await leaseMutation((state) => ({ ...state, runs: state.runs.map((r) => r.id === initialRun.id && r.execution?.id === leaseId ? { ...r, execution: undefined } : r) }));
   }
   return true;
 }

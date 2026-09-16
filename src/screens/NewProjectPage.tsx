@@ -21,7 +21,9 @@ export function NewProjectPage() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogEntry[]>(() => modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
   const [defaultModel, setDefaultModel] = useState("");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
-  const [executionMode, setExecutionMode] = useState<"native" | "atomic">(() => isControlPlaneEnabled && loadUserPreferences().modelProvider === "codex-cli" ? "native" : "atomic");
+  // The provider preference is not consent to change the execution engine.
+  // Native execution must be selected explicitly for each new project.
+  const [executionMode, setExecutionMode] = useState<"native" | "atomic">("atomic");
   const [maxNativeTurns, setMaxNativeTurns] = useState(40);
   const [maxNativeTokens, setMaxNativeTokens] = useState(250000);
   const [workspacePath, setWorkspacePath] = useState("");

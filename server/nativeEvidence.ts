@@ -19,16 +19,18 @@ export function recordNativeItem(state: AppState, projectId: string, threadId: s
   const previous = state.actions.find((a) => a.id === id);
   if (complete && previous?.completedAt && previous.tool === `codex.${String(item.type)}`) return state;
   const tool = `codex.${String(item.type)}`;
-  const summary = item.type === "commandExecution" ? `명령 · ${String(item.command ?? "").slice(0, 1000)}`
+  const protocolViolation = item.type === "webSearch" || item.type === "mcpToolCall";
+  const summary = protocolViolation ? `Native 프로토콜 위반 · ${String(item.type)} 이벤트를 거절했습니다.`
+    : item.type === "commandExecution" ? `명령 · ${String(item.command ?? "").slice(0, 1000)}`
     : item.type === "fileChange" ? `파일 변경 · ${(Array.isArray(item.changes) ? item.changes : []).map((change) => String(asRecord(change).path ?? "")).join(", ").slice(0, 1000)}`
     : `외부 도구 관찰 · ${String(item.type)}`;
   const now = new Date().toISOString();
   const succeeded = item.type === "commandExecution" ? item.exitCode === 0 && item.status === "completed" : item.type === "fileChange" && item.status === "completed";
-  const failed = item.status === "failed" || item.status === "declined" || (typeof item.exitCode === "number" && item.exitCode !== 0);
+  const failed = protocolViolation || item.status === "failed" || item.status === "declined" || (typeof item.exitCode === "number" && item.exitCode !== 0);
   const action: AgentAction = {
     ...previous, id, projectId, runId: run.id, schemaVersion: 1, type: "ACT", tool,
     intentRef: project.intentId, worldCursor: world.cursorEventId, rationaleSummary: redactSecretLikeText(summary),
-    status: !complete ? "RUNNING" : succeeded ? "VERIFIED" : failed ? "FAILED" : "UNCERTAIN",
+    status: !complete ? protocolViolation ? "BLOCKED" : "RUNNING" : succeeded ? "VERIFIED" : failed ? "FAILED" : "UNCERTAIN",
     params: { providerItemId: item.id, threadId, turnId }, riskClass: "P1", cost: 0,
     modelVersion: `codex-app-server:${project.settings.modelName ?? "configured"}`, toolVersion: "codex-app-server-v2",
     policyVersion: 1, createdAt: previous?.createdAt ?? now, completedAt: complete ? now : undefined, toolResultRef: complete ? rawRef : undefined,
@@ -38,8 +40,8 @@ export function recordNativeItem(state: AppState, projectId: string, threadId: s
   next = missionEvent(next, projectId, complete ? "TOOL_RESULT" : "TOOL_CALLED", summary, complete ? `원본 ${rawRef} · native 실행 상태=${String(item.status)}` : "Codex의 같은 세션 안에서 도구를 실행 중입니다.", { actionId: id, payload: { threadId, turnId, providerItemId: item.id, rawRef } });
   if (!complete) return next;
   const output = redactSecretLikeText(String(item.aggregatedOutput ?? "")).slice(0, 5000);
-  const ev: Evidence = { id: makeId("evidence"), projectId, actionId: id, kind: "world", verdict: succeeded ? "PASS" : failed ? "FAIL" : "UNCERTAIN",
-    summary: `${summary} · ${succeeded ? "실행 성공" : failed ? "실행 실패 — 에이전트가 결과를 읽고 복구 가능" : "결과 미확인"}. 제품 목표 전체의 검증이 아닙니다.`,
+  const ev: Evidence = { id: makeId("evidence"), projectId, actionId: id, kind: "world", verdict: protocolViolation ? "UNCERTAIN" : succeeded ? "PASS" : failed ? "FAIL" : "UNCERTAIN",
+    summary: `${summary} · ${protocolViolation ? "외부 효과 여부는 미확인" : succeeded ? "실행 성공" : failed ? "실행 실패 — 에이전트가 결과를 읽고 복구 가능" : "결과 미확인"}. 제품 목표 전체의 검증이 아닙니다.`,
     source: tool, createdAt: now, rawRef, evaluator: "native-execution-status", evaluatorVersion: "1",
     metadata: { threadId, turnId, providerItemId: item.id, status: String(item.status), ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}) } };
   next = { ...next, evidence: [...next.evidence, ev], observations: [...next.observations, {

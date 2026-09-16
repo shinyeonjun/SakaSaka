@@ -30,4 +30,11 @@ describe("native evidence provenance", () => {
     expect(recordNativeRawTool(s, "evidence-native", "t", "u", { type: "reasoning", call_id: "secret", encrypted_content: "not-for-logs" }, rawRef)).toBe(s);
     expect(recordNativeItem(s, "evidence-native", "t", "u", { type: "reasoning", id: "secret", text: "not-for-logs" }, true, rawRef)).toBe(s);
   });
+  it("검색·MCP 이벤트는 허용된 실행 증거로 기록하지 않고 프로토콜 위반으로 남긴다", () => {
+    const s = recordNativeItem(fresh(), "evidence-native", "t", "u", { type: "webSearch", id: "search-1", status: "completed" }, true, rawRef);
+    expect(s.actions[0].status).toBe("FAILED");
+    expect(s.actions[0].tool).toBe("codex.webSearch");
+    expect(s.evidence[0].verdict).toBe("UNCERTAIN");
+    expect(s.evidence[0].summary).toContain("프로토콜 위반");
+  });
 });

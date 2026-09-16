@@ -205,6 +205,10 @@ function isPackageList(value: unknown): value is string[] {
 
 export function redactSecretLikeText(value: string): string {
   return value
+    .replace(/-----BEGIN [^-\r\n]+-----[\s\S]*?-----END [^-\r\n]+-----/gi, "[REDACTED_PEM]")
+    .replace(/(authorization\s*[:=]\s*bearer\s+|\bbearer\s+)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/(cookie|set-cookie|session[_-]?cookie)\s*[:=]\s*[^\r\n,;]+/gi, "$1=[REDACTED]")
+    .replace(/([?&](?:api[_-]?key|token|secret|password|session[_-]?cookie)=)[^&#\s]+/gi, "$1[REDACTED]")
     .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@")
     .replace(/\b(sk|ghp|xoxb|AKIA)[A-Za-z0-9_\-]{12,}\b/g, "[REDACTED]");

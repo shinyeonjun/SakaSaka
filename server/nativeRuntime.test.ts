@@ -6,7 +6,7 @@ import type { AppServerClient, RpcRecord } from "./codexAppServer";
 import { checkNativeConfig } from "./codexAppServer";
 import { runNativeEpisode } from "./nativeRuntime";
 import { createEmptyState } from "../src/emptyState";
-import { createProject, getProject, getRun, pauseProject, resolveHumanItem, wakeProject } from "../src/runtime";
+import { createProject, getProject, getRun, pauseProject, resolveHumanItem, resumeProject, wakeProject } from "../src/runtime";
 import type { AppState } from "../src/types";
 import { parseCheckpoint, registerMissionHuman } from "../src/nativeSession";
 
@@ -56,6 +56,7 @@ function fixture(settings: Record<string, unknown> = {}) {
   };
 }
 const question = { key: "sharing", title: "공개 범위를 어떻게 할까요?", rationale: "사용자의 공개 범위 선호가 필요합니다.", blockingScope: ["공개 공유"], continuingScope: ["로컬 편집"], options: [] };
+const blockingQuestion = { ...question, continuingScope: [] };
 const waitFor = async (condition: () => boolean) => { const deadline = Date.now() + 3000; while (!condition()) { if (Date.now() > deadline) throw new Error("condition timed out"); await new Promise((r) => setTimeout(r, 10)); } };
 
 describe("mission native runtime", () => {
@@ -107,13 +108,69 @@ describe("mission native runtime", () => {
 
   it("명시된 미응답 때문에 기다린 뒤 답변 wake에서 기존 thread를 resume한다", async () => {
     const store = fixture();
-    await runNativeEpisode(store, "native-test", { clientFactory: () => new FakeClient(async (c) => { await c.tool("sakasaka_question", question); c.finish(report("waiting", ["공개 범위 답변"])); }) });
+    await runNativeEpisode(store, "native-test", { clientFactory: () => new FakeClient(async (c) => { await c.tool("sakasaka_question", blockingQuestion); c.finish(report("waiting", ["공개 범위 답변"])); }) });
     expect(getProject(store.read(), "native-test")?.status).toBe("WAITING");
     await store.transact((s) => resolveHumanItem(s, s.humanItems[0].id, "answer", "비공개"));
     const resumed = new FakeClient(async (c) => c.finish());
     await runNativeEpisode(store, "native-test", { clientFactory: () => resumed });
     expect(resumed.calls.find((c) => c.method === "thread/resume")?.params.threadId).toBe("thread-test");
     expect(JSON.stringify(resumed.calls.find((c) => c.method === "turn/start")?.params)).toContain("비공개");
+  });
+
+  it("질문의 continuingScope가 있으면 영향받지 않는 작업을 전체 대기로 만들지 않는다", async () => {
+    const store = fixture();
+    const client = new FakeClient(async (c) => {
+      await c.tool("sakasaka_question", question);
+      c.finish(report("waiting", ["공개 범위 답변"]));
+    });
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client });
+    expect(getProject(store.read(), "native-test")?.status).toBe("ACTIVE");
+  });
+
+  it("질문함 없이 waiting을 보고하면 무한 ACTIVE 재시도를 하지 않는다", async () => {
+    const store = fixture();
+    await runNativeEpisode(store, "native-test", { clientFactory: () => new FakeClient(async (c) => c.finish(report("waiting", ["등록되지 않은 외부 조건"]))) });
+    expect(getProject(store.read(), "native-test")?.status).toBe("STALLED");
+    expect(getRun(store.read(), "native-test")?.stopReason).toContain("waiting");
+  });
+
+  it("일시 정지 뒤 도착한 stale Native 결과는 상태에 커밋하지 않는다", async () => {
+    const store = fixture();
+    const client = new FakeClient(async (c) => {
+      await store.transact((s) => pauseProject(s, "native-test"));
+      c.item({ id: "stale-change", type: "fileChange", status: "completed", changes: [{ path: "stale.js" }] });
+      await c.closed.catch(() => undefined);
+    });
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client, pollMs: 20 });
+    expect(store.read().actions).toHaveLength(0);
+    expect(getProject(store.read(), "native-test")?.status).toBe("PAUSED");
+    expect(getRun(store.read(), "native-test")?.execution).toBeUndefined();
+  });
+
+  it("빠른 일시 정지와 재개 뒤 이전 episode lease의 결과는 상태에 커밋하지 않는다", async () => {
+    const store = fixture();
+    const client = new FakeClient(async (c) => {
+      await store.transact((s) => pauseProject(s, "native-test"));
+      await store.transact((s) => resumeProject(s, "native-test"));
+      c.item({ id: "stale-after-resume", type: "fileChange", status: "completed", changes: [{ path: "stale-after-resume.js" }] });
+      await c.closed.catch(() => undefined);
+    });
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client, pollMs: 20 });
+    expect(store.read().actions).toHaveLength(0);
+    expect(getProject(store.read(), "native-test")?.status).toBe("ACTIVE");
+    expect(getRun(store.read(), "native-test")?.execution).toBeUndefined();
+  });
+
+  it("검색 이벤트가 도착하면 Native turn을 중단하고 성공으로 처리하지 않는다", async () => {
+    const store = fixture();
+    const client = new FakeClient(async (c) => {
+      c.item({ id: "forbidden-search", type: "webSearch", status: "completed" });
+      await c.closed.catch(() => undefined);
+    });
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client, pollMs: 20 });
+    expect(getProject(store.read(), "native-test")?.status).toBe("STALLED");
+    expect(store.read().actions.some((action) => action.tool === "codex.webSearch" && action.status === "FAILED")).toBe(true);
+    expect(store.read().evidence.some((evidence) => evidence.verdict === "UNCERTAIN" && evidence.summary.includes("프로토콜 위반"))).toBe(true);
   });
 
   it("잘못된 managed process ID는 복구 피드백이고 전체 프로젝트를 STALLED로 만들지 않는다", async () => {
@@ -192,6 +249,7 @@ describe("mission native runtime", () => {
 
   it("엄격한 체크포인트와 외부 설정 경계, 해결된 질문 dedupe를 보존한다", () => {
     expect(parseCheckpoint('{"disposition":"equilibrium"}')).toBeUndefined();
+    expect(parseCheckpoint(JSON.stringify({ disposition: "equilibrium", summary: "확인", remainingWork: [], evidenceRefs: ["Authorization: Bearer leaked"], wakeReasons: [] }))).toBeUndefined();
     expect(checkNativeConfig({ mcp_servers: { remote: {} } })).toContain("MCP");
     expect(checkNativeConfig({ mcp_servers: { remote: { enabled: false } } })).toBeUndefined();
     const store = fixture();

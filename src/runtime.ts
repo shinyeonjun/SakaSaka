@@ -1735,7 +1735,13 @@ function setRuntimeStatus(state: AppState, projectId: string, status: RuntimeSta
   const updatedAt = nowIso();
   const leaseExpiresAt = status === "ACTIVE" ? nextLease(project, Date.parse(updatedAt)) : status === "KILLED" ? updatedAt : run.leaseExpiresAt;
   let next = updateProject(state, { ...project, status, updatedAt, nextReviewAt: status === "EQUILIBRIUM" ? project.nextReviewAt : undefined });
-  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt, stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined,
+  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt,
+    // Native episodes use the project status tuple as their resume boundary.
+    // Revoke that lease on pause/stop/stall so an old episode cannot regain
+    // the same control tuple and write into the resumed run. The short
+    // transaction coordinator keeps its own fence until it records discard.
+    execution: run.execution?.owner.startsWith("native-") && (status === "PAUSED" || status === "KILLED" || status === "STALLED") ? undefined : run.execution,
+    stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined,
     ...(status === "ACTIVE" ? { ...(run.execution && Date.parse(run.execution.expiresAt) <= Date.now() ? { execution: undefined } : {}), consecutiveFailures: 0, noProgressCycles: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined } : {}),
   });
   return appendEvent(next, {

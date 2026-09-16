@@ -156,8 +156,10 @@ describe("Intent World runtime", () => {
 
   it("일시정지와 재개 경계를 보존한다", () => {
     const { state, projectId } = projectState("project-lifecycle");
-    const paused = pauseProject(state, projectId);
+    const withLease = { ...state, runs: state.runs.map((run) => ({ ...run, execution: { id: "native-old", owner: "native-test", stage: "decide" as const, expiresAt: new Date(Date.now() + 60_000).toISOString() } })) };
+    const paused = pauseProject(withLease, projectId);
     expect(getProject(paused, projectId)?.status).toBe("PAUSED");
+    expect(getRun(paused, projectId)?.execution).toBeUndefined();
     const resumed = resumeProject(paused, projectId);
     expect(getProject(resumed, projectId)?.status).toBe("ACTIVE");
     expect(getRun(resumed, projectId)?.phase).toBe("wake");

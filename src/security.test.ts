@@ -91,6 +91,9 @@ describe("action boundary enforcement", () => {
   it("secret-shaped 값은 도구 출력에 저장되기 전에 가린다", () => {
     expect(redactSecretLikeText("api_key=sk-test-1234567890 password=hunter2")).toBe("api_key=[REDACTED] password=[REDACTED]");
     expect(redactSecretLikeText("https://user:password@example.com/private")).toBe("https://[REDACTED]@example.com/private");
+    expect(redactSecretLikeText("Authorization: Bearer bearer-secret-value")).toBe("Authorization: Bearer [REDACTED]");
+    expect(redactSecretLikeText("Cookie: session=private-cookie; theme=dark")).toBe("Cookie=[REDACTED]; theme=dark");
+    expect(redactSecretLikeText("-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----")).toBe("[REDACTED_PEM]");
   });
 
   it("구조화된 모델 출력을 도구 게이트웨이에 전달하기 전에 검증한다", () => {

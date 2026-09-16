@@ -1,5 +1,5 @@
 import type { AppState, EventRecord, HumanItem, HumanItemKind, RuntimeStatus } from "./types";
-import { getIntent, getProject, getRun, makeId } from "./runtime";
+import { getIntent, getOpenHumanItems, getProject, getRun, makeId } from "./runtime";
 import { redactSecretLikeText } from "./security";
 import type { InputSchema } from "./toolContracts";
 
@@ -39,6 +39,8 @@ export const checkpointSchema: InputSchema = {
   },
 };
 
+const evidenceReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$/;
+
 export function parseCheckpoint(raw: string): MissionCheckpoint | undefined {
   try {
     const value: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
@@ -48,12 +50,12 @@ export function parseCheckpoint(raw: string): MissionCheckpoint | undefined {
     for (const [name, max, length] of [["remainingWork", 32, 1000], ["evidenceRefs", 64, 512], ["wakeReasons", 16, 1000]] as const) {
       if (!Array.isArray(v[name]) || v[name].length > max || v[name].some((s: unknown) => typeof s !== "string" || s.length > length)) return undefined;
     }
-    if (Object.keys(v).some((key) => !Object.hasOwn(checkpointSchema.properties!, key))) return undefined;
+    if (Object.keys(v).some((key) => !Object.hasOwn(checkpointSchema.properties!, key)) || (v.evidenceRefs as string[]).some((ref) => !evidenceReferencePattern.test(ref))) return undefined;
     return {
       disposition: v.disposition as MissionCheckpoint["disposition"],
       summary: redactSecretLikeText(v.summary),
       remainingWork: (v.remainingWork as string[]).map(redactSecretLikeText),
-      evidenceRefs: v.evidenceRefs as string[], wakeReasons: (v.wakeReasons as string[]).map(redactSecretLikeText),
+      evidenceRefs: (v.evidenceRefs as string[]).map(redactSecretLikeText), wakeReasons: (v.wakeReasons as string[]).map(redactSecretLikeText),
     };
   } catch { return undefined; }
 }
@@ -150,9 +152,12 @@ export function humanSignals(state: AppState, projectId: string, after: number):
 /** Never turn a successful native turn into an unqualified product-complete flag. */
 export function checkpointStatus(state: AppState, projectId: string, checkpoint: MissionCheckpoint): RuntimeStatus {
   if (checkpoint.disposition === "continue") return "ACTIVE";
-  const blocking = state.humanItems.filter((i) => i.projectId === projectId && (i.status === "OPEN" || i.status === "DEFERRED") && i.blockingScope.length);
-  if (blocking.length) return "WAITING"; // Agent reported no independent work now; inbox remains actionable.
-  if (checkpoint.remainingWork.length || checkpoint.disposition === "waiting") return "ACTIVE";
+  const blocking = getOpenHumanItems(state, projectId).filter((i) => i.blockingScope.length > 0);
+  if (blocking.length) return blocking.every((item) => item.continuingScope.length === 0) ? "WAITING" : "ACTIVE";
+  // A waiting checkpoint without a registered human gate is a protocol
+  // inconsistency. Do not turn it into an unbounded ACTIVE retry loop.
+  if (checkpoint.disposition === "waiting") return "STALLED";
+  if (checkpoint.remainingWork.length) return "ACTIVE";
   return "EQUILIBRIUM";
 }
 
