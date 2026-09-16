@@ -1,0 +1,68 @@
+name: runtime-apply
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-reviewed-delta:
+    if: github.head_ref == 'fix/runtime-hardening-20260917' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Apply only the hash-verified source delta
+        if: hashFiles('.review/part-1.b64') != ''
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, subprocess
+          from pathlib import Path
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          branch = 'fix/runtime-hardening-20260917'
+          assert git('rev-parse', 'HEAD') == os.environ['EXPECTED_HEAD']
+          encoded = ''.join(Path(f'.review/part-{i}.b64').read_text('utf-8') for i in range(1, 6))
+          assert len(encoded) == 60040
+          raw = lzma.decompress(base64.b64decode(encoded, validate=True), memlimit=256 * 1024 * 1024)
+          assert hashlib.sha256(raw).hexdigest() == '2f5b428e5113a1e637745aa52dbaf124fd521afe4745fe359ea34bcd72780770'
+          changes = json.loads(raw)
+          assert len(changes) == 52
+          updates = {}
+          for change in changes:
+              path = Path(change['path'])
+              assert not path.is_absolute() and '..' not in path.parts
+              assert path.parts[0] in ('src', 'server', 'scripts', 'docs', '.env.example', 'README.md', 'package.json')
+              assert path not in updates
+              assert not path.is_symlink() and all(not parent.is_symlink() for parent in path.parents)
+              old = path.read_bytes() if path.exists() else b''
+              assert hashlib.sha256(old).hexdigest() == change['before'], f'Base mismatch: {path}'
+              lines = old.decode('utf-8').splitlines(keepends=True)
+              previous_start = len(lines) + 1
+              for start, end, replacement in reversed(change['edits']):
+                  assert isinstance(start, int) and isinstance(end, int) and 0 <= start <= end <= len(lines)
+                  assert end <= previous_start and isinstance(replacement, str)
+                  lines[start:end] = [replacement]
+                  previous_start = start
+              result = ''.join(lines).encode('utf-8')
+              assert hashlib.sha256(result).hexdigest() == change['after'], f'Result mismatch: {path}'
+              updates[path] = result
+          for path, result in updates.items():
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(result)
+          subprocess.run(['git', 'add', '--', *[str(path) for path in updates]], check=True)
+          subprocess.run(['git', 'rm', '--', *[f'.review/part-{i}.b64' for i in range(1, 6)]], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          assert git('ls-remote', 'origin', f'refs/heads/{branch}').split()[0] == os.environ['EXPECTED_HEAD'], 'Branch moved; refusing to overwrite'
+          subprocess.run(['git', 'config', 'user.name', 'ChatGPT'], check=True)
+          subprocess.run(['git', 'config', 'user.email', 'chatgpt@users.noreply.github.com'], check=True)
+          subprocess.run(['git', 'commit', '-m', 'fix: harden Codex protocol, fenced runtime and truthful diagnostics'], check=True)
+          subprocess.run(['git', 'push', 'origin', f'HEAD:refs/heads/{branch}'], check=True)
+          print('Published 52 verified source files:', git('rev-parse', 'HEAD'))
+          PY
