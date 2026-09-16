@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     projectIdPrefix: "experiment-acceptance",
   });
   try {
-    assert.equal(comparison.variants.length, 5);
+    assert.equal(comparison.variants.length, 3);
     assert.ok(comparison.sourceWorkspaceDigest.length === 64);
     assert.ok(comparison.variants.every((variant) => variant.startingWorkspaceDigest === comparison.sourceWorkspaceDigest));
     assert.ok(comparison.variants.every((variant) => variant.state.projects.find((project) => project.id === variant.projectId)?.settings.budgetLimit === 5));
@@ -63,7 +63,8 @@ async function main(): Promise<void> {
       const actionContextIds = new Set(variant.state.actions.map((action) => action.contextId).filter((id): id is string => Boolean(id)));
       return variant.state.contexts.filter((context) => actionContextIds.has(context.id)).every((context) => context.modelVersion === "scripted-experiment-model-v1");
     }));
-    console.log("Experiment acceptance passed: comparable A-E isolated runs with actual tool/evaluator evidence");
+    assert.ok(comparison.variants.every((variant) => variant.passed === false), "기술 통과를 연구 가설 통과로 표시하면 안 됩니다.");
+    console.log("Experiment acceptance passed: A/B/D infrastructure only; C/E unavailable; no hypothesis claim");
   } finally {
     comparison.cleanup();
     rmSync(source, { recursive: true, force: true });

@@ -38,8 +38,8 @@ export function runtimeDescription(status: RuntimeStatus): string {
   }[status];
 }
 
-export function worldStatusLabel(status: "healthy" | "warning" | "blocked"): string {
-  return { healthy: "정상", warning: "주의", blocked: "차단됨" }[status];
+export function worldStatusLabel(status: "healthy" | "warning" | "blocked" | "absent" | "not-configured"): string {
+  return { healthy: "정상", warning: "주의", blocked: "차단됨", absent: "아직 없음", "not-configured": "연결 전" }[status];
 }
 
 export function freshnessLabel(freshness: "fresh" | "aging" | "stale"): string {

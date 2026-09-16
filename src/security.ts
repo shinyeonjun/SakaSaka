@@ -145,7 +145,7 @@ export function validateActionBoundary(
     return { status: "blocked", reason: "P3 production/destructive side effects are hard-blocked by project policy", capability, normalizedTool };
   }
   if (riskRank[capability.riskClass] >= riskRank.P2 && project.settings.requireExternalApproval) {
-    if (approvalGrant && approvalGrant.singleUse && !approvalGrant.consumedAt && Date.parse(approvalGrant.expiresAt) > now && approvalGrant.projectId === project.id && approvalGrant.tool === action.tool && approvalGrant.actionFingerprint === actionFingerprint(action) && approvalGrant.paramsFingerprint === paramsFingerprint(action)) {
+    if (approvalGrant && approvalGrant.singleUse && !approvalGrant.consumedAt && Date.parse(approvalGrant.expiresAt) > now && approvalGrant.projectId === project.id && approvalGrant.tool === action.tool && approvalGrant.actionFingerprint === actionFingerprint(action) && approvalGrant.paramsFingerprint === paramsFingerprint(action) && approvalGrant.paramsCanonical === canonicalActionParams(action) && approvalGrant.intentRef === action.intentRef) {
       return { status: "allowed", reason: "matching single-use human approval grant is active", capability, normalizedTool };
     }
     return { status: "human-approval", reason: "external or difficult-to-reverse side effect requires an approval item", capability, normalizedTool };
@@ -276,7 +276,7 @@ function fingerprintCanonical(canonical: string): string {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-/** Stable, non-reversible identity used to bind a human approval to one action. */
+/** Stable lookup checksum only. Authorization additionally compares canonical params and Intent. */
 export function actionFingerprint(action: ActionEnvelope): string {
   return fingerprintCanonical(stableValue({ type: action.type, intentRef: action.intentRef, tool: action.tool ?? "", params: action.params ?? {} }));
 }

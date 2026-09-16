@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type Dispatch, type PropsWithChildren } from "react";
+import { acceptServerState } from "./stateSync";
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type Dispatch, type PropsWithChildren } from "react";
 import { fetchServerState, fetchServerStateWithRetry, isControlPlaneEnabled, mirrorAction, subscribeToProject } from "./apiClient";
 import { createEmptyState } from "./emptyState";
 import {
@@ -25,7 +26,7 @@ import type { ExperimentInput } from "./runtime";
 const STORAGE_KEY = "intent-world-agent-state-v2";
 
 function loadState(): AppState {
-  if (typeof window === "undefined") return createEmptyState();
+  if (typeof window === "undefined" || isControlPlaneEnabled) return createEmptyState();
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return createEmptyState();
@@ -135,13 +136,15 @@ export function appReducer(state: AppState, action: AppAction): AppState {
     case "SET_ACTIVE_PROJECT":
       return state.projects.some((project) => project.id === action.projectId) ? { ...state, activeProjectId: action.projectId } : state;
     case "HYDRATE_STATE":
-      return action.state;
+      return acceptServerState(state, action.state);
     default:
       return state;
   }
 }
 
 interface AppContextValue {
+  syncError?: string;
+  pendingCommands: number;
   state: AppState;
   dispatch: Dispatch<AppAction>;
   createProject: (rawIntent: string, settings?: Partial<ProjectSettings>) => string;
@@ -153,21 +156,30 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: PropsWithChildren) {
   const [state, reducerDispatch] = useReducer(appReducer, undefined, loadState);
   const syncQueue = useRef(Promise.resolve());
+  const [syncError, setSyncError] = useState<string>();
+  const [pendingCommands, setPendingCommands] = useState(0);
   const stateRef = useRef(state);
   stateRef.current = state;
 
   const dispatch = useCallback<Dispatch<AppAction>>((action) => {
-    reducerDispatch(action);
-    if (!isControlPlaneEnabled || action.type === "SET_ACTIVE_PROJECT" || action.type === "HYDRATE_STATE") return;
-
-    const stateAtDispatch = stateRef.current;
+    if (!isControlPlaneEnabled || action.type === "SET_ACTIVE_PROJECT" || action.type === "HYDRATE_STATE") {
+      reducerDispatch(action);
+      return;
+    }
+    // API mode never simulates a successful command in the browser first.
+    setPendingCommands((count) => count + 1);
+    setSyncError(undefined);
     syncQueue.current = syncQueue.current
-      .then(() => mirrorAction(action, stateAtDispatch))
+      .then(() => mirrorAction(action, stateRef.current))
       .then(() => fetchServerState())
-      .then((serverState) => reducerDispatch({ type: "HYDRATE_STATE", state: serverState }))
+      .then((serverState) => {
+        reducerDispatch({ type: "HYDRATE_STATE", state: serverState });
+        if (action.type === "CREATE_PROJECT") reducerDispatch({ type: "SET_ACTIVE_PROJECT", projectId: action.projectId });
+      })
       .catch((error: unknown) => {
-        console.warn("Control plane sync failed; local runtime state is retained.", error);
-      });
+        setSyncError(error instanceof Error ? error.message : "서버가 명령을 확인하지 못했습니다.");
+      })
+      .finally(() => setPendingCommands((count) => Math.max(0, count - 1)));
   }, [reducerDispatch]);
 
   useEffect(() => {
@@ -177,7 +189,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       .then((serverState) => {
         if (!cancelled) reducerDispatch({ type: "HYDRATE_STATE", state: serverState });
       })
-      .catch((error: unknown) => console.warn("Control plane bootstrap failed; local runtime state is retained.", error));
+      .catch((error: unknown) => setSyncError(error instanceof Error ? error.message : "API 연결 실패"));
     return () => { cancelled = true; };
   }, [reducerDispatch]);
 
@@ -200,6 +212,7 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   const value = useMemo<AppContextValue>(() => ({
     state,
+    syncError, pendingCommands,
     dispatch,
     createProject: (rawIntent, settings) => {
       const projectId = makeId("project");
@@ -207,7 +220,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       return projectId;
     },
     setActiveProject: (projectId) => dispatch({ type: "SET_ACTIVE_PROJECT", projectId }),
-  }), [dispatch, state]);
+  }), [dispatch, state, syncError, pendingCommands]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

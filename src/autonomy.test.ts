@@ -31,6 +31,8 @@ describe("persistent autonomy primitives", () => {
     state = recordNonToolAction(state, project.id, questionAction(project.id, state, { blockingScope: ["refund-policy"], continuingScope: [] }));
     const item = state.humanItems.find((candidate) => candidate.kind === "QUESTION")!;
     expect(item.responseMode).toBe("free-text");
+    expect(getProject(state, project.id)?.status).toBe("ACTIVE");
+    state = recordNonToolAction(state, project.id, { type: "WAIT", intentRef: project.intentId, worldCursor: getWorldSnapshot(state, project.id)!.cursorEventId, rationaleSummary: "답변이 없으면 진행할 독립 작업이 없습니다." });
     expect(getProject(state, project.id)?.status).toBe("WAITING");
     state = resolveHumanItem(state, item.id, "defer");
     expect(state.humanItems.find((candidate) => candidate.id === item.id)?.status).toBe("DEFERRED");
@@ -44,7 +46,7 @@ describe("persistent autonomy primitives", () => {
   it("issues an exact single-use approval grant and never lets it bypass P3", () => {
     let state = createProject(emptyState(), "승인된 외부 작업만 실행해줘", "approval-flow", { productionBlocked: false, requireExternalApproval: true, approvalTtlMinutes: 60 });
     const project = getProject(state, "approval-flow")!;
-    const requestedAction: ActionEnvelope = { type: "ACT", intentRef: project.intentId, worldCursor: getWorldSnapshot(state, project.id)!.cursorEventId, rationaleSummary: "publish the approved preview", tool: "deploy.production", params: { url: "https://deploy.example.com" }, riskClass: "P3" };
+    const requestedAction: ActionEnvelope = { type: "ACT", intentRef: project.intentId, worldCursor: getWorldSnapshot(state, project.id)!.cursorEventId, rationaleSummary: "publish the approved preview", tool: "workspace.delete", params: { path: "obsolete.txt" }, riskClass: "P2" };
     const blocked = validateActionBoundary(project, requestedAction, getToolSurface(project), 0.2);
     expect(blocked.status).toBe("human-approval");
     state = runCycle(state, project.id, { action: requestedAction });
@@ -58,7 +60,7 @@ describe("persistent autonomy primitives", () => {
     const executableAction = { ...requestedAction, worldCursor: getWorldSnapshot(state, project.id)!.cursorEventId };
     expect(validateActionBoundary(project, executableAction, getToolSurface(project), 0.2, grant, Date.parse(grant.expiresAt) + 1).status).toBe("human-approval");
     const mismatch = runCycle(state, project.id, {
-      action: { ...executableAction, params: { url: "https://different.example.com" } },
+      action: { ...executableAction, params: { path: "different.txt" } },
     });
     expect(mismatch.actions.at(-1)?.status).toBe("BLOCKED");
     expect(mismatch.approvalGrants.find((candidate) => candidate.id === grant.id)?.consumedAt).toBeUndefined();
@@ -66,7 +68,7 @@ describe("persistent autonomy primitives", () => {
 
     const executed = runCycle(state, project.id, {
       action: executableAction,
-      toolResult: { tool: "deploy.production", toolVersion: "test", status: "succeeded", outputRef: "tool://deploy/1", summary: "deployment accepted", evidence: [{ id: "approval-pass", projectId: project.id, kind: "world", verdict: "PASS", summary: "deployment accepted", source: "deploy-api", createdAt: new Date().toISOString() }], cost: 0.2, wallTimeMs: 2, progress: "meaningful" },
+      toolResult: { tool: "workspace.delete", toolVersion: "test", status: "succeeded", outputRef: "tool://deploy/1", summary: "deployment accepted", evidence: [{ id: "approval-pass", projectId: project.id, kind: "world", verdict: "PASS", summary: "deployment accepted", source: "deploy-api", createdAt: new Date().toISOString() }], cost: 0.2, wallTimeMs: 2, progress: "meaningful" },
     });
     expect(getProject(executed, project.id)?.status).toBe("ACTIVE");
     expect(executed.approvalGrants.find((candidate) => candidate.id === grant.id)?.consumedAt).toBeTruthy();
@@ -78,7 +80,7 @@ describe("persistent autonomy primitives", () => {
 
     const p3HardBlocked = createProject(emptyState(), "production은 절대 실행하지 마", "p3-hard-block", { productionBlocked: true, requireExternalApproval: false });
     const p3Project = getProject(p3HardBlocked, "p3-hard-block")!;
-    expect(validateActionBoundary(p3Project, { ...requestedAction, intentRef: p3Project.intentId, worldCursor: "pending" }, getToolSurface(p3Project), 0.2).status).toBe("blocked");
+    expect(validateActionBoundary(p3Project, { ...requestedAction, tool: "deploy.production", intentRef: p3Project.intentId, worldCursor: "pending" }, getToolSurface(p3Project), 0.2).status).toBe("blocked");
   });
 
   it("retains repeated failures as active cognition until the configured threshold", () => {

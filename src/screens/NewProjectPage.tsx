@@ -15,6 +15,7 @@ export function NewProjectPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [budget, setBudget] = useState(30);
   const [maxHours, setMaxHours] = useState(12);
+  const [maxModelCalls, setMaxModelCalls] = useState(200);
   const [modelProvider, setModelProvider] = useState<NonNullable<ProjectSettings["modelProvider"]>>(() => loadUserPreferences().modelProvider);
   const [modelName, setModelName] = useState(() => loadUserPreferences().modelName ?? "");
   const [availableModels, setAvailableModels] = useState<ModelCatalogEntry[]>(() => modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
@@ -79,7 +80,7 @@ export function NewProjectPage() {
       return;
     }
     saveUserPreferences({ modelProvider, modelName: modelName.trim() || undefined });
-    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
+    const settings: Partial<ProjectSettings> = { budgetLimit: budget, maxHours, maxModelCalls, modelProvider, modelName: modelName.trim() || undefined, sandboxMode };
     if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
     const id = createProject(intent, settings);
     navigate(projectPath(id));
@@ -148,8 +149,8 @@ export function NewProjectPage() {
             <span>외부 배포 · 결제 · 파괴적 작업은 승인 필요</span>
           </Card>
           <Card className="setting-card">
-            <h2>초기 Budget</h2>
-            <p>${budget} · 최대 {maxHours}시간 · 필요하면 균형 상태</p>
+            <h2>초기 예산</h2>
+            <p>${budget} 추정 · 최대 {maxHours}시간 · 모델 호출 {maxModelCalls}회</p>
             <span>예산은 개발 순서를 지시하지 않고 피해 반경만 제한합니다.</span>
           </Card>
         </div>
@@ -170,7 +171,11 @@ export function NewProjectPage() {
               <input type="number" min="1" max="168" value={maxHours} onChange={(event) => setMaxHours(Number(event.target.value) || 1)} aria-label="최대 실행 시간" />
             </div>
             <div className="advanced-setting-row">
-              <div><strong>모델 연결 방식</strong><span>auto는 설정된 실제 모델을 우선 사용하고 없으면 명확한 오류로 대기합니다.</span></div>
+              <div><strong>모델 호출 상한</strong><span>단가가 없는 CLI도 무제한 호출하지 않습니다.</span></div>
+              <input type="number" min="1" max="10000" value={maxModelCalls} onChange={(event) => setMaxModelCalls(Math.max(1, Math.min(10000, Math.floor(Number(event.target.value) || 1))))} aria-label="모델 호출 상한" />
+            </div>
+            <div className="advanced-setting-row">
+              <div><strong>모델 연결 방식</strong><span>auto는 설정된 실제 모델을 우선 사용하고, 연결 실패는 모델 오류로 표시합니다.</span></div>
               <select value={modelProvider} onChange={(event) => setModelProvider(event.target.value as typeof modelProvider)} aria-label="모델 연결 방식"><option value="auto">자동 선택</option><option value="codex-cli">Codex CLI</option><option value="openai-compatible">OpenAI 호환 API</option><option value="deterministic">결정론적 연구 기준선</option></select>
             </div>
             {modelProvider !== "deterministic" && (
@@ -204,9 +209,9 @@ export function NewProjectPage() {
             )}
             <div className="advanced-setting-row">
               <div><strong>샌드박스</strong><span>개발 명령을 격리할 실행 모드입니다.</span></div>
-              <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as typeof sandboxMode)} aria-label="샌드박스 모드"><option value="docker">Docker 격리</option><option value="process">프로세스(허용 목록)</option></select>
+              <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as typeof sandboxMode)} aria-label="샌드박스 모드"><option value="docker">Docker 격리</option><option value="process">프로세스(호스트 실행 · 비격리)</option></select>
             </div>
-            <InlineNotice tone="yellow" title="경계 기본값">외부 side effect와 production 배포는 사람 승인 전까지 차단됩니다.</InlineNotice>
+            <InlineNotice tone="yellow" title="경계 기본값">production 배포 도구는 구현되지 않아 비활성화되어 있습니다. 프로세스 모드는 보안 격리가 아닙니다. 생성된 코드가 호스트 권한으로 실행되므로 비밀 정보가 없는 전용 환경에서만 시험하십시오.</InlineNotice>
           </Card>
         )}
 

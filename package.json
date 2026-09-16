@@ -25,7 +25,8 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "build:desktop:assets": "npm run build && tsx scripts/buildDesktopServer.ts"
+    "build:desktop:assets": "npm run build && tsx scripts/buildDesktopServer.ts",
+    "smoke:codex": "tsx scripts/smokeCodex.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

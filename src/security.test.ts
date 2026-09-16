@@ -78,14 +78,14 @@ describe("action boundary enforcement", () => {
     expect(isAllowedNetworkHost("https://user:password@preview.example.com", "allowlist", ["*.example.com"])).toBe(false);
   });
 
-  it("행동을 현재 Intent에 묶고 P3 외부 작업은 human approval로 전환한다", () => {
+  it("행동을 현재 Intent에 묶고 미구현 production 도구는 노출하지 않는다", () => {
     const candidate = project();
     const staleIntent = validateActionBoundary(candidate, action(candidate, { intentRef: "intent-stale" }), getToolSurface(candidate));
     expect(staleIntent.status).toBe("blocked");
     expect(staleIntent.reason).toContain("intentRef");
     const approvalProject = project({ productionBlocked: false });
     const approval = validateActionBoundary(approvalProject, action(approvalProject, { tool: "deploy.production", params: { url: "https://deploy.example.com" }, riskClass: "P3" }), getToolSurface(approvalProject));
-    expect(approval.status).toBe("human-approval");
+    expect(approval.status).toBe("blocked");
   });
 
   it("secret-shaped 값은 도구 출력에 저장되기 전에 가린다", () => {

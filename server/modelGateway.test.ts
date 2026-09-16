@@ -56,22 +56,22 @@ describe("OpenAI-compatible model gateway", () => {
   it("rejects malformed model output instead of fabricating an action", async () => {
     const { context: packet } = context();
     const response = await mockEndpoint("not-json");
-    const gateway = new OpenAICompatibleModelGateway(response.endpoint, "test-key");
-    await expect(gateway.decide(packet)).rejects.toThrow("invalid JSON ActionEnvelope");
+    const gateway = new OpenAICompatibleModelGateway(response.endpoint, "test-key", "test-model");
+    await expect(gateway.decide(packet)).rejects.toMatchObject({ failure: { code: "INVALID_OUTPUT" } });
   });
 
-  it("returns WAIT and records the provider failure when the HTTP provider is unavailable", async () => {
+  it("returns typed failure and usage when the HTTP provider is unavailable", async () => {
     const { context: packet, runId } = context();
     const response = await mockEndpoint(JSON.stringify({ error: "temporarily unavailable" }), undefined, 503);
     const gateway = new OpenAICompatibleModelGateway(response.endpoint, "test-key", "test-model");
-    await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", rationaleSummary: expect.stringContaining("모델 게이트웨이를 사용할 수 없습니다") });
+    await expect(gateway.decide(packet)).rejects.toMatchObject({ failure: { code: "PROVIDER_UNAVAILABLE", retryable: true } });
     await expect(gateway.usage(runId)).resolves.toMatchObject({ modelVersion: "openai-compatible:test-model", tokens: 0, usageKnown: false, rawRef: expect.stringMatching(/^local-raw:\/\//) });
   });
 
-  it("returns an explicit WAIT when a provider is unavailable", async () => {
+  it("throws typed configuration failure, never an AI WAIT", async () => {
     const { context: packet } = context();
     const gateway = new UnavailableModelGateway("provider가 설정되지 않았습니다.");
-    await expect(gateway.decide(packet)).resolves.toMatchObject({ type: "WAIT", rationaleSummary: expect.stringContaining("모델 게이트웨이를 사용할 수 없습니다") });
+    await expect(gateway.decide(packet)).rejects.toMatchObject({ failure: { code: "PROVIDER_UNAVAILABLE", retryable: false } });
     await expect(gateway.usage("run")).resolves.toMatchObject({ modelVersion: "unavailable", tokens: 0, usageKnown: false });
   });
 

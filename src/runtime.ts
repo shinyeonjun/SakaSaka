@@ -1,3 +1,5 @@
+import { ModelGatewayError, modelFailure } from "./modelFailure";
+import { withInputSchemas } from "./toolContracts";
 import { worldSourceKeys } from "./types";
 import type { EvaluatorResult, ModelUsage, ToolResult } from "./ports";
 import { scoreExperiment, experimentDefinition } from "./experimentHarness";
@@ -120,11 +122,13 @@ export interface RuntimeCycleInput {
   modelUsage?: ModelUsage;
   /** The exact model-facing packet used for this dispatch, including remote retrieval when configured. */
   context?: ContextPacket;
+  /** Internal executor only: approval and boundary were durably checked before dispatch. */
+  dispatchAuthorized?: boolean;
 }
 
 export function makeId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return `${prefix}-${random.slice(0, 8)}`;
+  return `${prefix}-${random}`;
 }
 
 export function getProject(state: AppState, projectId = state.activeProjectId): Project | undefined {
@@ -143,20 +147,19 @@ export function getRun(state: AppState, projectId: string): Run | undefined {
 
 export function getWorldSnapshot(state: AppState, projectId: string): WorldSnapshot | undefined {
   return state.worldSnapshots
-    .filter((snapshot) => snapshot.projectId === projectId)
-    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt) || b.id.localeCompare(a.id))[0];
+    .filter((snapshot) => snapshot.projectId === projectId && !snapshot.superseded).at(-1);
 }
 
 export function getProjectObservations(state: AppState, projectId: string): Observation[] {
   return state.observations
     .filter((observation) => observation.projectId === projectId)
-    .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt) || b.id.localeCompare(a.id));
+    .reverse().sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
 }
 
 export function getProjectContexts(state: AppState, projectId: string): ContextPacket[] {
   return state.contexts
     .filter((context) => context.projectId === projectId)
-    .sort((a, b) => Date.parse(b.assembledAt) - Date.parse(a.assembledAt) || b.id.localeCompare(a.id));
+    .reverse().sort((a, b) => Date.parse(b.assembledAt) - Date.parse(a.assembledAt));
 }
 
 export function getActivePolicy(state: AppState, projectId: string): Policy | undefined {
@@ -183,7 +186,7 @@ export function getProjectRetrievalEntries(state: AppState, projectId: string): 
 
 export function getMatchingApprovalGrant(state: AppState, projectId: string, action: ActionEnvelope, at = Date.now()): import("./types").ApprovalGrant | undefined {
   return state.approvalGrants
-    .filter((grant) => grant.projectId === projectId && grant.singleUse && !grant.consumedAt && Date.parse(grant.expiresAt) > at && grant.tool === action.tool && grant.actionFingerprint === actionFingerprint(action) && grant.paramsFingerprint === paramsFingerprint(action))
+    .filter((grant) => grant.projectId === projectId && grant.singleUse && !grant.consumedAt && Date.parse(grant.expiresAt) > at && grant.tool === action.tool && grant.actionFingerprint === actionFingerprint(action) && grant.paramsFingerprint === paramsFingerprint(action) && grant.paramsCanonical === canonicalActionParams(action) && grant.intentRef === action.intentRef)
     .sort((left, right) => Date.parse(right.issuedAt) - Date.parse(left.issuedAt) || right.id.localeCompare(left.id))[0];
 }
 
@@ -375,7 +378,7 @@ function updateRun(state: AppState, run: Run): AppState {
 }
 
 function withWorldSnapshot(state: AppState, snapshot: WorldSnapshot): AppState {
-  const remaining = state.worldSnapshots.filter((candidate) => candidate.projectId !== snapshot.projectId);
+  const remaining = state.worldSnapshots.filter((candidate) => candidate.id !== snapshot.id);
   return { ...state, worldSnapshots: [...remaining, snapshot] };
 }
 
@@ -412,7 +415,14 @@ function activeIncidentRefs(state: AppState, projectId: string): string[] {
   const active = new Set<string>();
   for (const event of projectEvents) {
     if (event.type === "RUNTIME_ERROR") active.add(event.id);
-    if (event.type === "EVIDENCE_RECORDED" && event.evidenceIds?.some((evidenceId) => state.evidence.find((item) => item.id === evidenceId)?.verdict === "PASS")) active.clear();
+    if (event.type === "EVIDENCE_RECORDED" && event.evidenceIds?.some((evidenceId) => state.evidence.find((item) => item.id === evidenceId)?.verdict === "PASS")) {
+      const successful = state.actions.find((item) => item.id === event.actionId);
+      for (const id of active) {
+        const incident = projectEvents.find((item) => item.id === id);
+        const failed = state.actions.find((item) => item.id === incident?.actionId);
+        if (successful?.tool && failed?.tool === successful.tool && canonicalActionParams(failed) === canonicalActionParams(successful)) active.delete(id);
+      }
+    }
   }
   return [...active].slice(-8);
 }
@@ -503,7 +513,7 @@ export function observationsFromSnapshot(snapshot: WorldSnapshot, idPrefix = "ob
 }
 
 export function getToolSurface(project: Project): ToolCapability[] {
-  return [
+  return withInputSchemas([
     { name: "repo.read", description: "실제 workspace의 git status와 diff를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
     { name: "workspace.list", description: "workspace 내부의 bounded file tree를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
     { name: "workspace.read", description: "workspace 내부 text file을 line range로 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
@@ -518,7 +528,7 @@ export function getToolSurface(project: Project): ToolCapability[] {
     { name: "process.stop", description: "workspace/run에 귀속된 managed process를 종료합니다.", riskClass: "P1", reversible: true, requiresNetwork: false, sideEffect: true, enabled: project.settings.localActions, toolVersion: TOOL_VERSION },
     { name: "database.read", description: "연결된 DB 상태를 읽습니다.", riskClass: "P0", reversible: true, requiresNetwork: false, sideEffect: false, enabled: true, toolVersion: TOOL_VERSION },
     { name: "deploy.production", description: "production side effect를 실행합니다.", riskClass: "P3", reversible: false, requiresNetwork: true, sideEffect: true, enabled: !project.settings.productionBlocked, toolVersion: TOOL_VERSION },
-  ];
+  ]);
 }
 
 export function assembleContext(state: AppState, projectId: string, assembledAt = nowIso()): ContextPacket | undefined {
@@ -530,8 +540,8 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
   const policy = getActivePolicy(state, projectId);
   const openItems = getOpenHumanItems(state, projectId);
   const observations = getProjectObservations(state, projectId).slice(0, 18);
-  const recentActions = state.actions.filter((action) => action.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 8);
-  const recentEvidence = state.evidence.filter((item) => item.projectId === projectId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 12);
+  const recentActions = state.actions.filter((action) => action.projectId === projectId).reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 8);
+  const recentEvidence = state.evidence.filter((item) => item.projectId === projectId).reverse().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 12);
   const activeGrants = state.approvalGrants.filter((grant) => grant.projectId === projectId && !grant.consumedAt && Date.parse(grant.expiresAt) > Date.now());
   const activeProcesses = state.processes.filter((process) => process.projectId === projectId && process.runId === run.id && (process.status === "starting" || process.status === "running")).slice(0, 16);
   const preliminary: ContextPacket = {
@@ -570,12 +580,14 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
       continuingScope: [...item.continuingScope],
     })),
     relevantExperienceViews: [],
+    humanDecisionViews: getProjectHumanItems(state, projectId).filter((item) => !isOpenHumanItem(item)).slice(0, 32).map((item) => ({ id: item.id, kind: item.kind, status: item.status, title: redactSecretLikeText(item.title), answer: item.answerLabel ?? item.answer, updatedAt: item.updatedAt, blockingScope: item.blockingScope })),
+    lastModelFailure: run.lastModelFailure,
     recentActionViews: recentActions.map((action) => ({
       id: action.id,
       type: action.type,
       status: action.status,
       tool: action.tool,
-      params: action.params,
+      params: action.params ? Object.fromEntries(Object.entries(action.params).map(([key, value]) => [key, typeof value === "string" && value.length > 8_000 ? `${value.slice(0, 8_000)}\n[이전 행동 입력 생략: 원본 파일은 workspace.read로 다시 확인]` : value])) : undefined,
       rationaleSummary: redactSecretLikeText(action.rationaleSummary),
       intentRef: action.intentRef,
       worldCursor: action.worldCursor,
@@ -598,6 +610,7 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
     boundary: {
       remainingBudget: Math.max(0, Number((project.settings.budgetLimit - project.budgetSpent).toFixed(2))),
       maxHours: project.settings.maxHours,
+      remainingModelCalls: Math.max(0, (project.settings.maxModelCalls ?? 200) - state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length),
       networkPolicy: project.settings.networkPolicy,
       productionBlocked: project.settings.productionBlocked,
       openApprovalRefs: openItems.filter((item) => item.kind === "APPROVAL").map((item) => item.id),
@@ -796,6 +809,7 @@ export function createProject(
     settings: {
       budgetLimit: positiveSetting(settings.budgetLimit, 30, 1_000_000),
       maxHours: positiveSetting(settings.maxHours, 12, 168),
+      maxModelCalls: positiveSetting(settings.maxModelCalls, 200, 10_000),
       localActions: settings.localActions ?? true,
       requireExternalApproval: settings.requireExternalApproval ?? true,
       productionBlocked: settings.productionBlocked ?? true,
@@ -918,7 +932,7 @@ export function isHumanActionAllowed(item: HumanItem, action: HumanAction, answe
   if (item.status !== "OPEN" && item.status !== "DEFERRED") return false;
   if (!humanActionNames.includes(action)) return false;
   if (action === "defer") return item.status === "OPEN";
-  if (item.kind === "QUESTION") return action === "answer" && Boolean(answer?.trim()) && (item.options.length === 0 || item.options.some((option) => option.id === answer));
+  if (item.kind === "QUESTION") return action === "answer" && Boolean(answer?.trim()) && (item.options.length === 0 || item.responseMode === "choice-and-text" || item.options.some((option) => option.id === answer));
   if (item.kind === "APPROVAL") return action === "approve" || action === "reject";
   return action === "acknowledge" || action === "reject";
 }
@@ -969,6 +983,7 @@ export function resolveHumanItem(
         projectId: item.projectId,
         approvalItemId: item.id,
         originalActionRef: approvedAction.id,
+        intentRef: approvedAction.intentRef,
         actionFingerprint: actionFingerprint(approvedAction),
         tool: approvedAction.tool,
         paramsFingerprint: paramsFingerprint(approvedAction),
@@ -1117,15 +1132,15 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   } : undefined;
   const toolCost = typeof toolResult?.cost === "number" && Number.isFinite(toolResult.cost) ? Math.max(0, toolResult.cost) : 0;
   const modelCost = typeof modelUsage?.cost === "number" && Number.isFinite(modelUsage.cost) ? Math.max(0, modelUsage.cost) : 0;
-  const cost = Number((toolCost + modelCost).toFixed(2));
-  if (project.budgetSpent + cost > project.settings.budgetLimit) {
+  const cost = Number((toolCost + modelCost).toFixed(6));
+  if (!toolResult && project.budgetSpent + cost > project.settings.budgetLimit) {
     return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "budget hard stop · 추가 실행 비용이 상한을 초과");
   }
-  if (Date.parse(run.leaseExpiresAt) <= Date.now()) {
+  if (!toolResult && Date.parse(run.leaseExpiresAt) <= Date.now()) {
     return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "lease expired · 새 wake가 필요");
   }
   const startedAt = Date.parse(run.startedAt);
-  if (Number.isFinite(startedAt) && Date.now() - startedAt > project.settings.maxHours * 60 * 60 * 1000) {
+  if (!toolResult && Number.isFinite(startedAt) && Date.now() - startedAt > project.settings.maxHours * 60 * 60 * 1000) {
     return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "wall time hard stop · 최대 실행 시간이 초과");
   }
   const nextCycle = run.cycleCount + 1;
@@ -1148,12 +1163,12 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   }
   let boundaryDecision: ReturnType<typeof validateActionBoundary> | undefined;
   const matchingApprovalGrant = input.action ? getMatchingApprovalGrant(observedState, projectId, input.action) : undefined;
-  if (input.action) {
+  if (input.action && !input.dispatchAuthorized) {
     boundaryDecision = validateActionBoundary(project, input.action, getToolSurface(project), estimateActionCost(input.action), matchingApprovalGrant);
     if (boundaryDecision.status !== "allowed") return recordBoundaryDecision(observedState, projectId, input.action, boundaryDecision.status, boundaryDecision.reason, context.id);
   }
   if (input.action && input.action.type !== "ACT") return recordNonToolAction(observedState, projectId, input.action, context.id);
-  const defaultSelected = selectNextAction(observedState, projectId, context);
+  const defaultSelected = input.action ? undefined : selectNextAction(observedState, projectId, context);
   const selected = input.action ? {
     ...(defaultSelected ?? {
       id: makeId("candidate"),
@@ -1314,7 +1329,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   next = withWorldSnapshot(next, nextWorld);
   next = {
     ...next,
-    observations: [...next.observations, ...newToolObservations, ...observationsFromSnapshot(nextWorld, `${actionId}-observation`)],
+    observations: [...next.observations, ...newToolObservations, ...(toolResult ? [] : observationsFromSnapshot(nextWorld, `${actionId}-observation`))],
     relations: [
       ...next.relations,
       { id: makeId("relation"), projectId, fromId: context.id, relationType: "derived-from", toId: actionId, createdAt },
@@ -1341,8 +1356,8 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     projectId,
     runId: run.id,
     tokens: (previousLedger?.tokens ?? 0) + (typeof modelUsage?.tokens === "number" && Number.isFinite(modelUsage.tokens) ? Math.max(0, modelUsage.tokens) : 0),
-    modelCost: Number(((previousLedger?.modelCost ?? 0) + modelCost).toFixed(2)),
-    wallTimeMs: (previousLedger?.wallTimeMs ?? 0) + (toolResult?.wallTimeMs ?? modelUsage?.latencyMs ?? 0),
+    modelCost: Number(((previousLedger?.modelCost ?? 0) + modelCost).toFixed(6)),
+    wallTimeMs: (previousLedger?.wallTimeMs ?? 0) + ((toolResult?.wallTimeMs ?? 0) + (modelUsage?.latencyMs ?? 0)),
     toolCalls: (previousLedger?.toolCalls ?? 0) + (toolResult ? 1 : 0),
     sandboxSeconds: (previousLedger?.sandboxSeconds ?? 0) + (toolResult ? Math.max(0, Math.ceil((toolResult.wallTimeMs ?? 0) / 1000)) : 0),
     budgetLimit: project.settings.budgetLimit,
@@ -1355,7 +1370,12 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
 
   const hasExecutionFailure = cycleHasFailure;
   const hasVerificationGap = cycleIsUncertain;
-  const meaningfulProgress = toolResult?.progress === "meaningful" || (toolResult?.changedPaths?.length ?? 0) > 0;
+  const readOnly = ["workspace.list", "workspace.read", "repo.read", "database.read", "process.status"].includes(toolResult?.tool ?? "");
+  const contentViews = (toolResult?.observations ?? []).map((item) => `${item.source}|${item.compactView}`);
+  const hasNewObservation = contentViews.some((view) => !observedState.observations.some((old) => old.projectId === projectId && `${old.source}|${old.compactView}` === view));
+  const meaningfulProgress = readOnly
+    ? hasNewObservation || (!contentViews.length && Boolean(toolResult?.output) && !observedState.evidence.some((old) => old.projectId === projectId && old.source === firstEvidence?.source && old.summary === firstEvidence?.summary))
+    : (toolResult?.changedPaths?.length ?? 0) > 0 || toolResult?.progress === "meaningful" || (evaluationVerdict === "PASS" && Boolean(firstEvidence) && !observedState.evidence.some((old) => old.projectId === projectId && old.source === firstEvidence?.source && old.summary === firstEvidence?.summary));
   const failureSignature = hasExecutionFailure || hasVerificationGap
     ? `${toolResult?.tool ?? selected.tool ?? "none"}|${toolResult?.status ?? "none"}|${evaluationVerdict}|${toolResult?.blockedReason ? "blocked" : "execution"}`
     : undefined;
@@ -1365,13 +1385,12 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   const noProgressCycles = meaningfulProgress ? 0 : run.noProgressCycles + 1;
   const failureThreshold = positiveSetting(project.settings.failureThreshold, 3, 32);
   const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
-  const thresholdStalled = consecutiveFailures >= failureThreshold || (hasVerificationGap && noProgressCycles >= noProgressThreshold);
+  const hardLimitReached = project.budgetSpent + cost >= project.settings.budgetLimit || Date.parse(run.leaseExpiresAt) <= Date.now() || Date.now() - Date.parse(run.startedAt) >= project.settings.maxHours * 60 * 60 * 1000;
+  const thresholdStalled = hardLimitReached || consecutiveFailures >= failureThreshold || noProgressCycles >= noProgressThreshold;
   const hasBlockingHumanItem = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
   const nextStatus: RuntimeStatus = thresholdStalled
     ? "STALLED"
-    : hasBlockingHumanItem
-      ? humanBoundaryStatus(next, projectId)
-      : "ACTIVE";
+    : "ACTIVE";
   const nextPhase: RuntimePhase = "sleep";
   const updatedRun: Run = {
     ...run,
@@ -1383,6 +1402,9 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     noProgressCycles,
     lastMeaningfulProgressAt: meaningfulProgress ? createdAt : run.lastMeaningfulProgressAt,
     lastFailureSignature: failureSignature,
+    lastModelFailure: undefined,
+    retryAfter: undefined,
+    stopReason: nextStatus === "STALLED" ? (hardLimitReached ? "실행 예산 또는 시간이 소진되었습니다." : consecutiveFailures >= failureThreshold ? `도구 실패가 ${consecutiveFailures}회 반복되었습니다: ${cycleEvidence.summary}` : `새로운 관찰이나 상태 변화가 ${noProgressCycles}회 연속 없었습니다.`) : undefined,
     activeProcessIds: toolResult?.process
       ? toolResult.process.status === "running" || toolResult.process.status === "starting"
         ? [...new Set([...run.activeProcessIds, toolResult.process.id])]
@@ -1398,7 +1420,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     status: nextStatus,
     currentActionId: actionId,
     updatedAt: createdAt,
-    budgetSpent: Math.min(project.settings.budgetLimit, Number((project.budgetSpent + cost).toFixed(2))),
+    budgetSpent: Number((project.budgetSpent + cost).toFixed(6)),
     nextReviewAt: undefined,
     metrics: {
       ...project.metrics,
@@ -1414,7 +1436,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
     type: "RUN_STATE_CHANGED",
     actor: "system",
     summary: `${nextStatus} · cycle ${nextCycle} complete`,
-    detail: nextStatus === "WAITING" ? "blocking scope는 human decision을 기다리고, 독립 작업은 보존됩니다." : nextStatus === "STALLED" ? `실패 evidence를 보존했습니다 · consecutiveFailures=${consecutiveFailures}` : "ACT 결과를 반영했습니다. project는 다음 cognition cycle을 위해 ACTIVE로 유지됩니다.",
+    detail: nextStatus === "STALLED" ? `실패 evidence를 보존했습니다 · consecutiveFailures=${consecutiveFailures}` : "ACT 결과를 반영했습니다. project는 다음 cognition cycle을 위해 ACTIVE로 유지됩니다.",
     createdAt,
     runId: run.id,
   });
@@ -1511,7 +1533,7 @@ export function recordBoundaryDecision(
     completedAt: createdAt,
     boundaryDecision: decision,
   };
-  let next: AppState = { ...state, actions: [...state.actions, action] };
+  let next: AppState = accountModelUsage({ ...state, actions: [...state.actions, action] }, projectId, modelUsage);
   next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${safeEnvelope.type} blocked at boundary`, detail: safeReason, actionId, runId: run.id, createdAt, payload: modelUsagePayload(modelUsage) });
   next = appendEvent(next, { projectId, type: "TOOL_RESULT", actor: "system", summary: `BLOCKED · ${safeEnvelope.tool ?? "side effect"}`, detail: safeReason, actionId, runId: run.id, createdAt });
   let nextStatus: RuntimeStatus = "STALLED";
@@ -1551,7 +1573,7 @@ export function recordBoundaryDecision(
   }
   const noProgressCycles = duplicateApproval ? run.noProgressCycles + 1 : 0;
   if (duplicateApproval && noProgressCycles >= positiveSetting(project.settings.noProgressThreshold, 5, 128)) nextStatus = "STALLED";
-  next = updateProject(next, { ...project, status: nextStatus, updatedAt: createdAt, currentActionId: actionId, nextReviewAt: undefined });
+  next = updateProject(next, { ...(getProject(next, projectId) ?? project), status: nextStatus, updatedAt: createdAt, currentActionId: actionId, nextReviewAt: undefined });
   next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, noProgressCycles, lastMeaningfulProgressAt: duplicateApproval ? run.lastMeaningfulProgressAt : createdAt, stopReason: nextStatus === "STALLED" ? (decision === "blocked" ? safeReason : `repeated boundary request made no progress for ${noProgressCycles} cycles`) : undefined });
   next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · boundary enforcement`, detail: safeReason, runId: run.id, createdAt });
   next = refreshHumanWorld(next, projectId, createdAt);
@@ -1583,7 +1605,7 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     contextId,
     createdAt,
   };
-  let next: AppState = { ...state, actions: [...state.actions, action] };
+  let next: AppState = accountModelUsage({ ...state, actions: [...state.actions, action] }, projectId, modelUsage);
   const duplicateHumanItem = action.type === "QUESTION" || action.type === "IDEA" || action.type === "CONCERN"
     ? state.humanItems.find((item) => item.projectId === projectId && item.kind === action.type && isOpenHumanItem(item) && item.actionRef !== undefined && state.actions.some((existing) => existing.id === item.actionRef && actionFingerprint(existing) === actionFingerprint(safeEnvelope)))
     : undefined;
@@ -1593,9 +1615,6 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   next = appendEvent(next, { projectId, type: "CONTEXT_ASSEMBLED", actor: "agent", summary: "Intent + World + boundary context assembled", detail: contextId ? `context=${contextId}` : "context was not persisted by the caller", actionId, runId: run.id, createdAt });
   next = appendEvent(next, { projectId, type: "MODEL_TURN", actor: "agent", summary: `${action.type} selected from the current context`, detail: "non-tool action protocol; no fixed role or workflow was imposed", actionId, runId: run.id, createdAt, modelVersion: modelUsage?.modelVersion ?? MODEL_VERSION, payload: modelUsagePayload(modelUsage) });
   next = appendEvent(next, { projectId, type: "ACTION_SELECTED", actor: "agent", summary: `${action.type} · ${action.rationaleSummary}`, detail: "model output is a proposal; no tool side effect was dispatched", actionId, runId: run.id, createdAt });
-  if (action.type === "WAIT" && /model gateway unavailable|모델 게이트웨이를 사용할 수 없습니다/i.test(action.rationaleSummary)) {
-    next = appendEvent(next, { projectId, type: "RUNTIME_ERROR", actor: "system", summary: "모델 provider를 사용할 수 없음 · WAIT 기록", detail: action.rationaleSummary, actionId, runId: run.id, createdAt });
-  }
   if (action.type === "QUESTION" || action.type === "IDEA" || action.type === "CONCERN") {
     const kind = action.type;
     const configuredOptions = Array.isArray(action.params?.options) ? action.params.options.filter((option): option is string => typeof option === "string").slice(0, 16) : [];
@@ -1603,7 +1622,7 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     const configuredBlockingScope = Array.isArray(action.params?.blockingScope) ? action.params.blockingScope.filter((scope): scope is string => typeof scope === "string").slice(0, 16) : undefined;
     const configuredContinuingScope = Array.isArray(action.params?.continuingScope) ? action.params.continuingScope.filter((scope): scope is string => typeof scope === "string").slice(0, 16) : undefined;
     const blockingScope = kind === "QUESTION" ? configuredBlockingScope ?? (typeof action.params?.scope === "string" ? [action.params.scope] : ["intent-decision"]) : [];
-    const continuingScope = configuredContinuingScope ?? ["독립적인 관찰", "검증 계획"];
+    const continuingScope = configuredContinuingScope ?? [];
     const linkedContext = contextId ? state.contexts.find((context) => context.id === contextId) : undefined;
     const linkedEvidenceRefs = (linkedContext?.recentEvidenceViews ?? []).map((view) => view.id).filter((id) => state.evidence.some((item) => item.id === id && item.projectId === projectId));
     if (!duplicateHumanItem) {
@@ -1635,28 +1654,17 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
   }
   next = refreshHumanWorld(next, projectId, createdAt);
   const hasBlocking = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
-  const providerUnavailable = action.type === "WAIT" && isProviderUnavailableReason(action.rationaleSummary);
-  const providerFailureSignature = providerUnavailable ? "model-provider-unavailable" : undefined;
-  const consecutiveFailures = providerUnavailable
-    ? (run.lastFailureSignature === providerFailureSignature ? run.consecutiveFailures : 0) + 1
-    : run.consecutiveFailures;
-  const noProgressCycles = providerUnavailable ? run.noProgressCycles + 1 : action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
+  const consecutiveFailures = 0;
+  const noProgressCycles = action.type === "WAIT" || createdHumanItem ? 0 : run.noProgressCycles + 1;
   const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
-  const failureThreshold = positiveSetting(project.settings.failureThreshold, 3, 32);
-  const nextStatus: RuntimeStatus = providerUnavailable
-    ? consecutiveFailures >= failureThreshold ? "STALLED" : "ACTIVE"
-    : action.type === "WAIT"
-      ? hasBlocking ? humanBoundaryStatus(next, projectId) : "EQUILIBRIUM"
-    : noProgressCycles >= noProgressThreshold
-      ? "STALLED"
-      : hasBlocking ? humanBoundaryStatus(next, projectId) : "ACTIVE";
+  const nextStatus: RuntimeStatus = action.type === "WAIT" ? (hasBlocking ? "WAITING" : "EQUILIBRIUM") : noProgressCycles >= noProgressThreshold ? "STALLED" : "ACTIVE";
   const experience: Experience = {
     id: makeId("experience"),
     projectId,
     situation: `context ${contextId ?? "unlinked"} · world cursor ${world.cursorEventId}`,
     decision: action.rationaleSummary,
     action: `${action.type} recorded without tool dispatch`,
-    outcome: providerUnavailable ? "model provider unavailable; no side effect was dispatched" : nextStatus === "WAITING" ? "human boundary opened for the affected scope" : nextStatus === "EQUILIBRIUM" ? "model selected WAIT; signal-based wake remains enabled" : "non-tool decision recorded while independent work remains active",
+    outcome: nextStatus === "WAITING" ? "human boundary opened for the affected scope" : nextStatus === "EQUILIBRIUM" ? "model selected WAIT; signal-based wake remains enabled" : "non-tool decision recorded while independent work remains active",
     evidenceIds: [],
     cost: 0,
     risk: action.riskClass ?? "P0",
@@ -1678,10 +1686,10 @@ export function recordNonToolAction(state: AppState, projectId: string, actionEn
     retrievalIndex: rebuildRetrievalIndex({ ...next, experiences }, projectId),
     relations: [...next.relations, { id: makeId("relation"), projectId, fromId: experience.id, relationType: "derived-from", toId: actionId, createdAt }],
   };
-  const updatedProject: Project = { ...project, status: nextStatus, currentActionId: actionId, updatedAt: createdAt, nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined };
+  const updatedProject: Project = { ...(getProject(next, projectId) ?? project), status: nextStatus, currentActionId: actionId, updatedAt: createdAt, nextReviewAt: nextStatus === "EQUILIBRIUM" ? new Date(Date.now() + (project.settings.reviewIntervalMinutes ?? 360) * 60_000).toISOString() : undefined };
   next = updateProject(next, updatedProject);
-  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, consecutiveFailures, lastFailureSignature: providerFailureSignature ?? run.lastFailureSignature, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: nextStatus === "STALLED" ? providerUnavailable ? action.rationaleSummary : `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
-  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: providerUnavailable ? nextStatus === "STALLED" ? "모델 provider 실패 한도에 도달했습니다. 설정을 확인한 뒤 다시 깨울 수 있습니다." : `모델 provider를 사용할 수 없어 재시도합니다 · ${consecutiveFailures}/${failureThreshold}` : action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
+  next = updateRun(next, { ...run, status: nextStatus, phase: "sleep", cycleCount: run.cycleCount + 1, lastCycleAt: createdAt, consecutiveFailures, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, noProgressCycles, lastMeaningfulProgressAt: createdHumanItem ? createdAt : run.lastMeaningfulProgressAt, stopReason: nextStatus === "STALLED" ? `non-tool action made no new progress for ${noProgressCycles} cycles` : undefined, leaseExpiresAt: nextStatus === "STALLED" ? run.leaseExpiresAt : nextLease(project, Date.parse(createdAt)) });
+  next = appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${nextStatus} · model action recorded`, detail: action.type === "WAIT" ? "no valuable action now; signal-based wake remains enabled" : "human side-channel updated without stopping independent work", runId: run.id, createdAt });
   if (nextStatus === "EQUILIBRIUM") next = appendEvent(next, { projectId, type: "EQUILIBRIUM_ENTERED", actor: "system", summary: "EQUILIBRIUM · no tool dispatch required", detail: "새 signal, human answer, incident, 또는 scheduled review가 오면 다시 wake합니다.", runId: run.id, createdAt });
   return moveWorldCursor(next, projectId, next.events.at(-1)?.id ?? actionId, createdAt);
 }
@@ -1720,7 +1728,9 @@ function setRuntimeStatus(state: AppState, projectId: string, status: RuntimeSta
   const updatedAt = nowIso();
   const leaseExpiresAt = status === "ACTIVE" ? nextLease(project, Date.parse(updatedAt)) : status === "KILLED" ? updatedAt : run.leaseExpiresAt;
   let next = updateProject(state, { ...project, status, updatedAt, nextReviewAt: status === "EQUILIBRIUM" ? project.nextReviewAt : undefined });
-  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt, stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined });
+  next = updateRun(next, { ...run, status, phase, lastCycleAt: updatedAt, leaseExpiresAt, stopReason: status === "KILLED" || status === "STALLED" ? detail : undefined,
+    ...(status === "ACTIVE" ? { ...(run.execution && Date.parse(run.execution.expiresAt) <= Date.now() ? { execution: undefined } : {}), consecutiveFailures: 0, noProgressCycles: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined } : {}),
+  });
   return appendEvent(next, {
     projectId,
     type: "RUN_STATE_CHANGED",
@@ -1743,6 +1753,54 @@ export function wakeProject(state: AppState, projectId: string, trigger = "signa
 export const stallProject = (state: AppState, projectId: string, reason = "반복 실패 또는 진전 없음") => setRuntimeStatus(state, projectId, "STALLED", "sleep", reason);
 export const killProject = (state: AppState, projectId: string) => setRuntimeStatus(state, projectId, "KILLED", "sleep", "Run 강제 종료 · lease revoked");
 
+export function accountModelUsage(state: AppState, projectId: string, usage?: ModelUsage): AppState {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  if (!project || !run || !usage) return state;
+  const cost = Number.isFinite(usage.cost) ? Math.max(0, usage.cost) : 0;
+  const previous = getResourceLedger(state, projectId, run.id);
+  const updated: ResourceLedger = {
+    id: previous?.id ?? makeId("ledger"), projectId, runId: run.id,
+    tokens: (previous?.tokens ?? 0) + (Number.isFinite(usage.tokens) ? Math.max(0, usage.tokens) : 0),
+    modelCost: Number(((previous?.modelCost ?? 0) + cost).toFixed(6)),
+    wallTimeMs: (previous?.wallTimeMs ?? 0) + Math.max(0, usage.latencyMs || 0),
+    toolCalls: previous?.toolCalls ?? 0, sandboxSeconds: previous?.sandboxSeconds ?? 0,
+    budgetLimit: project.settings.budgetLimit, updatedAt: nowIso(),
+  };
+  return { ...updateProject(state, { ...project, budgetSpent: Number((project.budgetSpent + cost).toFixed(6)) }), resourceLedger: previous ? replaceById(state.resourceLedger, updated) : [...state.resourceLedger, updated] };
+}
+
+export function executionBlockReason(state: AppState, projectId: string): string | undefined {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  if (!project || !run) return "프로젝트 또는 실행을 찾을 수 없습니다.";
+  if (project.status !== "ACTIVE" && project.status !== "WAITING") return `실행 상태: ${project.status}`;
+  if (state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length >= (project.settings.maxModelCalls ?? 200)) return "최대 모델 호출 횟수에 도달했습니다.";
+  if (project.budgetSpent >= project.settings.budgetLimit) return "실행 예산이 소진되었습니다.";
+  if (!Number.isFinite(Date.parse(run.leaseExpiresAt)) || Date.parse(run.leaseExpiresAt) <= Date.now()) return "실행 허가 시간이 만료되었습니다.";
+  if (Date.now() - Date.parse(run.startedAt) >= project.settings.maxHours * 3_600_000) return "최대 실행 시간이 지났습니다.";
+  return undefined;
+}
+
+export function recordModelFailure(state: AppState, projectId: string, error: ModelGatewayError, contextId?: string): AppState {
+  const project = getProject(state, projectId);
+  const run = getRun(state, projectId);
+  if (!project || !run) return state;
+  const failure = { ...error.failure, message: redactSecretLikeText(error.message).slice(0, 4_000) };
+  const createdAt = nowIso();
+  let next = accountModelUsage(state, projectId, error.usage);
+  next = appendEvent(next, { projectId, type: "MODEL_FAILED", actor: "system", summary: `모델 호출 실패 · ${failure.code}`, detail: failure.message, runId: run.id, createdAt, modelVersion: error.usage?.modelVersion, payload: { ...modelUsagePayload(error.usage), errorCode: failure.code, retryable: failure.retryable, ...(failure.rawRef ? { rawRef: failure.rawRef } : {}), ...(contextId ? { contextId } : {}) } });
+  if (["PAUSED", "KILLED"].includes(project.status) || failure.code === "CANCELLED") return next;
+  const count = (run.lastFailureSignature === `model:${failure.code}` ? run.consecutiveFailures : 0) + 1;
+  const threshold = positiveSetting(project.settings.failureThreshold, 3, 32);
+  const exhausted = (getProject(next, projectId)?.budgetSpent ?? 0) >= project.settings.budgetLimit;
+  const status: RuntimeStatus = !failure.retryable || exhausted || count >= threshold ? "STALLED" : "ACTIVE";
+  const retryAfter = status === "ACTIVE" ? new Date(Date.now() + Math.min(60_000, 1_000 * 2 ** (count - 1))).toISOString() : undefined;
+  next = updateProject(next, { ...getProject(next, projectId)!, status, updatedAt: createdAt, nextReviewAt: undefined });
+  next = updateRun(next, { ...run, status, phase: "sleep", lastCycleAt: createdAt, cycleCount: run.cycleCount + 1, consecutiveFailures: count, noProgressCycles: run.noProgressCycles + 1, lastFailureSignature: `model:${failure.code}`, lastModelFailure: failure, retryAfter, stopReason: status === "STALLED" ? failure.message : undefined });
+  return appendEvent(next, { projectId, type: "RUN_STATE_CHANGED", actor: "system", summary: `${status} · 모델 오류 ${count}/${threshold}`, detail: failure.message, runId: run.id, createdAt });
+}
+
 export function recordRuntimeFailure(state: AppState, projectId: string, phase: RuntimePhase, reason: string): AppState {
   const detail = redactSecretLikeText(reason).replace(/\s+/g, " ").trim().slice(0, 500) || "runtime failure";
   const project = getProject(state, projectId);
@@ -1751,7 +1809,7 @@ export function recordRuntimeFailure(state: AppState, projectId: string, phase: 
   const signature = `${phase}|${detail.toLowerCase().replace(/\d+/g, "#").slice(0, 160)}`;
   const consecutiveFailures = (run.lastFailureSignature === signature ? run.consecutiveFailures : 0) + 1;
   const threshold = positiveSetting(project.settings.failureThreshold, 3, 32);
-  const nextStatus: RuntimeStatus = consecutiveFailures >= threshold ? "STALLED" : "ACTIVE";
+  const nextStatus: RuntimeStatus = consecutiveFailures >= threshold || run.noProgressCycles + 1 >= positiveSetting(project.settings.noProgressThreshold, 5, 128) ? "STALLED" : "ACTIVE";
   const updatedAt = nowIso();
   let next = updateRun(state, { ...run, status: nextStatus, phase: "sleep", lastCycleAt: updatedAt, consecutiveFailures, lastFailureSignature: signature, noProgressCycles: run.noProgressCycles + 1, stopReason: nextStatus === "STALLED" ? `${phase} failed · ${detail}` : undefined, leaseExpiresAt: nextStatus === "ACTIVE" ? nextLease(project, Date.parse(updatedAt)) : run.leaseExpiresAt });
   next = updateProject(next, { ...project, status: nextStatus, updatedAt, currentActionId: project.currentActionId, nextReviewAt: undefined });
@@ -1902,7 +1960,7 @@ export function eventTone(type: EventType): string {
   if (type === "WORLD_CHANGED" || type === "OBSERVATION_REFRESHED") return "purple";
   if (type === "WORKSPACE_CHANGED" || type === "PROCESS_STARTED" || type === "PROCESS_EXITED") return "mint";
   if (type === "APPROVAL_GRANT_ISSUED" || type === "APPROVAL_GRANT_CONSUMED" || type === "JOB_ENQUEUED") return "blue";
-  if (type === "GAP_FOUND" || type === "RUNTIME_ERROR") return "orange";
+  if (type === "GAP_FOUND" || type === "RUNTIME_ERROR" || type === "MODEL_FAILED") return "orange";
   if (type === "EXPERIMENT_CREATED" || type === "EXPERIMENT_STARTED" || type === "POLICY_CHANGED") return "purple";
   if (type === "RUN_STATE_CHANGED") return "yellow";
   return "neutral";
@@ -1916,6 +1974,9 @@ export function eventLabel(type: EventType): string {
     OBSERVE: "관찰",
     CONTEXT_ASSEMBLED: "컨텍스트",
     MODEL_TURN: "판단",
+    MODEL_FAILED: "모델 오류",
+    CYCLE_PHASE: "실행 단계",
+    CYCLE_DISCARDED: "이전 결정 폐기",
     RUNTIME_ERROR: "오류",
     GAP_FOUND: "공백",
     TOOL_CALLED: "도구",

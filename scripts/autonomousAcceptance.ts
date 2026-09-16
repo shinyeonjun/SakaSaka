@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createProject, getProject, getRun } from "../src/runtime";
 import { executeLocalCycle } from "../server/localRuntime";
-import { stopManagedProcess } from "../server/processManager";
+import { stopManagedProcess, stopAllManagedProcesses } from "../server/processManager";
 import type { ActionEnvelope, AppState, ContextPacket } from "../src/types";
 
 function emptyState(): AppState {
@@ -81,7 +81,7 @@ function greenfieldAction(context: ContextPacket, _index: number): ActionEnvelop
     const port = Number(process.env.ACCEPTANCE_PREVIEW_PORT ?? "0");
     return action(context, "ACT", "process.start", port > 0 ? { argv: ["node", "server.js"], port } : { argv: ["node", "server.js"] }, "P1");
   }
-  if (!context.recentEvidenceViews?.some((item) => item.source.includes("playwright:local"))) return action(context, "ACT", "browser.playwright", { url: `http://127.0.0.1:${process.env.ACCEPTANCE_PREVIEW_PORT}`, clickText: "Increment" }, "P1");
+  if (!context.recentEvidenceViews?.some((item) => item.source.includes("playwright:local"))) return action(context, "ACT", "browser.playwright", { url: `http://127.0.0.1:${process.env.ACCEPTANCE_PREVIEW_PORT}`, clickText: "Increment", expectedText: "1" }, "P1");
   return action(context, "WAIT", undefined, undefined, "P0");
 }
 
@@ -128,10 +128,10 @@ async function main(): Promise<void> {
     const greenfieldModel = await startMockModel(greenfieldAction, greenfieldContexts);
     modelServer = greenfieldModel.server;
     process.env.MODEL_API_URL = greenfieldModel.endpoint;
-    let greenfieldState = createProject(emptyState(), "브라우저에서 버튼을 누르면 숫자가 증가하는 작은 웹앱을 만들어줘.", "greenfield-acceptance", { workspacePath: workspace, modelProvider: "openai-compatible", sandboxMode: "process", networkPolicy: "allowlist", allowedDomains: ["127.0.0.1", "localhost"], cycleDelayMs: 0, processMaxLifetimeMs: 120_000 });
+    let greenfieldState = createProject(emptyState(), "브라우저에서 버튼을 누르면 숫자가 증가하는 작은 웹앱을 만들어줘.", "greenfield-acceptance", { workspacePath: workspace, modelProvider: "openai-compatible", modelName: "mock-contract-model", sandboxMode: "process", networkPolicy: "allowlist", allowedDomains: ["127.0.0.1", "localhost"], cycleDelayMs: 0, processMaxLifetimeMs: 120_000 });
     greenfieldState = await runCycles(greenfieldState, "greenfield-acceptance", 10);
     const greenfieldProject = getProject(greenfieldState, "greenfield-acceptance");
-    assert.equal(greenfieldProject?.status, "EQUILIBRIUM");
+    assert.equal(greenfieldProject?.status, "EQUILIBRIUM", JSON.stringify({ run: getRun(greenfieldState, "greenfield-acceptance"), actions: greenfieldState.actions.map((a) => ({type:a.type,tool:a.tool,params:a.params,status:a.status})), errors:greenfieldState.events.filter((e)=>e.type==="MODEL_FAILED"||e.type==="RUNTIME_ERROR") }));
     assert.ok(greenfieldContexts.length >= 10, "mock gateway did not receive multiple cognition cycles");
     assert.ok(greenfieldContexts.every((context) => context.rawIntent.includes("숫자") && context.toolSurface.length > 0 && context.modelVersion.startsWith("openai-compatible:")));
     assert.ok(greenfieldState.actions.filter((action) => action.projectId === "greenfield-acceptance").every((action) => action.modelVersion.startsWith("openai-compatible:") && action.contextId && greenfieldState.contexts.some((context) => context.id === action.contextId)));
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
     assert.ok(browserEvidence?.rawRef);
     const browserRaw = browserEvidence?.rawRef?.replace("local-raw://", "");
     assert.ok(browserRaw && existsSync(join(rawDirectory, browserRaw)));
-    assert.match(readFileSync(join(rawDirectory, browserRaw), "utf8"), /Count: 1|Increment/);
+    assert.match(readFileSync(join(rawDirectory, browserRaw), "utf8"), /Increment\s*1\b/);
     const greenfieldRun = getRun(greenfieldState, "greenfield-acceptance");
     assert.ok(greenfieldRun && greenfieldRun.cycleCount >= 10 && greenfieldRun.activeProcessIds.length === 1);
     startedProcesses.push(...(greenfieldRun?.activeProcessIds ?? []));
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
     modelServer.close();
     modelServer = maintenanceModel.server;
     process.env.MODEL_API_URL = maintenanceModel.endpoint;
-    let maintenanceState = createProject(emptyState(), "기존 작은 앱의 버그를 찾아 고치고 실제 테스트로 검증해줘.", "maintenance-acceptance", { workspacePath: maintenanceWorkspace, modelProvider: "openai-compatible", sandboxMode: "process", networkPolicy: "allowlist", allowedDomains: ["127.0.0.1", "localhost"], cycleDelayMs: 0 });
+    let maintenanceState = createProject(emptyState(), "기존 작은 앱의 버그를 찾아 고치고 실제 테스트로 검증해줘.", "maintenance-acceptance", { workspacePath: maintenanceWorkspace, modelProvider: "openai-compatible", modelName: "mock-contract-model", sandboxMode: "process", networkPolicy: "allowlist", allowedDomains: ["127.0.0.1", "localhost"], cycleDelayMs: 0 });
     maintenanceState = await runCycles(maintenanceState, "maintenance-acceptance", 3);
     assert.equal(readFileSync(join(maintenanceWorkspace, "app.js"), "utf8").trim(), "module.exports = () => 2;");
     assert.equal(getProject(maintenanceState, "maintenance-acceptance")?.status, "EQUILIBRIUM");
@@ -173,6 +173,7 @@ async function main(): Promise<void> {
     console.log("Autonomous acceptance passed: real HTTP model, multi-cycle greenfield build/browser verification, and maintenance patch/test flow");
   } finally {
     await Promise.all(startedProcesses.map((processId) => stopManagedProcess(processId)));
+    await stopAllManagedProcesses();
     await new Promise<void>((resolve) => modelServer?.close(() => resolve()) ?? resolve());
     if (previousEnv.root === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previousEnv.root;
     if (previousEnv.raw === undefined) delete process.env.INTENT_WORLD_RAW_DIR; else process.env.INTENT_WORLD_RAW_DIR = previousEnv.raw;

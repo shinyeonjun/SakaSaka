@@ -2,6 +2,12 @@
 
 Figma Product UI와 FigJam Master Architecture를 TypeScript로 구현한 실행 가능한 애플리케이션입니다. UI mock만이 아니라 Intent, World observation, source-linked Context, closed-loop runtime, Human boundary, evidence lineage, experience memory, evaluation, durable worker, security boundary, SSE control plane까지 하나의 typed contract로 연결합니다.
 
+## 현재 상태와 실사용 주의
+
+**연구용 로컬 런타임입니다. 운영 격리와 실제 모델의 자율 개발 품질은 별도로 검증해야 합니다.**
+최신 구조·변경 근거·보안 제한·재실험 절차는 [런타임 재검토 기록](docs/runtime-hardening.md)에 정리했습니다.
+모의 모델 acceptance 통과는 실제 Codex 모델이 제품을 완성한다는 증명이 아닙니다.
+
 ## Quick start
 
 ```bash
@@ -31,7 +37,7 @@ npm run desktop:build
 
 신규 프로젝트 화면의 `작업 폴더 선택`에서 경로를 지정하면 해당 프로젝트는 그 폴더 하나만 사용합니다. 경로는 서버가 접근할 수 있는 `WORKSPACE_ROOT` 내부여야 하며, 비워두면 서버가 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 만들어 바인딩합니다. 브라우저 전용 모드의 폴더 입력은 OS 경로를 가장하지 않도록 비활성화됩니다. 실제 폴더 연결과 쓰기 권한은 프로젝트의 `설정` 화면에서 확인합니다.
 
-API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 그린필드 의도를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI 호환 게이트웨이를 사용하고, 그렇지 않으면 `CODEX_CLI_ENABLED=true`일 때 Codex CLI 게이트웨이를 사용합니다. `CODEX_CLI_ENABLED`를 명시하지 않은 경우에만 `CODEX_CLI_BIN` 설정으로 Codex CLI 자동 선택을 켤 수 있습니다. 어느 실제 provider도 설정되지 않으면 가짜 실행을 하지 않고 명확한 오류와 함께 `WAIT`로 기록합니다. 결정론적 기준선은 명시적으로 `modelProvider=deterministic`을 선택한 연구·오프라인 모드에서만 사용합니다.
+API로 생성한 프로젝트는 `WORKSPACE_ROOT/.intent-world/workspaces/<projectId>`를 자동으로 확보하므로 기존 repository가 없어도 그린필드 의도를 시작할 수 있습니다. `modelProvider=auto`는 `MODEL_API_URL`과 `MODEL_API_KEY`가 모두 있으면 OpenAI 호환 게이트웨이를 사용하고, 그렇지 않으면 `CODEX_CLI_ENABLED=true`일 때 Codex CLI 게이트웨이를 사용합니다. `CODEX_CLI_ENABLED`를 명시하지 않은 경우에만 `CODEX_CLI_BIN` 설정으로 Codex CLI 자동 선택을 켤 수 있습니다. 어느 실제 provider도 설정되지 않으면 가짜 행동을 생성하지 않고 `MODEL_FAILED`와 실제 원인을 기록합니다. `WAIT`는 모델이 실제로 내린 대기 판단에만 사용합니다. 결정론적 기준선은 명시적으로 `modelProvider=deterministic`을 선택한 연구·오프라인 모드에서만 사용합니다.
 
 ```bash
 # terminal 1
@@ -67,7 +73,16 @@ $env:CODEX_CLI_MODELS = ""        # 선택 사항 · 기본 catalog를 덮어쓸
 npm run api
 ```
 
-프로젝트 전 `환경 설정`과 프로젝트별 `설정`의 모델 선택기는 `기본 · 추천 모델 세트`와 서버가 설정한 목록을 함께 보여줍니다. 기본 선택기는 Codex provider catalog와 `CODEX_CLI_MODEL` 또는 Codex `config.toml`의 실제 기본값에서 구성되며, `CODEX_CLI_MODELS`를 지정하면 서버 목록으로 덮어씁니다. 목록에 없는 유효한 모델 ID는 직접 입력할 수 있습니다. 모델 ID를 비워두면 Codex 기본 모델을 사용합니다. 선택한 값은 실제 `codex exec --model <선택값>`으로 전달됩니다. 응답이 malformed이거나 CLI가 설치되지 않았거나 시간이 초과되면 ACT로 위장하지 않고 WAIT와 원본 오류 참조를 남깁니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
+프로젝트 전 `환경 설정`과 프로젝트별 `설정`의 모델 선택기는 서버가 설정한 목록을 보여줍니다. 임의의 추천 모델 ID를 하드코딩하지 않습니다. 선택기는 `CODEX_CLI_MODELS`와 `CODEX_CLI_MODEL` 또는 Codex `config.toml`의 설정값에서 구성되며, `CODEX_CLI_MODELS`를 지정하면 서버 목록으로 덮어씁니다. 목록에 없는 유효한 모델 ID는 직접 입력할 수 있습니다. 모델 ID를 비워두면 Codex 기본 모델을 사용합니다. 선택한 값은 실제 `codex exec --model <선택값>`으로 전달됩니다. 응답이 잘못됐거나 CLI가 없거나 시간이 초과되면 `ModelGatewayError`/`MODEL_FAILED`와 원본 오류 참조를 남깁니다. 모델의 WAIT로 위장하지 않습니다. 실행 형식은 [Codex 비대화형 실행 문서](https://developers.openai.com/codex/noninteractive/)를 따릅니다.
+
+실제 CLI 프로토콜은 다음 두 단계로 구분해서 확인합니다.
+
+```bash
+npm run smoke:codex
+npm run smoke:codex -- --run
+```
+
+첫 명령은 설치·로그인만 확인합니다. 두 번째는 모델 사용량이 발생할 수 있는 실제 구조화 응답 검사이며, 반환된 SakaSaka 도구를 실행하지 않습니다. Codex CLI가 상속하는 MCP/hook 등은 전용 테스트 설정에서 먼저 확인하십시오. CLI의 읽기 전용 옵션만으로 외부 도구까지 완전히 격리되었다고 보장하지 않습니다.
 
 브라우저 binary가 설치되어 있지 않은 환경에서는 Playwright가 설치된 뒤 다음을 한 번 실행합니다.
 
@@ -97,15 +112,16 @@ Playwright를 실행할 수 없을 때 HTTP 관찰 fallback은 `UNCERTAIN` evide
 
 `WAKE → OBSERVE → ASSEMBLE CONTEXT → DECIDE → VALIDATE/DISPATCH → VERIFY → COMMIT EXPERIENCE → GOVERN → NEXT`
 
-Context에는 원문 Intent/constraints, fresh source-linked compact observation, open Human state, provenance 있는 experience, 실제 capability surface, budget/permission boundary가 들어갑니다. raw output은 모델 지시가 아니라 `rawRef`를 가진 untrusted evidence로만 보존합니다.
+Context에는 원문 Intent/constraints, fresh source-linked compact observation, open Human state와 이미 받은 답변, provenance 있는 experience, 도구별 inputSchema, budget/permission boundary가 들어갑니다. raw output은 모델 지시가 아니라 `rawRef`를 가진 untrusted evidence로만 보존합니다.
 
 `server/index.ts`는 다음 control-plane API를 제공합니다.
 
 - `GET /health`, `GET /state`, `GET /projects`
 - `POST /projects`, `GET /projects/:id`
-- `POST /projects/:id/wake`, `/run`, `/world/refresh`, `/stall`
+- `POST /projects/:id/wake`, `/run` — 202 큐 등록; 실제 모델/도구는 worker에서 실행
+- `POST /projects/:id/world/refresh`, `/stall`
 - `GET /projects/:id/runtime-status` — 실제 선택 provider, Codex CLI 설치 확인, 작업 폴더 존재·쓰기 권한
-- `GET /runtime/model-catalog` — Codex provider 기본 catalog와 서버 설정 모델 목록
+- `GET /runtime/model-catalog` — 서버에 설정된 모델 목록와 서버 설정 모델 목록
 - `GET /runtime/model-status?provider=...&model=...` — 프로젝트 없이 실제 provider·CLI·인증 상태 확인
 - `GET /runtime/workspace-root`, `POST /runtime/workspace-root` — 데스크톱에서 선택한 실제 작업 폴더 경계 확인/변경
 - `POST /runs/:runId/pause|resume|kill`
@@ -125,7 +141,7 @@ API snapshot은 `.data/state.json`, 직전 정상 snapshot 백업은 `.data/stat
 - 외부/파괴적 작업은 P3 hard block 또는 Human approval item으로 전환됩니다.
 - tool/model output과 adapter error는 redaction 후 rawRef/evidence로 기록합니다.
 
-기본 local mode는 개발 환경 호환성을 위한 process adapter입니다. 운영 격리가 필요하면 Docker sandbox와 실제 Secrets Broker, database transaction, distributed queue를 배치해야 합니다. API에는 인증이 포함되어 있지 않으므로 localhost 또는 별도 인증 reverse proxy 뒤에서 사용해야 합니다.
+**process adapter는 보안 격리가 아닙니다.** 생성된 JavaScript나 package script는 호스트 권한으로 실행됩니다. 비밀 정보가 없는 별도 테스트 환경에서만 사용하십시오. Docker의 dependency bridge 네트워크도 완전한 egress allowlist를 강제하지 않습니다. 운영 격리가 필요하면 Docker sandbox와 실제 Secrets Broker, database transaction, distributed queue를 배치해야 합니다. API는 기본 127.0.0.1에 바인딩하고 Origin/Host를 검사합니다. 외부 바인딩은 SAKASAKA_API_TOKEN을 요구하며 현재 UI는 로컬 실행을 전제로 합니다. 별도 다중 사용자 인증 시스템은 아닙니다.
 
 ## Verification gates
 
@@ -146,10 +162,10 @@ npm run security:check
 git diff --check
 ```
 
-`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:autonomous`는 빈 workspace와 실제 mock OpenAI-compatible HTTP server를 사용해 multi-cycle greenfield 파일 생성·build·test·managed process·Playwright 검증 및 maintenance patch를 실행합니다. `acceptance:experiments`는 동일 Intent·model·budget·starting digest를 유지한 격리 workspace A–E 실행을 수행하고 실제 run/evidence/evaluator 결과를 비교합니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
+`acceptance:api`는 별도 API 프로세스와 worker를 실제로 띄워 project creation, duplicate/path/body validation, local quality cycle, evidence raw retrieval, cursor/SSE replay, worker convergence, pause/resume/kill까지 검증합니다. `acceptance:autonomous`는 빈 workspace와 실제 mock OpenAI-compatible HTTP server를 사용해 multi-cycle greenfield 파일 생성·build·test·managed process·Playwright 검증 및 maintenance patch를 실행합니다. `acceptance:experiments`는 동일 Intent·model·budget·starting digest를 유지한 격리 workspace A/B/D 실행과 provenance를 검사합니다. A는 1회 호출 대조군이고 C/E는 미구현으로 거절합니다. 점수는 관측 proxy이며 H1–H6를 자동 통과시키지 않습니다. `acceptance:ui`는 실제 Chromium에서 모든 제품 route와 Human answer flow를 열고, Figma 기준 desktop 레이아웃과 390px responsive overflow를 검증합니다.
 
 ## Version control
 
 원격 저장소: [shinyeonjun/SakaSaka](https://github.com/shinyeonjun/SakaSaka)
 
-구현 변경은 `main` 브랜치에 커밋하고 원격 저장소에 push합니다.
+구현 변경은 작업 브랜치에서 검증한 뒤 PR로 검토합니다. main 직접 덮어쓰기나 자동 병합을 하지 않습니다.

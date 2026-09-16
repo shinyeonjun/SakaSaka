@@ -50,7 +50,7 @@ export interface AblationRunnerOptions {
 }
 
 const variantTitles: Record<AblationVariantKey, string> = {
-  A: "task-style baseline",
+  A: "single-call control (not a commercial coding-agent baseline)",
   B: "persistent closed loop",
   C: "persistent loop with discovery context",
   D: "persistent loop with experience retrieval",
@@ -132,6 +132,7 @@ function workspaceDigest(root: string): string {
  * visible and reproducible without introducing a fixed developer workflow.
  */
 export function ablationContextProjection(variant: AblationVariantKey): (context: ContextPacket) => ContextPacket {
+  if (variant === "C" || variant === "E") throw new Error("독립 실행이 구현되지 않은 ablation입니다.");
   return (context) => {
     if (variant === "A") return {
       ...context,
@@ -148,7 +149,7 @@ export function ablationContextProjection(variant: AblationVariantKey): (context
       activeIncidentRefs: [],
       untrustedObservationRefs: [],
     };
-    if (variant === "B" || variant === "C") return {
+    if (variant === "B") return {
       ...context,
       experienceRefs: [],
       relevantExperienceViews: [],
@@ -158,9 +159,10 @@ export function ablationContextProjection(variant: AblationVariantKey): (context
 }
 
 function safeVariantList(variants: readonly AblationVariantKey[] | undefined): AblationVariantKey[] {
-  const selected: AblationVariantKey[] = variants?.length ? [...variants] : ["A", "B", "C", "D", "E"];
+  const selected: AblationVariantKey[] = variants?.length ? [...variants] : ["A", "B", "D"];
   const allowed = new Set<AblationVariantKey>(["A", "B", "C", "D", "E"]);
   if (selected.some((variant) => !allowed.has(variant))) throw new Error("ablation variants must be one of A, B, C, D, or E");
+  if (selected.some((variant) => variant === "C" || variant === "E")) throw new Error("C/E는 독립된 발견·자기개선 구현이 없어 실행할 수 없습니다. B/D를 이름만 바꿔 비교하지 않습니다.");
   return [...new Set(selected)];
 }
 

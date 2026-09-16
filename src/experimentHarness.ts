@@ -34,11 +34,11 @@ export const hypothesisCatalog: HypothesisDefinition[] = [
 ];
 
 export const ablationLadder = [
-  { key: "A", title: "기존 작업형 에이전트", detail: "명시 작업 → 완료" },
+  { key: "A", title: "단일 호출 대조군", detail: "1회만 호출 · 상용 에이전트 비교가 아님" },
   { key: "B", title: "+ 지속형 폐쇄 루프", detail: "의도 + 월드 + 행동" },
-  { key: "C", title: "+ 발견·불확실성", detail: "숨은 공백 탐색" },
+  { key: "C", title: "+ 발견·불확실성", detail: "독립 ablation 미구현 · 실행 불가" },
   { key: "D", title: "+ 경험 기억", detail: "전이 기억" },
-  { key: "E", title: "+ 메타 개선", detail: "정책 갱신" },
+  { key: "E", title: "+ 메타 개선", detail: "자기개선 ablation 미구현 · 실행 불가" },
 ] as const;
 
 export function experimentDefinition(key: string): HypothesisDefinition | undefined {
@@ -51,8 +51,7 @@ export function scoreExperiment(state: AppState, experiment: Experiment): { scor
   const evidenceRefs = experiment.evaluationEvidenceRefs?.filter((ref) => state.evidence.some((item) => item.id === ref && item.projectId === experiment.projectId)) ?? [];
   if (!experiment.runIds?.length || !evidenceRefs.length) return { score: "insufficient evidence", passed: false, evaluatorRefs: [...(definition?.evaluatorRefs ?? []), ...evidenceRefs] };
   const evaluatorRefs = [...(definition?.evaluatorRefs ?? []), ...evidenceRefs];
-  if (experiment.key === "H1") return { score: experiment.hiddenCriteria?.length ? `${Math.round(evaluation.metrics.initiativeRecall * 100)}% recall` : "insufficient ground truth", passed: Boolean(experiment.hiddenCriteria?.length) && evaluation.metrics.initiativeRecall > 0, evaluatorRefs };
-  if (experiment.key === "H3") return { score: `${Math.round(evaluation.metrics.questionPrecision * 100)}% precision`, passed: evaluation.metrics.questionPrecision >= 0.5, evaluatorRefs };
-  if (experiment.key === "H5") return { score: `${Math.round(evaluation.metrics.costNormalizedUtility * 100)}% utility`, passed: evaluation.metrics.outcomeQuality > 0 && evaluation.metrics.reworkRate < 1, evaluatorRefs };
-  return { score: `${Math.round(evaluation.metrics.outcomeQuality * 100)}% utility`, passed: evaluation.metrics.outcomeQuality > 0, evaluatorRefs };
+  // These metrics are instrumentation proxies, not independent outcome judgements.
+  // A successful list/read MUST NOT prove an initiative or self-improvement hypothesis.
+  return { score: `도구 증거 PASS 비율 ${Math.round(evaluation.metrics.outcomeQuality * 100)}% · 가설 판정 미실시`, passed: false, evaluatorRefs };
 }

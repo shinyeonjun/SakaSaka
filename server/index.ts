@@ -1,3 +1,5 @@
+import { mergeCycleResult } from "./cycleCoordinator";
+import { checkHttpBoundary, isLoopbackHost } from "./httpBoundary";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, realpathSync, watch } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
@@ -48,7 +50,7 @@ import { inspectModelConnection, inspectRuntimeConnection, runtimeModelCatalog }
 
 const configuredPort = Number(process.env.API_PORT ?? "8787");
 const port = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort < 65_536 ? configuredPort : 8787;
-const host = process.env.API_HOST?.trim() || "0.0.0.0";
+const host = process.env.API_HOST?.trim() || "127.0.0.1";
 const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
 const stateLockPath = `${statePath}.lock`;
 const eventJournal = new JsonlEventStore(`${statePath}.events.jsonl`);
@@ -60,7 +62,7 @@ const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
   return {
     budgetLimit: raw?.budgetLimit ?? 30,
-    maxHours: raw?.maxHours ?? 12,
+    maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200,
     localActions: raw?.localActions ?? true,
     requireExternalApproval: raw?.requireExternalApproval ?? true,
     productionBlocked: raw?.productionBlocked ?? true,
@@ -145,6 +147,7 @@ hydrateManagedProcesses(state.processes);
 mkdirSync(dirname(statePath), { recursive: true });
 
 function persistState(next: AppState): void {
+  next.revision = Math.max(next.revision ?? 0, loadState().revision ?? 0) + 1;
   writeJsonAtomically(statePath, next, isRecoverableState);
   for (const event of next.events) eventJournal.appendSync(event);
 }
@@ -200,8 +203,7 @@ async function commitMutation(mutator: (current: AppState) => AppState | Promise
 
 function headers(contentType = "application/json"): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID",
+    "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, Authorization",
     "Access-Control-Allow-Methods": "DELETE, GET, POST, OPTIONS",
     "Content-Type": contentType,
   };
@@ -304,7 +306,7 @@ function refreshStateFromDisk(): void {
     console.error(error instanceof Error ? error.message : "state snapshot reload failed");
     return;
   }
-  if (next.events.length === state.events.length && next.projects.length === state.projects.length && next.events.at(-1)?.id === state.events.at(-1)?.id) return;
+  if (next.revision === state.revision && next.events.length === state.events.length && next.events.at(-1)?.id === state.events.at(-1)?.id) return;
   const previous = state;
   state = next;
   publishEvents(previous, next);
@@ -356,9 +358,11 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const defaultBudget = Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 30;
   const budgetLimit = positiveNumber("budgetLimit", defaultBudget, 1_000_000);
   const maxHours = positiveNumber("maxHours", 12, 168);
+  const maxModelCalls = positiveNumber("maxModelCalls", 200, 10_000);
   const reviewIntervalMinutes = positiveNumber("reviewIntervalMinutes", 360, 10_080);
   if (typeof budgetLimit === "string") return { error: budgetLimit };
   if (typeof maxHours === "string") return { error: maxHours };
+  if (typeof maxModelCalls === "string" || !Number.isInteger(maxModelCalls)) return { error: "maxModelCalls must be a positive integer" };
   if (typeof reviewIntervalMinutes === "string") return { error: reviewIntervalMinutes };
   const optionalPositive = (key: string, fallback: number, maximum: number): number | string => {
     const value = body[key];
@@ -427,7 +431,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
   const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
   if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
-  return { settings: { budgetLimit, maxHours, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
+  return { settings: { budgetLimit, maxHours, maxModelCalls, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
 }
 
 function parseModelSettings(body: Record<string, unknown>): { settings?: Pick<ProjectSettings, "modelProvider" | "modelName">; error?: string } {
@@ -465,7 +469,7 @@ function rawOutputFile(fileName: string): { path: string; contentType: string } 
   if (distance.startsWith(`..${sep}`) || distance === ".." || !existsSync(candidate)) return undefined;
   try {
     if (!isInsideRawDirectory(directory, realpathSync.native(candidate))) return undefined;
-    const contentType = fileName.endsWith(".png") ? "image/png" : fileName.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+    const contentType = fileName.endsWith(".png") ? "image/png" : "text/plain; charset=utf-8";
     return { path: candidate, contentType };
   } catch {
     return undefined;
@@ -478,6 +482,7 @@ function isInsideRawDirectory(directory: string, candidate: string): boolean {
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (!checkHttpBoundary(request, response, host)) return;
   refreshStateFromDisk();
   const parsedUrl = new URL(request.url ?? "/", "http://" + (request.headers.host ?? "localhost"));
   let parts: string[];
@@ -692,36 +697,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
 
-    if (method === "POST" && parts[2] === "wake" && parts.length === 3) {
+    if (method === "POST" && (parts[2] === "wake" || parts[2] === "run") && parts.length === 3) {
       const body = await readJson(request);
-      await commitMutation(async (current) => {
-        let next = wakeProject(current, projectId, parseWakeTrigger(body.trigger));
-        if (getProject(next, projectId)?.status === "ACTIVE") next = getProject(next, projectId)?.settings.workspacePath ? await executeLocalCycle(next, projectId) : runCycle(next, projectId);
-        return next;
-      });
-      sendJson(response, 200, projectPayload(projectId));
-      return;
-    }
-
-    if (method === "POST" && parts[2] === "run" && parts.length === 3) {
-      if (project.status !== "ACTIVE" && project.status !== "WAITING") {
-        sendError(response, 409, `project is ${project.status}; wake or resume it before running a cycle`);
-        return;
-      }
-      let rejectedStatus: string | undefined;
+      let rejected: string | undefined;
       await commitMutation((current) => {
         const currentProject = getProject(current, projectId);
-        if (!currentProject || (currentProject.status !== "ACTIVE" && currentProject.status !== "WAITING")) {
-          rejectedStatus = currentProject?.status ?? "missing";
+        if (!currentProject || currentProject.status === "KILLED" || (parts[2] === "run" && !["ACTIVE", "WAITING"].includes(currentProject.status))) {
+          rejected = currentProject?.status ?? "missing";
           return current;
         }
-        return currentProject.settings.workspacePath ? executeLocalCycle(current, projectId) : runCycle(current, projectId);
+        return wakeProject(current, projectId, parseWakeTrigger(body.trigger));
       });
-      if (rejectedStatus) {
-        sendError(response, 409, `project is ${rejectedStatus}; wake or resume it before running a cycle`);
-        return;
-      }
-      sendJson(response, 200, projectPayload(projectId));
+      if (rejected) { sendError(response, 409, `project is ${rejected}`); return; }
+      sendJson(response, 202, { ...projectPayload(projectId), queued: true });
       return;
     }
 
@@ -769,7 +757,14 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
 
     if (method === "POST" && parts[2] === "world" && parts[3] === "refresh" && parts.length === 4) {
-      await commitMutation((current) => getProject(current, projectId)?.settings.workspacePath ? observeLocalWorld(current, projectId) : refreshWorld(current, projectId));
+      const before = loadState();
+      const priorProject = getProject(before, projectId);
+      const observed = priorProject?.settings.workspacePath ? await observeLocalWorld(before, projectId) : refreshWorld(before, projectId);
+      // Observation may be slow; never hold the global state lock while probing.
+      await commitMutation((current) => {
+        if (JSON.stringify(getProject(current, projectId)) !== JSON.stringify(priorProject) || getWorldSnapshot(current, projectId)?.cursorEventId !== getWorldSnapshot(before, projectId)?.cursorEventId) return current;
+        return mergeCycleResult(current, before, observed, projectId, true, false);
+      });
       sendJson(response, 200, projectPayload(projectId));
       return;
     }
@@ -966,6 +961,7 @@ const server = createServer((request, response) => {
   });
 });
 
+if (!isLoopbackHost(host) && !process.env.SAKASAKA_API_TOKEN) throw new Error("외부 API 바인딩에는 SAKASAKA_API_TOKEN이 필요합니다. 기본값은 127.0.0.1입니다.");
 server.listen(port, host, () => {
   console.log("Intent World control plane listening on http://" + host + ":" + port);
 });
