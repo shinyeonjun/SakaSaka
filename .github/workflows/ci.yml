@@ -62,7 +62,20 @@ jobs:
       - name: Install Linux sandbox prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap uidmap
+          sudo apt-get install --yes --no-install-recommends apparmor bubblewrap uidmap
+          if test -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            # GitHub-hosted Ubuntu may enforce the AppArmor userns restriction.
+            # Allow only the system Bubblewrap executable used by this fixture;
+            # do not disable the restriction globally on the runner.
+            printf '%s\n' \
+              'abi <abi/4.0>,' \
+              'include <tunables/global>' \
+              'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+              '  userns,' \
+              '  include if exists <local/bwrap>' \
+              '}' | sudo tee /etc/apparmor.d/bwrap > /dev/null
+            sudo apparmor_parser --replace /etc/apparmor.d/bwrap
+          fi
           bwrap --version
       - name: Install pinned public Codex binary (no login)
         run: npm install --prefix "$RUNNER_TEMP/native-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
