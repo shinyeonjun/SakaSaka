@@ -1,0 +1,36 @@
+name: mission-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  source-and-protocol:
+    if: github.event.pull_request.head.ref == 'feat/mission-native-agent-20260917' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - name: Prepare tracked source and public dependencies only
+        run: |
+          mkdir -p "$RUNNER_TEMP/mission-review"
+          git rev-parse HEAD > "$RUNNER_TEMP/mission-review/commit.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/mission-review/source.tar.gz"
+          tar -czf "$RUNNER_TEMP/mission-review/dependencies.tar.gz" node_modules
+          npm install --prefix "$RUNNER_TEMP/codex-protocol" --ignore-scripts --no-audit --no-fund @openai/codex@latest
+          "$RUNNER_TEMP/codex-protocol/node_modules/.bin/codex" --version > "$RUNNER_TEMP/mission-review/codex-version.txt"
+          "$RUNNER_TEMP/codex-protocol/node_modules/.bin/codex" app-server generate-json-schema --experimental --out "$RUNNER_TEMP/mission-review/schema"
+          tar -czf "$RUNNER_TEMP/mission-review/codex-public.tar.gz" -C "$RUNNER_TEMP/codex-protocol" node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mission-review
+          path: ${{ runner.temp }}/mission-review/
+          retention-days: 1
+          if-no-files-found: error
