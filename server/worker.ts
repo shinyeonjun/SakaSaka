@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createEmptyState } from "../src/emptyState";
-import { runDurableCycle } from "./cycleCoordinator";
-import { runNativeEpisode } from "./nativeRuntime";
+import { runAutonomousDurableCycle, runAutonomousNativeEpisode } from "./autonomousRuntime";
 import { recoverTransientProviderFailures, wakeProject } from "../src/runtime";
 import { JsonlEventStore } from "./jsonlEventStore";
 import { JsonJobQueue } from "./jobQueue";
@@ -157,7 +156,7 @@ export async function runWorkerOnce(): Promise<{ processed: string[] }> {
         });
         const candidate = loadState().projects.find((item) => item.id === job.projectId);
         if (candidate?.activeRunId === job.runId) {
-          const execute = candidate.settings.executionMode === "native" ? runNativeEpisode : runDurableCycle;
+          const execute = candidate.settings.executionMode === "native" ? runAutonomousNativeEpisode : runAutonomousDurableCycle;
           if (await execute({ read: loadState, transact }, job.projectId, { signal: workerStop.signal })) processed.push(job.projectId);
         }
         await withFileLock(lockPath, async () => {
