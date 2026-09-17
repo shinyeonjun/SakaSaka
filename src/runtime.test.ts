@@ -177,7 +177,12 @@ describe("Intent World runtime", () => {
 
   it("기본 자율 테스트 모드에서는 예산을 초과해도 비용만 계측하고 계속 실행한다", () => {
     const { state, projectId } = projectState("project-unlimited-budget", "제한 없이 계속 검증해줘", { budgetLimit: 1 });
-    const limited = { ...state, projects: state.projects.map((candidate) => candidate.id === projectId ? { ...candidate, budgetSpent: 0.99 } : candidate) };
+    const now = Date.now();
+    const limited = {
+      ...state,
+      projects: state.projects.map((candidate) => candidate.id === projectId ? { ...candidate, budgetSpent: 0.99 } : candidate),
+      runs: state.runs.map((run) => run.projectId === projectId ? { ...run, startedAt: new Date(now).toISOString(), leaseExpiresAt: new Date(now + 3_600_000).toISOString() } : run),
+    };
     const next = runCycle(limited, projectId, { action: currentAction(limited, projectId), toolResult: { ...successfulToolResult(projectId, "evidence-unlimited-budget"), cost: 0.2 } });
     expect(getProject(next, projectId)?.settings.resourceLimitsDisabled).toBe(true);
     expect(getProject(next, projectId)?.status).toBe("ACTIVE");
