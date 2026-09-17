@@ -1,122 +1,131 @@
-import { useMemo, useState, type PropsWithChildren } from "react";
-import { getHumanCounts, getProject, statusLabel } from "../runtime";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PropsWithChildren } from "react";
+import { latestControlPlane, missionHistory, openHumanItems } from "../controlPlaneView";
+import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { cn, InlineNotice } from "./ui";
-import { isDesktopApp } from "../desktop";
+import { getDesktopDecisionSettings, isDesktopApp } from "../desktop";
 
 const projectNav = [
-  { key: "overview", label: "제어 센터", symbol: "◆" },
-  { key: "needs-you", label: "사람 개입", symbol: "●" },
-  { key: "activity", label: "활동", symbol: "■" },
-  { key: "world", label: "월드", symbol: "◈" },
-  { key: "artifacts", label: "산출물", symbol: "▰" },
-  { key: "experiments", label: "실험", symbol: "◇" },
-  { key: "settings", label: "프로젝트 설정", symbol: "⚙" },
+  { key: "overview", label: "제어 센터" },
+  { key: "missions", label: "미션" },
+  { key: "coverage", label: "탐색 범위 & 갭" },
+  { key: "needs-you", label: "사람 개입" },
+  { key: "evidence", label: "근거" },
+  { key: "activity", label: "활동" },
 ] as const;
 
 type NavKey = (typeof projectNav)[number]["key"];
 
 function selectedNav(key: NavKey, kind: string): boolean {
-  if (key === "overview") return kind === "overview" || kind === "new";
+  if (key === "overview") return kind === "overview";
   if (key === "needs-you") return kind === "needs-you" || kind === "human-item";
+  if (key === "evidence") return kind === "evidence" || kind === "world";
   return kind === key;
+}
+
+function routeFor(projectId: string, key: NavKey): string {
+  return key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${key}`;
 }
 
 export function AppShell({ children }: PropsWithChildren) {
   const { state, syncError, pendingCommands } = useApp();
   const { route, navigate } = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [clock, setClock] = useState(() => new Date());
+  const [query, setQuery] = useState("");
+  const [decisionProvider, setDecisionProvider] = useState("Codex");
+  const searchRef = useRef<HTMLInputElement>(null);
   const projectId = "projectId" in route ? route.projectId : state.activeProjectId;
   const project = getProject(state, projectId);
-  const budgetLimit = project?.settings.budgetLimit ?? 30;
-  const budgetSpent = project?.budgetSpent ?? 0;
-  const runtimeStatus = project?.status ?? "ACTIVE";
-  const counts = projectId ? getHumanCounts(state, projectId) : undefined;
-  const humanOpen = counts ? counts.QUESTION + counts.IDEA + counts.CONCERN + counts.APPROVAL : 0;
+  const control = projectId ? latestControlPlane(state, projectId) : undefined;
+  const missions = projectId ? missionHistory(state, projectId) : [];
+  const humanOpen = projectId ? openHumanItems(state, projectId).length : 0;
   const evidenceCount = projectId ? state.evidence.filter((item) => item.projectId === projectId).length : 0;
+  const unresolvedGaps = control ? control.counts.open + control.counts.investigating + control.counts.blocked : 0;
+  const recentProjects = useMemo(() => [...state.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 6), [state.projects]);
 
-  const projectLinks = useMemo(() => projectNav.map((item) => ({
-    ...item,
-    badge: item.key === "needs-you" && humanOpen > 0 ? humanOpen : item.key === "world" && evidenceCount > 0 ? evidenceCount : undefined,
-  })), [evidenceCount, humanOpen]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(new Date()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  const go = (path: string) => {
-    navigate(path);
-    setMobileOpen(false);
+  useEffect(() => {
+    if (!isDesktopApp) return;
+    void getDesktopDecisionSettings().then((settings) => {
+      if (!settings) return;
+      setDecisionProvider(settings.provider === "jev" ? "Jev" : settings.provider === "hybrid" ? "Hybrid" : "Codex");
+    }).catch(() => undefined);
+  }, [route.kind]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === "Escape" && document.activeElement === searchRef.current) {
+        searchRef.current?.blur();
+        setQuery("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const go = (path: string) => { navigate(path); setMobileOpen(false); setQuery(""); };
+  const onSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const q = query.trim().toLowerCase();
+    if (!q) return;
+    if (/새|new|project/.test(q)) return go("/projects/new");
+    if (/설정|setting|jev|codex/.test(q)) return go("/settings");
+    if (!projectId) return;
+    if (/미션|mission/.test(q)) return go(`${projectPath(projectId)}/missions`);
+    if (/갭|gap|탐색|coverage/.test(q)) return go(`${projectPath(projectId)}/coverage`);
+    if (/사람|human|질문|승인/.test(q)) return go(`${projectPath(projectId)}/needs-you`);
+    if (/근거|evidence|월드|world/.test(q)) return go(`${projectPath(projectId)}/evidence`);
+    if (/활동|activity/.test(q)) return go(`${projectPath(projectId)}/activity`);
+    go(projectPath(projectId));
   };
 
-  const projectName = project?.name ?? "새 프로젝트";
-  const subtitle = project?.subtitle ?? "Intent에서 시작하는 자율 개발";
+  const navCounts: Partial<Record<NavKey, number>> = {
+    missions: Math.max(missions.length, control?.mission ? 1 : 0), coverage: unresolvedGaps, "needs-you": humanOpen, evidence: evidenceCount,
+  };
+  const isGlobalNew = route.kind === "new";
+  const topProjectName = project?.name ?? (isGlobalNew ? "새 프로젝트" : "SakaSaka");
 
-  return (
-    <div className={cn("app-frame app-frame-v2", isDesktopApp && "desktop-shell")}>
-      <header className="desktop-topbar">
-        <button className="desktop-brand" onClick={() => go("/projects/new")} aria-label="새 프로젝트 시작">
-          <strong>SakaSaka</strong>
-          <span>{project ? projectName : "Autonomous Dev OS"}</span>
-        </button>
-        <div className="desktop-topbar-context" aria-label="현재 프로젝트">
-          <span className="desktop-context-label">{project ? projectName : "준비"}</span>
-          <span className="desktop-context-detail">{project ? subtitle : "원하는 결과만 말하면 나머지는 시스템이 이어갑니다."}</span>
-        </div>
-        <div className="desktop-topbar-status">
-          <span className={cn("runtime-dot", `runtime-dot-${runtimeStatus.toLowerCase()}`)} />
-          <span>{statusLabel(runtimeStatus)}</span>
-          {project && <span className="topbar-budget">${budgetSpent.toFixed(2)} / ${budgetLimit}</span>}
-          {pendingCommands > 0 && <span className="topbar-pending">동기화 {pendingCommands}</span>}
-        </div>
-        <button className="mobile-menu-button" onClick={() => setMobileOpen((open) => !open)} aria-expanded={mobileOpen} aria-label="메뉴 열기">{mobileOpen ? "×" : "☰"}</button>
-      </header>
+  return <div className={cn("app-frame app-frame-v3", isDesktopApp && "desktop-shell")}>
+    <header className="ss-toolbar">
+      <button className="ss-toolbar-brand" onClick={() => projectId ? go(projectPath(projectId)) : go("/projects/new")}><strong>SakaSaka</strong><span>{project ? project.name : "Autonomous Dev OS"}</span></button>
+      <form className="ss-command-search" onSubmit={onSearch}><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="명령, 프로젝트, 근거 검색" aria-label="명령, 프로젝트, 근거 검색" /><kbd>Ctrl K</kbd></form>
+      <div className="ss-toolbar-right"><span className="ss-online"><i />{project?.status === "ACTIVE" ? "Worker 연결됨" : statusLabel(project?.status ?? "ACTIVE")}</span>{project && <span>${project.budgetSpent.toFixed(2)} / ${project.settings.budgetLimit}</span>}<time>{clock.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })}</time></div>
+      <button className="mobile-menu-button" onClick={() => setMobileOpen((open) => !open)} aria-label="메뉴 열기">{mobileOpen ? "×" : "☰"}</button>
+    </header>
 
-      <div className="desktop-body">
-        <aside className={cn("sidebar sidebar-v2", mobileOpen && "sidebar-open")} aria-label="주요 탐색">
-          <div className="sidebar-project-card">
-            <span className="sidebar-overline">현재 프로젝트</span>
-            <strong>{projectName}</strong>
-            <span>{project ? statusLabel(runtimeStatus) : "새 Intent 준비"}</span>
-          </div>
+    <div className="ss-body">
+      <aside className={cn("ss-sidebar", mobileOpen && "sidebar-open")}>
+        {isGlobalNew ? <>
+          <div className="ss-global-brand"><strong>SAKASAKA</strong><span>자율 개발 OS</span></div>
+          <button className="ss-nav-item active" onClick={() => go("/projects/new")}><i /><span>새 프로젝트</span></button>
+          <span className="ss-section-label">최근 프로젝트</span>
+          <div className="ss-recent-projects">{recentProjects.map((item) => <button key={item.id} onClick={() => go(projectPath(item.id))}><span><strong>{item.name}</strong><i className={`project-status-dot status-${item.status.toLowerCase()}`} /></span><small>{statusLabel(item.status)}</small></button>)}</div>
+        </> : <>
+          <button className="ss-project-switcher" onClick={() => go("/projects/new")}><small>현재 프로젝트</small><strong>{topProjectName}</strong></button>
+          <span className="ss-section-label">작업 공간</span>
+          <nav className="ss-nav-list">{projectId && projectNav.map((item) => <button key={item.key} className={cn("ss-nav-item", selectedNav(item.key, route.kind) && "active")} onClick={() => go(routeFor(projectId, item.key))}><i className={item.key === "overview" ? "primary" : ""} /><span>{item.label}</span>{navCounts[item.key] !== undefined && <em>{navCounts[item.key]}</em>}</button>)}</nav>
+        </>}
+        <div className="ss-sidebar-spacer" />
+        <span className="ss-section-label">시스템</span>
+        {!isGlobalNew && projectId && <button className={cn("ss-nav-item", route.kind === "experiments" && "active")} onClick={() => go(`${projectPath(projectId)}/experiments`)}><i /><span>실험</span></button>}
+        <button className={cn("ss-nav-item", route.kind === "global-settings" && "active")} onClick={() => go("/settings")}><i /><span>설정</span></button>
+        <div className="ss-runtime-foot">{isGlobalNew ? <span className="text-success">Codex CLI {isDesktopApp ? "desktop" : "browser"}</span> : <><span>Codex CLI · {project?.settings.executionMode ?? "native"}</span><span>판단 · {decisionProvider}</span></>}</div>
+      </aside>
 
-          <span className="sidebar-section-label">작업 공간</span>
-          <nav className="sidebar-nav sidebar-nav-v2">
-            {projectLinks.map((item) => {
-              const path = !projectId ? "/projects/new" : item.key === "overview" ? projectPath(projectId) : `${projectPath(projectId)}/${item.key}`;
-              const active = selectedNav(item.key, route.kind);
-              const disabled = !projectId && item.key !== "overview";
-              return (
-                <button key={item.key} className={cn("nav-item nav-item-v2", active && "nav-item-active")} onClick={() => go(path)} disabled={disabled} aria-current={active ? "page" : undefined}>
-                  <span className="nav-symbol" aria-hidden="true">{item.symbol}</span>
-                  <span className="nav-label">{item.label}</span>
-                  {item.badge !== undefined && <span className="nav-count">{item.badge}</span>}
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="sidebar-spacer" />
-          <span className="sidebar-section-label">시스템</span>
-          <nav className="sidebar-nav sidebar-nav-v2">
-            <button className={cn("nav-item nav-item-v2", route.kind === "global-settings" && "nav-item-active")} onClick={() => go("/settings")}>
-              <span className="nav-symbol" aria-hidden="true">⚙</span><span className="nav-label">환경 설정</span>
-            </button>
-            <button className="nav-item nav-item-v2" onClick={() => go("/projects/new")}>
-              <span className="nav-symbol" aria-hidden="true">＋</span><span className="nav-label">새 프로젝트</span>
-            </button>
-          </nav>
-          <div className="sidebar-runtime-foot">
-            <span>{isDesktopApp ? "데스크톱 · 로컬 제어면" : "브라우저 모드"}</span>
-            <span>판단 · {project?.settings.modelProvider === "codex-cli" ? "Codex" : project?.settings.modelProvider ?? "기본"}</span>
-          </div>
-        </aside>
-
-        <main className="main-content main-content-v2">
-          {(syncError || pendingCommands > 0) && <div className="global-notice-stack">
-            {syncError && <InlineNotice tone="red" title="서버 동기화 실패">{syncError} 서버에 반영되었다고 간주하지 마십시오.</InlineNotice>}
-            {pendingCommands > 0 && <InlineNotice tone="blue" title="서버 확인 중">{pendingCommands}개 명령의 처리 결과를 기다리고 있습니다.</InlineNotice>}
-          </div>}
-          {children}
-        </main>
-      </div>
+      <main className="ss-content">
+        {(syncError || pendingCommands > 0) && <div className="global-notice-stack">{syncError && <InlineNotice tone="red" title="서버 동기화 실패">{syncError}</InlineNotice>}{pendingCommands > 0 && <InlineNotice tone="blue" title="서버 확인 중">{pendingCommands}개 명령을 처리하고 있습니다.</InlineNotice>}</div>}
+        {children}
+      </main>
     </div>
-  );
+  </div>;
 }
