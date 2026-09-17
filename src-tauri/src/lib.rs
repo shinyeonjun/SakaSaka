@@ -118,13 +118,19 @@ fn valid_provider(value: &str) -> bool {
     matches!(value, "codex-cli" | "jev" | "hybrid")
 }
 
+fn valid_secret(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && !value.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+}
+
 fn read_desktop_decision_settings(app: &AppHandle) -> Result<(String, String, Option<String>), String> {
     let path = decision_settings_path(app)?;
     if !path.exists() { return Ok(("codex-cli".into(), "jev-latest".into(), None)); }
     let raw = read_to_string(&path).map_err(|error| format!("판단 설정을 읽을 수 없습니다: {error}"))?;
     let provider = json_string_field(&raw, "provider").filter(|value| valid_provider(value)).unwrap_or_else(|| "codex-cli".into());
     let model = json_string_field(&raw, "jevModel").filter(|value| valid_model(value)).unwrap_or_else(|| "jev-latest".into());
-    let key = json_string_field(&raw, "jevApiKey").filter(|value| !value.is_empty() && value.len() <= 4096 && !value.contains(['\r', '\n', '\0']));
+    let key = json_string_field(&raw, "jevApiKey").filter(|value| valid_secret(value));
     Ok((provider, model, key))
 }
 
@@ -152,7 +158,7 @@ fn save_decision_settings(
 
     let (_, _, existing_key) = read_desktop_decision_settings(&app)?;
     let supplied = jev_api_key.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    if supplied.as_ref().is_some_and(|value| value.len() > 4096 || value.contains(['\r', '\n', '\0'])) {
+    if supplied.as_ref().is_some_and(|value| !valid_secret(value)) {
         return Err("Jev API key 형식이 올바르지 않습니다.".into());
     }
     let key = if clear_jev_key { None } else { supplied.or(existing_key) };
@@ -198,6 +204,7 @@ fn spawn_local_backend(app: &AppHandle, script: &str, data_dir: &Path) -> Result
         .env("CODEX_CLI_ENABLED", "true")
         .env("INTENT_WORLD_STATE_FILE", data_dir.join("state.json"))
         .env("INTENT_WORLD_RAW_DIR", data_dir.join("raw"))
+        .env("INTENT_WORLD_AUTONOMY_FILE", data_dir.join("autonomy.json"))
         .env("INTENT_WORLD_DECISION_SETTINGS_FILE", data_dir.join("decision-settings.json"))
         .env("INTENT_WORLD_WORKSPACE_ROOT_FILE", data_dir.join("workspace-root.txt"))
         .env("WORKSPACE_ROOT", data_dir.join("workspaces"))
@@ -228,6 +235,7 @@ fn spawn_packaged_backend(app: &AppHandle, sidecar: &str, data_dir: &Path) -> Re
         .env("CODEX_CLI_ENABLED", "true")
         .env("INTENT_WORLD_STATE_FILE", data_dir.join("state.json"))
         .env("INTENT_WORLD_RAW_DIR", data_dir.join("raw"))
+        .env("INTENT_WORLD_AUTONOMY_FILE", data_dir.join("autonomy.json"))
         .env("INTENT_WORLD_DECISION_SETTINGS_FILE", data_dir.join("decision-settings.json"))
         .env("INTENT_WORLD_WORKSPACE_ROOT_FILE", data_dir.join("workspace-root.txt"))
         .env("WORKSPACE_ROOT", data_dir.join("workspaces"));
