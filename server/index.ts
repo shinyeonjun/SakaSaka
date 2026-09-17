@@ -64,8 +64,8 @@ const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
   return {
-    budgetLimit: raw?.budgetLimit ?? 30,
-    maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200,
+    budgetLimit: 0,
+    maxHours: raw?.maxHours ?? 12, maxModelCalls: 0,
     localActions: raw?.localActions ?? true,
     requireExternalApproval: raw?.requireExternalApproval ?? true,
     productionBlocked: raw?.productionBlocked ?? true,
@@ -73,7 +73,7 @@ function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): Pr
     workspacePath: raw?.workspacePath,
     previewUrl: raw?.previewUrl,
     allowedDomains: raw?.allowedDomains,
-    sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: raw?.maxNativeTokens, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs,
+    sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: 0, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs,
     modelProvider: raw?.modelProvider ?? "auto",
     modelName: raw?.modelName,
     reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360,
@@ -357,15 +357,11 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > maximum) return `${key} must be a finite number between 0 and ${maximum}`;
     return value;
   };
-  const configuredBudget = Number(process.env.DEFAULT_RUN_BUDGET ?? "30");
-  const defaultBudget = Number.isFinite(configuredBudget) && configuredBudget > 0 ? configuredBudget : 30;
-  const budgetLimit = positiveNumber("budgetLimit", defaultBudget, 1_000_000);
+  const budgetLimit = 0;
   const maxHours = positiveNumber("maxHours", 12, 168);
-  const maxModelCalls = positiveNumber("maxModelCalls", 200, 10_000);
+  const maxModelCalls = 0;
   const reviewIntervalMinutes = positiveNumber("reviewIntervalMinutes", 360, 10_080);
-  if (typeof budgetLimit === "string") return { error: budgetLimit };
   if (typeof maxHours === "string") return { error: maxHours };
-  if (typeof maxModelCalls === "string" || !Number.isInteger(maxModelCalls)) return { error: "maxModelCalls must be a positive integer" };
   if (typeof reviewIntervalMinutes === "string") return { error: reviewIntervalMinutes };
   const optionalPositive = (key: string, fallback: number, maximum: number): number | string => {
     const value = body[key];
@@ -402,9 +398,9 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const executionMode = body.executionMode ?? "atomic";
   if (executionMode !== "atomic" && executionMode !== "native") return { error: "executionMode must be atomic or native" };
   const maxNativeTurns = optionalPositive("maxNativeTurns", 40, 1000);
-  const maxNativeTokens = optionalPositive("maxNativeTokens", 250000, 10000000);
+  const maxNativeTokens = 0;
   const nativeTurnTimeoutMs = optionalPositive("nativeTurnTimeoutMs", 300000, 540000);
-  for (const limit of [maxNativeTurns, maxNativeTokens, nativeTurnTimeoutMs]) if (typeof limit === "string") return { error: limit };
+  for (const limit of [maxNativeTurns, nativeTurnTimeoutMs]) if (typeof limit === "string") return { error: limit };
   const sandboxMode = body.sandboxMode === undefined ? "process" : body.sandboxMode;
   if (sandboxMode !== "process" && sandboxMode !== "docker") return { error: "sandboxMode must be process or docker" };
   const modelProvider = body.modelProvider === undefined ? "auto" : body.modelProvider;
@@ -681,10 +677,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (method === "POST" && parts[2] === "execution" && parts.length === 3) {
       const body = await readJson(request);
       if (body.executionMode !== "atomic" && body.executionMode !== "native") { sendError(response, 400, "executionMode must be atomic or native"); return; }
-      for (const [key, maximum] of [["maxNativeTurns", 1000], ["maxNativeTokens", 10000000]] as const) {
-        const value = body[key];
-        if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > maximum)) { sendError(response, 400, `${key} is out of range`); return; }
-      }
+      const nativeTurns = body.maxNativeTurns;
+      if (nativeTurns !== undefined && (typeof nativeTurns !== "number" || !Number.isInteger(nativeTurns) || nativeTurns <= 0 || nativeTurns > 1000)) { sendError(response, 400, "maxNativeTurns is out of range"); return; }
+      const nativeTokens = body.maxNativeTokens;
+      if (nativeTokens !== undefined && (typeof nativeTokens !== "number" || !Number.isInteger(nativeTokens) || nativeTokens < 0 || nativeTokens > 10000000)) { sendError(response, 400, "maxNativeTokens is out of range"); return; }
       if (project.status === "KILLED") { sendError(response, 409, "killed project cannot change execution mode"); return; }
       const executionMode = body.executionMode;
       await commitMutation((current) => updateExecutionSettings(current, projectId, { executionMode, maxNativeTurns: body.maxNativeTurns as number | undefined, maxNativeTokens: body.maxNativeTokens as number | undefined }));
