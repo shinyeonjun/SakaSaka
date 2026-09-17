@@ -7,6 +7,7 @@
     "dev": "vite",
     "api": "tsx server/index.ts",
     "worker": "tsx server/workerCli.ts",
+    "decision:setup": "tsx scripts/configureDecision.ts",
     "build": "tsc -b && vite build",
     "build:api": "tsc --noEmit -p tsconfig.server.json",
     "typecheck": "tsc -b --pretty false",
