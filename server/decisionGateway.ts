@@ -1,5 +1,15 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ModelUsage } from "../src/ports";
+import { redactSecretLikeText } from "../src/security";
 import { runCodexStructured, type CodexStructuredRequest, type CodexStructuredResult } from "./codexStructured";
+import {
+  configuredDecisionProvider,
+  configuredTypeSafeApiKey,
+  configuredTypeSafeModel,
+  runtimeDecisionPublicConfig,
+  type RuntimeDecisionProvider,
+} from "./runtimeDecisionConfig";
 
 export type DecisionQuestion =
   | { type: "noul"; instructions: string; criteria?: string }
@@ -32,10 +42,11 @@ export interface DecisionGateway {
 }
 
 export interface DecisionProviderStatus {
-  requested: "codex-cli" | "jev" | "hybrid";
+  requested: RuntimeDecisionProvider;
   effective: "codex-cli" | "jev" | "hybrid" | "unavailable";
   jevConfigured: boolean;
   jevModel: string;
+  apiKeySource: "local-file" | "environment" | "none";
   detail: string;
 }
 
@@ -177,6 +188,24 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+function persistJevRaw(purpose: string, payload: unknown): string {
+  const directory = resolve(process.cwd(), process.env.INTENT_WORLD_RAW_DIR ?? ".data/raw");
+  mkdirSync(directory, { recursive: true });
+  const safePurpose = purpose.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "decision";
+  const name = `${Date.now()}-jev-${safePurpose}.json`;
+  writeFileSync(join(directory, name), redactSecretLikeText(JSON.stringify(payload)).slice(0, 1_048_576), { encoding: "utf8", mode: 0o600 });
+  return `local-raw://${name}`;
+}
+
+async function waitForRetry(delay: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolveWait, rejectWait) => {
+    if (signal.aborted) { rejectWait(new Error("Jev decision request cancelled")); return; }
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolveWait(); }, delay);
+    const onAbort = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); rejectWait(new Error("Jev decision request cancelled")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class JevDecisionGateway implements DecisionGateway {
   private readonly apiKey?: string;
   private readonly endpoint: string;
@@ -185,9 +214,9 @@ export class JevDecisionGateway implements DecisionGateway {
   private readonly timeoutMs: number;
 
   constructor(options: JevGatewayOptions = {}) {
-    this.apiKey = options.apiKey ?? process.env.TYPESAFE_API_KEY?.trim();
+    this.apiKey = options.apiKey ?? configuredTypeSafeApiKey();
     this.endpoint = jevEndpoint(options.endpoint);
-    this.model = options.model ?? process.env.TYPESAFE_JEV_MODEL?.trim() ?? process.env.TYPESAFE_DEFAULT_MODEL?.trim() ?? "jev-latest";
+    this.model = options.model ?? configuredTypeSafeModel();
     this.fetchImpl = options.fetchImpl ?? fetch;
     const rawTimeout = options.timeoutMs ?? Number(process.env.TYPESAFE_TIMEOUT_MS ?? 20_000);
     this.timeoutMs = Math.max(1_000, Math.min(120_000, Number.isFinite(rawTimeout) ? rawTimeout : 20_000));
@@ -196,7 +225,7 @@ export class JevDecisionGateway implements DecisionGateway {
   isConfigured(): boolean { return Boolean(this.apiKey); }
 
   async decide(request: DecisionBatchRequest): Promise<DecisionBatchResult> {
-    if (!this.apiKey) throw new Error("TYPESAFE_API_KEY is not configured");
+    if (!this.apiKey) throw new Error("TypeSafe API key is not configured");
     const controller = new AbortController();
     const abort = () => controller.abort(request.signal?.reason);
     if (request.signal?.aborted) abort();
@@ -214,12 +243,7 @@ export class JevDecisionGateway implements DecisionGateway {
           signal: controller.signal,
         });
         if (response.ok || !isRetryableStatus(response.status) || attempt === 2) break;
-        const delay = retryDelay(response, attempt);
-        await new Promise<void>((resolve, reject) => {
-          const retryTimer = setTimeout(resolve, delay);
-          const onAbort = () => { clearTimeout(retryTimer); reject(new Error("Jev decision request cancelled")); };
-          if (controller.signal.aborted) onAbort(); else controller.signal.addEventListener("abort", onAbort, { once: true });
-        });
+        await waitForRetry(retryDelay(response, attempt), controller.signal);
       }
       if (!response?.ok) throw new Error(`Jev API ${response?.status ?? "unknown"}: ${response ? (await response.text()).slice(0, 500) : "no response"}`);
       const value = await response.json() as Record<string, unknown>;
@@ -247,6 +271,7 @@ export class JevDecisionGateway implements DecisionGateway {
       const inputTokens = Math.max(0, Number(usageRaw.input_tokens ?? 0) || 0);
       const outputTokens = Math.max(0, Number(usageRaw.output_tokens ?? 0) || 0);
       const price = Math.max(0, Number(process.env.JEV_COST_PER_MILLION ?? 0.042) || 0.042);
+      const rawRef = persistJevRaw(request.purpose, { model: value.model ?? this.model, answers: value.answers, usage: value.usage });
       const usage: ModelUsage = {
         modelVersion: `jev:${String(value.model ?? this.model)}`,
         tokens: inputTokens + outputTokens,
@@ -255,6 +280,7 @@ export class JevDecisionGateway implements DecisionGateway {
         usageKnown: inputTokens + outputTokens > 0,
         cost: Number(((inputTokens / 1_000_000) * price).toFixed(6)),
         latencyMs: Date.now() - startedAt,
+        rawRef,
       };
       return { provider: "jev", model: String(value.model ?? this.model), answers: normalized, latencyMs: Date.now() - startedAt, usage };
     } finally {
@@ -276,9 +302,8 @@ export class HybridDecisionGateway implements DecisionGateway {
   }
 }
 
-export function requestedDecisionProvider(): "codex-cli" | "jev" | "hybrid" {
-  const configured = process.env.SAKASAKA_DECISION_PROVIDER?.trim().toLowerCase();
-  return configured === "jev" || configured === "hybrid" ? configured : "codex-cli";
+export function requestedDecisionProvider(): RuntimeDecisionProvider {
+  return configuredDecisionProvider();
 }
 
 export function createDecisionGateway(): DecisionGateway {
@@ -289,11 +314,32 @@ export function createDecisionGateway(): DecisionGateway {
 }
 
 export function decisionProviderStatus(): DecisionProviderStatus {
-  const requested = requestedDecisionProvider();
-  const jev = new JevDecisionGateway();
-  const configured = jev.isConfigured();
-  const jevModel = process.env.TYPESAFE_JEV_MODEL?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim() || "jev-latest";
-  if (requested === "jev") return { requested, effective: configured ? "jev" : "unavailable", jevConfigured: configured, jevModel, detail: configured ? "Jev bounded decision layer is configured." : "Set TYPESAFE_API_KEY to enable Jev." };
-  if (requested === "hybrid") return { requested, effective: configured ? "hybrid" : "codex-cli", jevConfigured: configured, jevModel, detail: configured ? "Jev is primary and Codex is the decision fallback." : "Jev is not configured; Codex decision fallback is active." };
-  return { requested, effective: "codex-cli", jevConfigured: configured, jevModel, detail: "Codex CLI handles bounded decisions. Set SAKASAKA_DECISION_PROVIDER=jev or hybrid after Jev access is approved." };
+  const publicConfig = runtimeDecisionPublicConfig();
+  const requested = publicConfig.provider;
+  const configured = publicConfig.apiKeyConfigured;
+  const jevModel = publicConfig.typesafeModel;
+  if (requested === "jev") return {
+    requested,
+    effective: configured ? "jev" : "unavailable",
+    jevConfigured: configured,
+    jevModel,
+    apiKeySource: publicConfig.apiKeySource,
+    detail: configured ? "Jev bounded decision layer is configured." : "Add a TypeSafe API key in SakaSaka settings to enable Jev.",
+  };
+  if (requested === "hybrid") return {
+    requested,
+    effective: configured ? "hybrid" : "codex-cli",
+    jevConfigured: configured,
+    jevModel,
+    apiKeySource: publicConfig.apiKeySource,
+    detail: configured ? "Jev is primary for bounded semantic judgments and Codex is the fallback." : "Jev is not configured; Codex handles bounded decisions until a TypeSafe API key is added.",
+  };
+  return {
+    requested,
+    effective: "codex-cli",
+    jevConfigured: configured,
+    jevModel,
+    apiKeySource: publicConfig.apiKeySource,
+    detail: "Codex CLI handles bounded decisions. Switch to Jev or hybrid in SakaSaka settings after Jev access is approved.",
+  };
 }
