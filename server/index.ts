@@ -95,7 +95,7 @@ class BadRequestError extends Error {}
 function normalizeState(candidate: unknown): AppState {
   const value = candidate as Partial<AppState>;
   if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) throw new Error("state snapshot is missing required collections");
-  return {
+  const normalized: AppState = {
     ...(value as AppState),
     projects: value.projects.map((project) => ({
       ...project,
@@ -126,6 +126,14 @@ function normalizeState(candidate: unknown): AppState {
     retrievalIndex: Array.isArray(value.retrievalIndex) ? value.retrievalIndex : [],
     approvalGrants: Array.isArray(value.approvalGrants) ? value.approvalGrants : [],
     processes: Array.isArray(value.processes) ? value.processes : [],
+  };
+  const resourceLimitStop = /(?:토큰.*(?:상한|한도)|실행 예산|최대 모델 호출|OUTPUT_LIMIT)/i;
+  const recoverableProjectIds = new Set(normalized.runs.filter((run) => run.status === "STALLED" && resourceLimitStop.test(`${run.stopReason ?? ""} ${run.lastModelFailure?.code ?? ""} ${run.lastModelFailure?.message ?? ""}`)).map((run) => run.projectId));
+  if (!recoverableProjectIds.size) return normalized;
+  return {
+    ...normalized,
+    projects: normalized.projects.map((project) => recoverableProjectIds.has(project.id) && project.status === "STALLED" ? { ...project, status: "ACTIVE", nextReviewAt: undefined } : project),
+    runs: normalized.runs.map((run) => recoverableProjectIds.has(run.projectId) && run.status === "STALLED" ? { ...run, status: "ACTIVE", phase: "wake", stopReason: undefined, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, execution: undefined } : run),
   };
 }
 
