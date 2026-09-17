@@ -92,6 +92,8 @@ export interface ProjectSettings {
   maxHours: number;
   /** Hard cap even when CLI billing cannot be measured. */
   maxModelCalls?: number;
+  /** Temporary autonomy test mode: keep measuring spend/calls/tokens but do not stop on those limits. */
+  resourceLimitsDisabled?: boolean;
   localActions: boolean;
   requireExternalApproval: boolean;
   productionBlocked: boolean;
