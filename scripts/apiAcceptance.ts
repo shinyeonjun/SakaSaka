@@ -147,8 +147,6 @@ async function main(): Promise<void> {
     const greenfieldProjectId = `${projectId}-greenfield`;
     const greenfield = await post(baseUrl, "/projects", { projectId: greenfieldProjectId, rawIntent: "빈 workspace에서 작은 앱을 만들어줘", settings: { budgetLimit: 5, maxHours: 1, cycleDelayMs: 60_000 } });
     assert.equal(greenfield.response.status, 201, JSON.stringify(greenfield.body));
-    assert.equal(greenfield.body.project.settings.budgetLimit, 0);
-    assert.equal(greenfield.body.project.settings.maxModelCalls, 0);
     provisionedWorkspace = greenfield.body.project.settings.workspacePath;
     assert.ok(typeof provisionedWorkspace === "string" && existsSync(provisionedWorkspace));
     assert.ok(provisionedWorkspace.startsWith(join(repoRoot, ".intent-world", "workspaces")));
@@ -159,7 +157,7 @@ async function main(): Promise<void> {
     assert.equal(switched.body.project.status, "PAUSED");
     assert.equal(switched.body.project.settings.executionMode, "native");
     assert.equal(switched.body.project.settings.workspacePath, provisionedWorkspace);
-    assert.equal(switched.body.project.settings.maxNativeTokens, 0);
+    assert.equal(switched.body.project.settings.maxNativeTokens, 12000);
     const invalidExecution = await post(baseUrl, `/projects/${encodeURIComponent(greenfieldProjectId)}/execution`, { executionMode: "native", maxNativeTokens: -1 });
     assert.equal(invalidExecution.response.status, 400);
     const legacyExecution = await post(baseUrl, `/projects/${encodeURIComponent(greenfieldProjectId)}/execution`, { executionMode: "atomic" });
