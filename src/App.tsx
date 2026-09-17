@@ -2,15 +2,17 @@ import { AppShell } from "./components/AppShell";
 import { useRouter } from "./router";
 import { ActivityPage } from "./screens/ActivityPage";
 import { ArtifactsPage } from "./screens/ArtifactsPage";
+import { ControlCenterPage } from "./screens/ControlCenterPage";
+import { CoveragePage } from "./screens/CoveragePage";
+import { EvidenceWorldPage } from "./screens/EvidenceWorldPage";
 import { ExperimentsPage } from "./screens/ExperimentsPage";
 import { HandoffRoutesPage, HandoffRuntimePage } from "./screens/HandoffPages";
+import { HumanInboxPage } from "./screens/HumanInboxPage";
 import { HumanItemDetailPage } from "./screens/HumanItemDetailPage";
-import { NeedsYouPage } from "./screens/NeedsYouPage";
+import { MissionsPage } from "./screens/MissionsPage";
 import { NewProjectPage } from "./screens/NewProjectPage";
-import { OverviewPage } from "./screens/OverviewPage";
 import { SettingsPage } from "./screens/SettingsPage";
 import { GlobalSettingsPage } from "./screens/GlobalSettingsPage";
-import { WorldPage } from "./screens/WorldPage";
 import { Button, Card } from "./components/ui";
 
 export function App() {
@@ -23,11 +25,14 @@ export function App() {
     switch (route.kind) {
       case "new": return <NewProjectPage />;
       case "global-settings": return <GlobalSettingsPage />;
-      case "overview": return <OverviewPage projectId={route.projectId} />;
-      case "needs-you": return <NeedsYouPage projectId={route.projectId} />;
+      case "overview": return <ControlCenterPage projectId={route.projectId} />;
+      case "missions": return <MissionsPage projectId={route.projectId} />;
+      case "coverage": return <CoveragePage projectId={route.projectId} />;
+      case "needs-you": return <HumanInboxPage projectId={route.projectId} />;
       case "human-item": return <HumanItemDetailPage projectId={route.projectId} itemId={route.itemId} />;
+      case "evidence": return <EvidenceWorldPage projectId={route.projectId} />;
       case "activity": return <ActivityPage projectId={route.projectId} />;
-      case "world": return <WorldPage projectId={route.projectId} />;
+      case "world": return <EvidenceWorldPage projectId={route.projectId} />;
       case "artifacts": return <ArtifactsPage projectId={route.projectId} />;
       case "experiments": return <ExperimentsPage projectId={route.projectId} />;
       case "settings": return <SettingsPage projectId={route.projectId} />;

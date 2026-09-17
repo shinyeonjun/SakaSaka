@@ -1,6 +1,7 @@
 import { getRun } from "./runtime";
 import type { AppAction } from "./store";
 import type { AppState, ModelCatalog, ModelProvider, ModelProviderStatus, RuntimeConnectionStatus } from "./types";
+import type { AutonomyProjectProjection } from "./autonomyProjection";
 import { isDesktopApp } from "./desktop";
 
 const baseUrl = (import.meta.env.VITE_API_URL ?? (isDesktopApp ? "http://127.0.0.1:8787" : "")).replace(/\/+$/, "");
@@ -49,6 +50,10 @@ export async function fetchServerStateWithRetry(attempts = 24, delayMs = 250): P
 
 export function fetchRuntimeConnectionStatus(projectId: string): Promise<RuntimeConnectionStatus> {
   return request<RuntimeConnectionStatus>(`/projects/${encodeURIComponent(projectId)}/runtime-status`);
+}
+
+export function fetchAutonomyProjection(projectId: string): Promise<AutonomyProjectProjection> {
+  return request<AutonomyProjectProjection>(`/projects/${encodeURIComponent(projectId)}/autonomy`);
 }
 
 export function fetchModelCatalog(): Promise<ModelCatalog> {
