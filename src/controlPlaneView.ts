@@ -14,6 +14,15 @@ export interface ControlPlaneGapView {
   priority: number;
   evidenceId: string;
   observedAt: string;
+  status?: string;
+  source?: string;
+  summary?: string;
+  evidenceNeeded?: string[];
+  sourceRefs?: string[];
+  impact?: number;
+  uncertainty?: number;
+  novelty?: number;
+  urgency?: number;
 }
 
 export interface ControlPlaneMissionView {
@@ -23,6 +32,10 @@ export interface ControlPlaneMissionView {
   evidenceContract: string[];
   observedAt: string;
   evidenceId: string;
+  status?: string;
+  priority?: number;
+  gapId?: string;
+  attempt?: number;
 }
 
 export interface ControlPlaneSnapshotView {
