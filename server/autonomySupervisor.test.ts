@@ -45,11 +45,13 @@ describe("autonomy supervisor", () => {
     const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
     const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
     const initial = createProject(createEmptyState(), "Legacy deterministic contract", "project-legacy", { workspacePath: directory, modelProvider: "deterministic" });
+    const beforeObservations = initial.observations.length;
     const store = memoryStore(initial);
     const result = await runAutonomyPrelude(store, "project-legacy", { store: fileStore, decisionGateway: gateway });
     expect(result).toBeUndefined();
     expect(fileStore.readProject("project-legacy")).toBeUndefined();
-    expect(store.read().observations).toHaveLength(0);
+    expect(store.read().observations).toHaveLength(beforeObservations);
+    expect(store.read().observations.some((observation) => observation.rawRef.startsWith("autonomy://"))).toBe(false);
   });
 
   it("wakes equilibrium when Codex coverage still has material unresolved work", async () => {
