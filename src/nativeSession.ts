@@ -8,8 +8,40 @@ export interface MissionCheckpoint {
   disposition: "continue" | "waiting" | "equilibrium";
   summary: string;
   remainingWork: string[];
+  /** Model-supplied references; these are not trusted Evidence IDs until resolved. */
   evidenceRefs: string[];
   wakeReasons: string[];
+}
+
+export const checkpointLimits = {
+  summary: { minLength: 1, maxLength: 4_000 },
+  remainingWork: { maxItems: 32, itemMinLength: 1, itemMaxLength: 1_000 },
+  evidenceRefs: { maxItems: 64, itemMinLength: 1, itemMaxLength: 512 },
+  wakeReasons: { maxItems: 16, itemMinLength: 1, itemMaxLength: 1_000 },
+} as const;
+
+const checkpointStringList = (limits: { maxItems: number; itemMinLength: number; itemMaxLength: number }): InputSchema => ({
+  type: "array", maxItems: limits.maxItems,
+  items: { type: "string", minLength: limits.itemMinLength, maxLength: limits.itemMaxLength },
+});
+
+export type CheckpointReferenceKind = "evidence" | "record" | "artifact" | "unresolved";
+export type CheckpointReferenceStatus = "resolved" | "unverified" | "unresolved" | "rejected";
+export interface CheckpointReference {
+  input: string;
+  kind: CheckpointReferenceKind;
+  status: CheckpointReferenceStatus;
+  normalized?: string;
+  evidenceId?: string;
+  recordRef?: string;
+  relativePath?: string;
+  relatedEvidenceIds?: string[];
+  reason?: string;
+}
+
+export interface CheckpointParseResult {
+  checkpoint?: MissionCheckpoint;
+  reason?: string;
 }
 
 export interface NativeSession {
@@ -19,9 +51,12 @@ export interface NativeSession {
   turnsStarted: number;
   accountedTokens: number;
   accountedInputTokens: number;
+  accountedCachedInputTokens: number;
   accountedOutputTokens: number;
   deliveredHumanSequence: number;
   checkpoint?: MissionCheckpoint;
+  /** Resolved classification of checkpoint.evidenceRefs; artifact paths stay unverified. */
+  checkpointReferences?: CheckpointReference[];
   lastMessage?: string;
   rawRef?: string;
   state: "starting" | "working" | "resting" | "interrupted" | "failed";
@@ -32,36 +67,150 @@ export const checkpointSchema: InputSchema = {
   required: ["disposition", "summary", "remainingWork", "evidenceRefs", "wakeReasons"],
   properties: {
     disposition: { type: "string", enum: ["continue", "waiting", "equilibrium"] },
-    summary: { type: "string", minLength: 1, maxLength: 4000 },
-    remainingWork: { type: "array", items: { type: "string", maxLength: 1000 }, maxItems: 32 },
-    evidenceRefs: { type: "array", items: { type: "string", maxLength: 512 }, maxItems: 64 },
-    wakeReasons: { type: "array", items: { type: "string", maxLength: 1000 }, maxItems: 16 },
+    summary: { type: "string", ...checkpointLimits.summary },
+    remainingWork: checkpointStringList(checkpointLimits.remainingWork),
+    evidenceRefs: { ...checkpointStringList(checkpointLimits.evidenceRefs), description: "내부 Evidence ID, 알려진 원본 기록 참조, 또는 artifact:<작업공간 기준 상대 경로>. 경로는 Evidence ID가 아닙니다." },
+    wakeReasons: checkpointStringList(checkpointLimits.wakeReasons),
   },
 };
 
-const evidenceReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$/;
-
 export function parseCheckpoint(raw: string): MissionCheckpoint | undefined {
+  return inspectCheckpoint(raw).checkpoint;
+}
+
+export function inspectCheckpoint(raw: string): CheckpointParseResult {
   try {
     const value: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
-    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: "not-object" };
     const v = value as Record<string, unknown>;
-    if (!["continue", "waiting", "equilibrium"].includes(String(v.disposition)) || typeof v.summary !== "string" || !v.summary.trim() || v.summary.length > 4000) return undefined;
-    for (const [name, max, length] of [["remainingWork", 32, 1000], ["evidenceRefs", 64, 512], ["wakeReasons", 16, 1000]] as const) {
-      if (!Array.isArray(v[name]) || v[name].length > max || v[name].some((s: unknown) => typeof s !== "string" || s.length > length)) return undefined;
+    if (typeof v.disposition !== "string" || !["continue", "waiting", "equilibrium"].includes(v.disposition)) return { reason: "invalid-disposition" };
+    if (typeof v.summary !== "string" || v.summary.length < checkpointLimits.summary.minLength || v.summary.length > checkpointLimits.summary.maxLength) return { reason: "invalid-summary" };
+    for (const [name, limits] of Object.entries(checkpointLimits).filter(([name]) => name !== "summary") as Array<["remainingWork" | "evidenceRefs" | "wakeReasons", { maxItems: number; itemMinLength: number; itemMaxLength: number }]>) {
+      const list = v[name];
+      if (!Array.isArray(list) || list.length > limits.maxItems || list.some((item) => typeof item !== "string" || item.length < limits.itemMinLength || item.length > limits.itemMaxLength)) return { reason: `invalid-${name}` };
     }
-    if (Object.keys(v).some((key) => !Object.hasOwn(checkpointSchema.properties!, key)) || (v.evidenceRefs as string[]).some((ref) => !evidenceReferencePattern.test(ref))) return undefined;
-    return {
+    if (Object.keys(v).some((key) => !Object.hasOwn(checkpointSchema.properties!, key))) return { reason: "unknown-field" };
+    const checkpoint = {
       disposition: v.disposition as MissionCheckpoint["disposition"],
       summary: redactSecretLikeText(v.summary),
       remainingWork: (v.remainingWork as string[]).map(redactSecretLikeText),
-      evidenceRefs: (v.evidenceRefs as string[]).map(redactSecretLikeText), wakeReasons: (v.wakeReasons as string[]).map(redactSecretLikeText),
+      evidenceRefs: (v.evidenceRefs as string[]).map(redactSecretLikeText),
+      wakeReasons: (v.wakeReasons as string[]).map(redactSecretLikeText),
     };
-  } catch { return undefined; }
+    return { checkpoint };
+  } catch { return { reason: "malformed-json" }; }
+}
+
+function referenceInput(value: string): string { return redactSecretLikeText(value.trim()).slice(0, checkpointLimits.evidenceRefs.itemMaxLength); }
+
+function pathLike(value: string, explicitArtifact: boolean): boolean {
+  return explicitArtifact || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value) || value.includes("/") || value.includes("\\") || /\.[^\\/]+$/.test(value);
+}
+
+interface LexicalPath {
+  absolute: boolean;
+  root: string;
+  parts: string[];
+  invalid: boolean;
+  escapedRoot: boolean;
+}
+
+function lexicalPath(value: string): LexicalPath {
+  const normalized = value.replaceAll("\\", "/");
+  let rest = normalized;
+  let root = "";
+  let absolute = false;
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    absolute = true;
+    root = `${normalized.slice(0, 2).toLowerCase()}/`;
+    rest = normalized.slice(3);
+  } else if (normalized.startsWith("//")) {
+    absolute = true;
+    root = "//";
+    rest = normalized.slice(2);
+  } else if (normalized.startsWith("/")) {
+    absolute = true;
+    root = "/";
+    rest = normalized.slice(1);
+  }
+  const parts: string[] = [];
+  let invalid = value.includes("\0");
+  let escapedRoot = false;
+  for (const part of rest.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) escapedRoot = true;
+      else parts.pop();
+      continue;
+    }
+    if (part.includes(":")) invalid = true;
+    parts.push(part);
+  }
+  return { absolute, root, parts, invalid, escapedRoot };
+}
+
+function samePathPart(left: string, right: string): boolean {
+  return (typeof process === "undefined" || process.platform === "win32" ? left.toLowerCase() : left) === (typeof process === "undefined" || process.platform === "win32" ? right.toLowerCase() : right);
+}
+
+function resolveArtifactPath(value: string, workspacePath: string | undefined): { relativePath?: string; reason?: string } {
+  if (!workspacePath || !workspacePath.trim()) return { reason: "workspace-unavailable" };
+  const workspace = lexicalPath(workspacePath);
+  const candidate = lexicalPath(value);
+  if (!workspace.absolute || workspace.invalid || workspace.escapedRoot || !value || candidate.invalid || candidate.escapedRoot) return { reason: "invalid-path" };
+  if (candidate.absolute) {
+    if (typeof process !== "undefined" && process.platform !== "win32" && /^[A-Za-z]:[\\/]/.test(value)) return { reason: "outside-workspace" };
+    if (workspace.root !== candidate.root && !samePathPart(workspace.root, candidate.root)) return { reason: "outside-workspace" };
+    if (candidate.parts.length <= workspace.parts.length || workspace.parts.some((part, index) => !samePathPart(part, candidate.parts[index]))) return { reason: "outside-workspace" };
+    return { relativePath: candidate.parts.slice(workspace.parts.length).join("/") };
+  }
+  if (typeof process !== "undefined" && process.platform !== "win32" && /^[A-Za-z]:[\\/]/.test(value)) return { reason: "outside-workspace" };
+  return { relativePath: candidate.parts.join("/") || undefined, reason: candidate.parts.length ? undefined : "invalid-path" };
+}
+
+/** Resolve model references using current project records only; never reads the filesystem or performs I/O. */
+export function resolveCheckpointReferences(state: AppState, projectId: string, checkpoint: MissionCheckpoint, workspacePath?: string): CheckpointReference[] {
+  const ownEvidence = state.evidence.filter((item) => item.projectId === projectId);
+  const otherEvidenceIds = new Set(state.evidence.filter((item) => item.projectId !== projectId).map((item) => item.id));
+  const recordEvidenceIds = new Map<string, string[]>();
+  const rememberRecord = (record: string, evidenceId?: string) => {
+    const ids = recordEvidenceIds.get(record) ?? [];
+    if (evidenceId && !ids.includes(evidenceId)) ids.push(evidenceId);
+    recordEvidenceIds.set(record, ids);
+  };
+  for (const item of ownEvidence) if (item.rawRef) rememberRecord(item.rawRef, item.id);
+  for (const observation of state.observations.filter((item) => item.projectId === projectId)) rememberRecord(observation.rawRef);
+  for (const event of state.events.filter((item) => item.projectId === projectId)) {
+    const rawRef = event.payload?.rawRef;
+    if (typeof rawRef === "string") rememberRecord(rawRef);
+  }
+  const evidenceById = new Map(ownEvidence.map((item) => [item.id, item]));
+  const resolveOne = (raw: string): CheckpointReference => {
+    const input = referenceInput(raw);
+    const evidenceKey = input.startsWith("evidence:") ? input.slice("evidence:".length) : input;
+    const evidence = evidenceById.get(evidenceKey);
+    if (evidence) return { input, kind: "evidence", status: "resolved", normalized: `evidence:${evidence.id}`, evidenceId: evidence.id };
+    if (otherEvidenceIds.has(evidenceKey)) return { input, kind: "evidence", status: "rejected", reason: "other-project-evidence" };
+    const recordKey = input.startsWith("record:") ? input.slice("record:".length) : input.startsWith("raw:") ? input.slice("raw:".length) : input;
+    const record = recordEvidenceIds.get(recordKey);
+    if (record) return { input, kind: "record", status: "resolved", normalized: recordKey, recordRef: recordKey, relatedEvidenceIds: record.length ? record : undefined };
+    const explicitArtifact = input.startsWith("artifact:");
+    const explicitRecord = input.startsWith("record:") || input.startsWith("raw:");
+    if (!explicitArtifact && !explicitRecord && /^(?![A-Za-z]:[\\/])[A-Za-z][A-Za-z0-9+.-]*:/i.test(input)) return { input, kind: "unresolved", status: "rejected", reason: "external-uri" };
+    const artifactValue = explicitArtifact ? input.slice("artifact:".length).trim() : input;
+    if (pathLike(artifactValue, explicitArtifact)) {
+      const artifact = resolveArtifactPath(artifactValue, workspacePath);
+      if (!artifact.relativePath) return { input, kind: "unresolved", status: "rejected", reason: artifact.reason ?? "invalid-path" };
+      const relatedEvidenceIds = ownEvidence.filter((item) => `${item.summary}\n${item.source}\n${item.rawRef ?? ""}`.includes(artifactValue) || `${item.summary}\n${item.source}\n${item.rawRef ?? ""}`.includes(artifact.relativePath!)).map((item) => item.id);
+      return { input, kind: "artifact", status: "unverified", normalized: `artifact:${artifact.relativePath}`, relativePath: artifact.relativePath, relatedEvidenceIds: relatedEvidenceIds.length ? relatedEvidenceIds : undefined, reason: "artifact-path-is-not-evidence" };
+    }
+    return { input, kind: "unresolved", status: "unresolved", reason: "not-found" };
+  };
+  return checkpoint.evidenceRefs.map(resolveOne);
 }
 
 export function newNativeSession(): NativeSession {
-  return { protocolVersion: 1, turnsStarted: 0, accountedTokens: 0, accountedInputTokens: 0, accountedOutputTokens: 0, deliveredHumanSequence: -1, state: "starting" };
+  return { protocolVersion: 1, turnsStarted: 0, accountedTokens: 0, accountedInputTokens: 0, accountedCachedInputTokens: 0, accountedOutputTokens: 0, deliveredHumanSequence: -1, state: "starting" };
 }
 
 export function patchNativeSession(state: AppState, projectId: string, changes: Partial<NativeSession>): AppState {

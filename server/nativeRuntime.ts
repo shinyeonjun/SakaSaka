@@ -9,7 +9,7 @@ import { observeLocalWorld } from "./localRuntime";
 import { hydrateManagedProcesses, stopProcessesForRun } from "./processManager";
 import { recordNativeItem, recordNativeRawTool } from "./nativeEvidence";
 import { accountModelUsage, assembleContextAsync, executionBlockReason, getIntent, getMatchingApprovalGrant, getProject, getRun, getToolSurface, getWorldSnapshot, makeId, recordModelFailure, stallProject } from "../src/runtime";
-import { checkpointSchema, checkpointStatus, humanSignals, missionEvent, missionHumanSchema, missionInbox, newNativeSession, parseCheckpoint, parseMissionHuman, patchNativeSession, registerMissionHuman } from "../src/nativeSession";
+import { checkpointSchema, checkpointStatus, humanSignals, inspectCheckpoint, missionEvent, missionHumanSchema, missionInbox, newNativeSession, parseMissionHuman, patchNativeSession, registerMissionHuman, resolveCheckpointReferences } from "../src/nativeSession";
 import { classifyProviderFailure, ModelGatewayError, modelFailure } from "../src/modelFailure";
 import { redactSecretLikeText, validateActionBoundary, actionFingerprint } from "../src/security";
 import { strictInputSchema, toolInputSchemas, validateActionInput } from "../src/toolContracts";
@@ -52,6 +52,7 @@ export function missionInstructions(): string {
     "네트워크와 쓰기는 제공된 sandbox/권한 안에서만 가능합니다. 비밀을 조회하거나 경계를 우회하거나 호스트/운영 배포 권한을 요구하지 마십시오. 거절된 작업의 안전한 대안을 찾으십시오.",
     "셸 도구의 명령 종료는 제품 완료가 아닙니다. 실제 증거와 남은 불확실성을 구분하십시오. 제품 작업을 충분히 진행한 뒤 최종 응답을 checkpoint JSON으로 남깁니다.",
     "checkpoint: disposition=continue(가치 있는 일이 남음), waiting(실제 질문/승인 답변 없이는 현재 더 진행할 수 없음), equilibrium(지금 의미 있는 일이 없음). summary, remainingWork, evidenceRefs, wakeReasons를 포함하십시오. 제품 검증을 하지 않았으면 했다고 말하지 마십시오.",
+    "checkpoint의 evidenceRefs는 sakasaka_context의 checkpointReferenceGuide에 있는 내부 Evidence ID 또는 알려진 recordRef를 우선 사용하십시오. 작업공간 산출물 경로를 보고할 때는 artifact:<작업공간 기준 상대 경로>를 사용하며, 절대 경로·상위 경로·외부 URI·다른 프로젝트 ID는 근거로 사용할 수 없습니다. 파일 경로는 Evidence ID가 아닙니다.",
     "지속 미리보기는 sakasaka_preview_start, 브라우저 관찰은 sakasaka_browser를 사용할 수 있습니다. managed 프로세스와 Codex 내부 프로세스는 서로 다른 이름공간입니다.",
   ].join("\n");
 }
@@ -59,7 +60,13 @@ export function missionInstructions(): string {
 async function assembleNativeContext(state: AppState, projectId: string) {
   const context = await assembleContextAsync(state, projectId);
   if (!context) return null;
+  const evidenceIds = (context.recentEvidenceViews ?? []).map((item) => item.id).slice(0, 32);
+  const recordRefs = [...new Set((context.recentEvidenceViews ?? []).map((item) => item.rawRef).filter((ref): ref is string => typeof ref === "string" && ref.length > 0))].slice(0, 32);
   return { ...context, modelVersion: `codex-app-server:${getProject(state, projectId)?.settings.modelName ?? "configured"}`, toolSurface: nativeTools(),
+    checkpointReferenceGuide: {
+      evidenceIds, recordRefs, artifactFormat: "artifact:<작업공간 기준 상대 경로>",
+      rules: ["evidenceRefs의 파일 경로는 Evidence ID가 아닙니다.", "작업공간 파일은 artifact: 상대 경로로 보고하고, 실제 검증 여부는 별도 증거로 남깁니다.", "컨텍스트에 표시된 내부 Evidence ID와 원본 recordRef만 그대로 사용할 수 있습니다."],
+    },
     executionBoundary: { engine: "codex-app-server", nativeSandbox: "workspace-write", nativeNetworkAccess: false, nativeApprovalPolicy: "never", environmentToolSandbox: getProject(state, projectId)?.settings.sandboxMode ?? "process" } };
 }
 
@@ -247,7 +254,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
           }
           if (item.type === "agentMessage" && typeof item.text === "string") {
             if (method === "item/completed") {
-              if (item.phase === "final_answer" || parseCheckpoint(item.text)) finalText = item.text;
+              if (item.phase === "final_answer" || inspectCheckpoint(item.text).checkpoint) finalText = item.text;
               await mutation((s) => missionEvent(patchNativeSession(s, projectId, { lastMessage: redactSecretLikeText(item.text as string).slice(0, 6000) }), projectId, "CYCLE_PHASE", "에이전트 작업 보고", item.text as string, { payload: { rawRef } }));
             }
           } else await mutation((s) => {
@@ -261,12 +268,13 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
         const total = asRecord(asRecord(params.tokenUsage).total);
         await mutation((s) => {
           const native = getRun(s, projectId)?.nativeSession ?? newNativeSession();
-          const tokens = Math.max(native.accountedTokens, safeNumber(total.totalTokens));
-          const input = Math.max(native.accountedInputTokens, safeNumber(total.inputTokens)), output = Math.max(native.accountedOutputTokens, safeNumber(total.outputTokens));
-          const delta = tokens - native.accountedTokens;
+          const previousTokens = safeNumber(native.accountedTokens), previousInput = safeNumber(native.accountedInputTokens), previousCachedInput = safeNumber(native.accountedCachedInputTokens), previousOutput = safeNumber(native.accountedOutputTokens);
+          const tokens = Math.max(previousTokens, safeNumber(total.totalTokens));
+          const input = Math.max(previousInput, safeNumber(total.inputTokens)), cachedInput = Math.max(previousCachedInput, safeNumber(total.cachedInputTokens)), output = Math.max(previousOutput, safeNumber(total.outputTokens));
+          const delta = tokens - previousTokens;
           const price = safeNumber(Number(process.env.MODEL_COST_PER_MILLION ?? 0));
-          let next = accountModelUsage(s, projectId, { modelVersion: `codex-app-server:${initial.settings.modelName ?? "configured"}`, tokens: delta, inputTokens: input - native.accountedInputTokens, outputTokens: output - native.accountedOutputTokens, cost: delta * price / 1000000, latencyMs: 0, usageKnown: true, rawRef });
-          next = patchNativeSession(next, projectId, { accountedTokens: tokens, accountedInputTokens: input, accountedOutputTokens: output });
+          let next = accountModelUsage(s, projectId, { modelVersion: `codex-app-server:${initial.settings.modelName ?? "configured"}`, tokens: delta, inputTokens: input - previousInput, outputTokens: output - previousOutput, cost: delta * price / 1000000, latencyMs: 0, usageKnown: true, rawRef });
+          next = patchNativeSession(next, projectId, { accountedTokens: tokens, accountedInputTokens: input, accountedCachedInputTokens: cachedInput, accountedOutputTokens: output });
           if (tokens >= limit(initial.settings.maxNativeTokens, 250000, 10000000)) tokenLimited = true;
           return next;
         });
@@ -371,10 +379,12 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     if (fatal) throw fatal;
     if (controller.signal.aborted) throw new ModelGatewayError(modelFailure(tokenLimited ? "OUTPUT_LIMIT" : "CANCELLED", cancelReason, false, { rawRef }));
     if (completedStatus !== "completed") throw new Error(`Codex 작업 구간 ${completedStatus}: ${JSON.stringify(finalError ?? {})}`);
-    const checkpoint = parseCheckpoint(finalText);
-    if (!checkpoint) throw new ModelGatewayError(modelFailure("INVALID_OUTPUT", "프로젝트 상태 checkpoint를 읽지 못했습니다. 작업 증거와 thread는 보존했습니다.", true, { rawRef }));
+    const parsedCheckpoint = inspectCheckpoint(finalText);
+    const checkpoint = parsedCheckpoint.checkpoint;
+    if (!checkpoint) throw new ModelGatewayError(modelFailure("INVALID_OUTPUT", `프로젝트 상태 checkpoint를 읽지 못했습니다 (${parsedCheckpoint.reason ?? "invalid-checkpoint"}). 작업 증거와 thread는 보존했습니다. 자동 재실행하지 않고 사람의 확인을 기다립니다.`, false, { rawRef }));
     // Fresh observation after execution; do not overwrite concurrent human decisions.
     const observed = await observeLocalWorld(store.read(), projectId);
+    const checkpointReferences = resolveCheckpointReferences(store.read(), projectId, checkpoint, workspace);
     await mutation((s) => {
       if (!sameControl(initial, getProject(s, projectId))) return s;
       const updatedWorld = getWorldSnapshot(observed, projectId);
@@ -395,10 +405,11 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
         : undefined;
       const repeats = JSON.stringify(run.nativeSession?.checkpoint) === JSON.stringify(checkpoint);
       const noProgress = repeats ? run.noProgressCycles + 1 : 0;
-      let next = patchNativeSession(s, projectId, { checkpoint, state: "resting", turnId: undefined });
+      let next = patchNativeSession(s, projectId, { checkpoint, checkpointReferences, state: "resting", turnId: undefined });
       next = { ...next, projects: next.projects.map((p) => p.id === projectId ? { ...p, status, updatedAt: new Date().toISOString(), nextReviewAt: status === "EQUILIBRIUM" ? new Date(Date.now() + (p.settings.reviewIntervalMinutes ?? 360) * 60000).toISOString() : undefined } : p),
         runs: next.runs.map((r) => r.id === run.id ? { ...r, status, phase: "sleep", cycleCount: r.cycleCount + 1, lastCycleAt: new Date().toISOString(), noProgressCycles: noProgress, consecutiveFailures: 0, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, stopReason: checkpointProtocolError } : r) };
-      next = missionEvent(next, projectId, status === "EQUILIBRIUM" ? "EQUILIBRIUM_ENTERED" : "RUN_STATE_CHANGED", `${status} · 에이전트 checkpoint`, checkpoint.summary, { payload: { rawRef, disposition: checkpoint.disposition, evidenceRefs: checkpoint.evidenceRefs } });
+      const referenceSummary = checkpointReferences.map((reference) => `${reference.kind}:${reference.status}`).join(", ");
+      next = missionEvent(next, projectId, status === "EQUILIBRIUM" ? "EQUILIBRIUM_ENTERED" : "RUN_STATE_CHANGED", `${status} · 에이전트 checkpoint`, `${checkpoint.summary}\ncheckpoint 참조 해석: ${referenceSummary || "없음"}`, { payload: { rawRef, disposition: checkpoint.disposition, evidenceRefs: checkpoint.evidenceRefs, checkpointReferenceStatus: checkpointReferences.map((reference) => `${reference.kind}:${reference.status}`) } });
       return noProgress >= (initial.settings.noProgressThreshold ?? 5) ? stallProject(next, projectId, "같은 checkpoint가 반복됩니다. 이전 작업 증거를 보존했습니다.") : next;
     });
   } catch (error: unknown) {
