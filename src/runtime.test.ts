@@ -166,13 +166,22 @@ describe("Intent World runtime", () => {
   });
 
   it("예산 hard stop은 실제 비용이 상한을 넘을 때만 발생한다", () => {
-    const { state, projectId } = projectState("project-budget", "예산 안에서 실제 검증을 진행해줘", { budgetLimit: 1 });
+    const { state, projectId } = projectState("project-budget", "예산 안에서 실제 검증을 진행해줘", { budgetLimit: 1, resourceLimitsDisabled: false });
     const project = getProject(state, projectId)!;
     const limited = { ...state, projects: state.projects.map((candidate) => candidate.id === projectId ? { ...candidate, budgetSpent: 0.99 } : candidate) };
     const next = runCycle(limited, projectId, { action: currentAction(limited, projectId), toolResult: { ...successfulToolResult(projectId, "evidence-budget"), cost: 0.2 } });
     expect(getProject(next, projectId)?.status).toBe("STALLED");
     expect(getProjectEvents(next, projectId).some((event) => event.summary.includes("STALLED"))).toBe(true);
     expect(project.settings.budgetLimit).toBe(1);
+  });
+
+  it("기본 자율 테스트 모드에서는 예산을 초과해도 비용만 계측하고 계속 실행한다", () => {
+    const { state, projectId } = projectState("project-unlimited-budget", "제한 없이 계속 검증해줘", { budgetLimit: 1 });
+    const limited = { ...state, projects: state.projects.map((candidate) => candidate.id === projectId ? { ...candidate, budgetSpent: 0.99 } : candidate) };
+    const next = runCycle(limited, projectId, { action: currentAction(limited, projectId), toolResult: { ...successfulToolResult(projectId, "evidence-unlimited-budget"), cost: 0.2 } });
+    expect(getProject(next, projectId)?.settings.resourceLimitsDisabled).toBe(true);
+    expect(getProject(next, projectId)?.status).toBe("ACTIVE");
+    expect(getProject(next, projectId)?.budgetSpent).toBeGreaterThan(1);
   });
 
   it("도구 결과가 다른 프로젝트에 속하면 검증 실패로 기록한다", () => {
