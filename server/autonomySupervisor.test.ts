@@ -87,4 +87,21 @@ describe("autonomy supervisor", () => {
     expect(rebased.lastDiscoveryAt).toBeUndefined();
     expect(rebased.lastPublishedDigest).toBeUndefined();
   });
+
+  it("counts scouts and bounded decisions against the project's hard model-call cap", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
+    const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
+    const initial = createProject(createEmptyState(), "Build app under a strict call cap", "project-call-cap", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native", maxModelCalls: 1 });
+    const store = memoryStore(initial);
+    let scoutCalls = 0;
+    let decisionCalls = 0;
+    const countedScout = async <T,>() => { scoutCalls += 1; return scoutRunner<T>(); };
+    const countedGateway: DecisionGateway = { decide: async (request) => { decisionCalls += 1; return gateway.decide(request); } };
+    const autonomy = await runAutonomyPrelude(store, "project-call-cap", { store: fileStore, decisionGateway: countedGateway, scoutRunner: countedScout, discoveryParallelism: 3, now: () => new Date("2026-09-17T00:00:00Z") });
+    expect(autonomy).toBeDefined();
+    expect(scoutCalls).toBe(1);
+    expect(decisionCalls).toBe(0);
+    const modelTurns = store.read().events.filter((event) => event.projectId === "project-call-cap" && event.type === "MODEL_TURN");
+    expect(modelTurns).toHaveLength(1);
+  });
 });
