@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PropsWithChildren } from "react";
 import { latestControlPlane, missionHistory, openHumanItems } from "../controlPlaneView";
+import { activeAutonomyMissions, unresolvedAutonomyGaps } from "../autonomyProjection";
+import { useAutonomyProjection } from "../useAutonomyProjection";
 import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
@@ -38,11 +40,15 @@ export function AppShell({ children }: PropsWithChildren) {
   const searchRef = useRef<HTMLInputElement>(null);
   const projectId = "projectId" in route ? route.projectId : state.activeProjectId;
   const project = getProject(state, projectId);
+  const autonomy = useAutonomyProjection(projectId, state.revision);
   const control = projectId ? latestControlPlane(state, projectId) : undefined;
-  const missions = projectId ? missionHistory(state, projectId) : [];
+  const legacyMissions = projectId ? missionHistory(state, projectId) : [];
+  const liveMissions = activeAutonomyMissions(autonomy);
+  const liveGaps = unresolvedAutonomyGaps(autonomy);
   const humanOpen = projectId ? openHumanItems(state, projectId).length : 0;
   const evidenceCount = projectId ? state.evidence.filter((item) => item.projectId === projectId).length : 0;
-  const unresolvedGaps = control ? control.counts.open + control.counts.investigating + control.counts.blocked : 0;
+  const unresolvedGaps = autonomy?.available ? liveGaps.length : control ? control.counts.open + control.counts.investigating + control.counts.blocked + control.counts.unexplored : 0;
+  const missionCount = autonomy?.available ? liveMissions.length : Math.max(legacyMissions.length, control?.mission ? 1 : 0);
   const recentProjects = useMemo(() => [...state.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 6), [state.projects]);
 
   useEffect(() => {
@@ -90,7 +96,7 @@ export function AppShell({ children }: PropsWithChildren) {
   };
 
   const navCounts: Partial<Record<NavKey, number>> = {
-    missions: Math.max(missions.length, control?.mission ? 1 : 0), coverage: unresolvedGaps, "needs-you": humanOpen, evidence: evidenceCount,
+    missions: missionCount, coverage: unresolvedGaps, "needs-you": humanOpen, evidence: evidenceCount,
   };
   const isGlobalNew = route.kind === "new";
   const topProjectName = project?.name ?? (isGlobalNew ? "새 프로젝트" : "SakaSaka");
