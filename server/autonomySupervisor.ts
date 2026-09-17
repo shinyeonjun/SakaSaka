@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AppState, Observation } from "../src/types";
+import type { AppState, Observation, Project } from "../src/types";
 import type { ModelUsage } from "../src/ports";
 import { redactSecretLikeText } from "../src/security";
 import { accountModelUsage, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, recordObservedWorldRefresh, wakeProject } from "../src/runtime";
@@ -32,6 +32,25 @@ export interface AutonomySupervisorOptions {
 function boundedNumber(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+}
+
+function envTrue(name: string): boolean {
+  return /^(?:1|true|yes|on)$/i.test(process.env[name]?.trim() ?? "");
+}
+
+/**
+ * v2 is deliberately default-on only for the Codex execution path. Existing
+ * deterministic/HTTP-provider contracts keep their exact world-cursor and
+ * acceptance semantics. `auto` participates only when no HTTP model endpoint
+ * is configured, which is the same environment where Codex is the intended
+ * local provider. Operators can explicitly opt other providers in later.
+ */
+export function autonomyEnabled(project: Project): boolean {
+  if (envTrue("SAKASAKA_AUTONOMY_DISABLED")) return false;
+  if (envTrue("SAKASAKA_AUTONOMY_ALL_PROVIDERS")) return true;
+  if (project.settings.modelProvider === "codex-cli") return true;
+  if (project.settings.modelProvider !== "auto") return false;
+  return process.env.CODEX_CLI_ENABLED?.trim().toLowerCase() !== "false" && !process.env.MODEL_API_URL?.trim();
 }
 
 function discoveryIntervalMs(): number {
@@ -81,9 +100,12 @@ function compactState(state: AppState, projectId: string, autonomy: AutonomyProj
 function needsDiscovery(autonomy: AutonomyProjectState, intentVersion: number, nowMs: number): boolean {
   if (autonomy.intentVersion !== intentVersion) return true;
   if (!autonomy.lastDiscoveryAt) return true;
-  if (nowMs - Date.parse(autonomy.lastDiscoveryAt) >= discoveryIntervalMs()) return true;
-  const concreteOpen = autonomy.gaps.some((gap) => gap.source !== "taxonomy" && !["RESOLVED", "DEFERRED"].includes(gap.status));
-  return !activeMission(autonomy) && !concreteOpen;
+  const lastDiscovery = Date.parse(autonomy.lastDiscoveryAt);
+  if (!Number.isFinite(lastDiscovery) || nowMs - lastDiscovery >= discoveryIntervalMs()) return true;
+  // A completed mission changes the world and may expose new unknowns. Run one
+  // fresh independent discovery pass after it, but never on every worker tick.
+  const latestCompletion = autonomy.missions.reduce((latest, mission) => mission.completedAt ? Math.max(latest, Date.parse(mission.completedAt) || 0) : latest, 0);
+  return latestCompletion > lastDiscovery;
 }
 
 function traceFromDecision(projectId: string, runId: string | undefined, purpose: string, result: DecisionBatchResult, at: string): DecisionTrace {
@@ -121,7 +143,7 @@ async function discover(store: CycleStateStore, projectId: string, autonomy: Aut
   const state = store.read(), intent = getIntent(state, projectId), view = compactState(state, projectId, autonomy);
   if (!intent || !view) return autonomy;
   const parallelism = Math.max(1, Math.min(scoutLenses.length, options.discoveryParallelism ?? defaultParallelism()));
-  const results = await Promise.allSettled(scoutLenses.slice(0, parallelism).map((lens) => runScout(lens, view, options.scoutRunner, undefined)));
+  const results = await Promise.allSettled(scoutLenses.slice(0, parallelism).map((lens) => runScout(lens, view, options.scoutRunner)));
   const candidates: GapCandidate[] = [];
   let successful = 0;
   for (const result of results) {
@@ -136,12 +158,14 @@ async function discover(store: CycleStateStore, projectId: string, autonomy: Aut
   }
   const at = options.now().toISOString();
   let next = mergeGapCandidates(autonomy, candidates, at, makeId);
-  if (successful > 0) next = completeDiscoveryPass(next, intent.version, at);
-  else next = { ...next, lastDiscoveryAt: at, updatedAt: at };
-  return (await options.store.putProject(next));
+  // Do not mark the complete known-surface map as explored when one of the
+  // independent lenses failed. Partial coverage remains visible as uncertainty.
+  if (successful === parallelism) next = completeDiscoveryPass(next, intent.version, at);
+  else next = { ...next, intentVersion: intent.version, lastDiscoveryAt: at, updatedAt: at };
+  return options.store.putProject(next);
 }
 
-async function reviewMission(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, gateway: DecisionGateway, now: () => Date): Promise<AutonomyProjectState> {
+async function reviewMission(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, gateway: DecisionGateway, fileStore: FileAutonomyStore, now: () => Date): Promise<AutonomyProjectState> {
   const mission = activeMission(autonomy), state = store.read(), run = getRun(state, projectId);
   if (!mission || mission.status === "BLOCKED" || !run || run.cycleCount <= mission.startCycle) return autonomy;
   const view = compactState(state, projectId, autonomy);
@@ -162,10 +186,10 @@ async function reviewMission(store: CycleStateStore, projectId: string, autonomy
   const keep = result.answers.continueMission as DecisionAnswer | undefined;
   if (satisfied?.kind === "noul" && evidence?.kind === "noul" && satisfied.probability >= .84 && evidence.probability >= .72) next = settleMission(next, mission.id, "SUCCEEDED", at, trace.id);
   else if (keep?.kind === "noul" && keep.probability < .22 && run.noProgressCycles > 0) next = settleMission(next, mission.id, "FAILED", at, trace.id);
-  return autonomyStore.putProject(next);
+  return fileStore.putProject(next);
 }
 
-async function prioritize(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, gateway: DecisionGateway, now: () => Date): Promise<AutonomyProjectState> {
+async function prioritize(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, gateway: DecisionGateway, fileStore: FileAutonomyStore, now: () => Date): Promise<AutonomyProjectState> {
   if (activeMission(autonomy)) return autonomy;
   const state = store.read(), run = getRun(state, projectId), view = compactState(state, projectId, autonomy);
   if (!run || !view) return autonomy;
@@ -173,7 +197,7 @@ async function prioritize(store: CycleStateStore, projectId: string, autonomy: A
   if (!candidates.length) {
     const at = now().toISOString();
     const next = appendCoverageSnapshot(autonomy, 0, 1, at, makeId);
-    return autonomyStore.putProject(next);
+    return fileStore.putProject(next);
   }
   const criteria = Object.fromEntries(candidates.map((gap) => [gap.id, `${gap.category}: ${gap.title}. impact=${gap.impact.toFixed(2)}, uncertainty=${gap.uncertainty.toFixed(2)}, urgency=${gap.urgency.toFixed(2)}, deterministicPriority=${gap.priority.toFixed(2)}. ${gap.summary}`]));
   let result: DecisionBatchResult | undefined;
@@ -201,7 +225,7 @@ async function prioritize(store: CycleStateStore, projectId: string, autonomy: A
   }
   next = startMissionForGap(next, chosen.id, run.cycleCount, at, makeId);
   next = appendCoverageSnapshot(next, risk, convergenceHint, at, makeId);
-  return autonomyStore.putProject(next);
+  return fileStore.putProject(next);
 }
 
 function observationSummary(autonomy: AutonomyProjectState): string {
@@ -233,19 +257,22 @@ async function publishObservation(store: CycleStateStore, projectId: string, aut
 
 export async function runAutonomyPrelude(store: CycleStateStore, projectId: string, options: AutonomySupervisorOptions = {}): Promise<AutonomyProjectState | undefined> {
   const state = store.read(), project = getProject(state, projectId), intent = getIntent(state, projectId);
-  if (!project || !intent) return undefined;
+  if (!project || !intent || !autonomyEnabled(project)) return undefined;
   const fileStore = options.store ?? autonomyStore, now = options.now ?? (() => new Date()), scoutRunner = options.scoutRunner ?? runCodexStructured, gateway = options.decisionGateway ?? createDecisionGateway();
-  let autonomy = fileStore.readProject(projectId) ?? createAutonomyProject(projectId, intent.version, now().toISOString(), makeId);
-  if (!fileStore.readProject(projectId)) await fileStore.putProject(autonomy);
-  autonomy = await reviewMission(store, projectId, autonomy, gateway, now);
+  const existing = fileStore.readProject(projectId);
+  let autonomy = existing ?? createAutonomyProject(projectId, intent.version, now().toISOString(), makeId);
+  if (!existing) await fileStore.putProject(autonomy);
+  autonomy = await reviewMission(store, projectId, autonomy, gateway, fileStore, now);
   if (needsDiscovery(autonomy, intent.version, now().getTime())) autonomy = await discover(store, projectId, autonomy, { ...options, store: fileStore, scoutRunner, now });
-  autonomy = await prioritize(store, projectId, autonomy, gateway, now);
+  autonomy = await prioritize(store, projectId, autonomy, gateway, fileStore, now);
   return publishObservation(store, projectId, autonomy, fileStore, now);
 }
 
 export async function runAutonomyPostlude(store: CycleStateStore, projectId: string, options: AutonomySupervisorOptions = {}): Promise<void> {
-  const fileStore = options.store ?? autonomyStore, autonomy = fileStore.readProject(projectId), project = getProject(store.read(), projectId);
-  if (!autonomy || !project) return;
+  const fileStore = options.store ?? autonomyStore, project = getProject(store.read(), projectId);
+  if (!project || !autonomyEnabled(project)) return;
+  const autonomy = fileStore.readProject(projectId);
+  if (!autonomy) return;
   if (project.status === "EQUILIBRIUM" && hasMaterialUnresolvedWork(autonomy)) {
     await store.transact((state) => wakeProject(state, projectId, "coverage-gap"));
   }
