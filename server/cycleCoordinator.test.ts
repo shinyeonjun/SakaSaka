@@ -106,7 +106,7 @@ describe("short transaction durable cognition", () => {
 
   it("checks budget before calling a paid model", async () => {
     const { store } = fixture(); let calls = 0;
-    await store.transact((state) => ({ ...state, projects: state.projects.map((item) => ({ ...item, budgetSpent: item.settings.budgetLimit })) }));
+    await store.transact((state) => ({ ...state, projects: state.projects.map((item) => ({ ...item, settings: { ...item.settings, resourceLimitsDisabled: false }, budgetSpent: item.settings.budgetLimit })) }));
     await runDurableCycle(store, "p", { modelGateway: model(async (context) => { calls++; return selected(context); }) });
     expect(calls).toBe(0); expect(getProject(store.read(), "p")?.status).toBe("STALLED");
   });
