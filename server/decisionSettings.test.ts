@@ -9,7 +9,8 @@ const original = {
   path: process.env.INTENT_WORLD_DECISION_SETTINGS_FILE,
   provider: process.env.SAKASAKA_DECISION_PROVIDER,
   key: process.env.TYPESAFE_API_KEY,
-  model: process.env.TYPESAFE_JEV_MODEL,
+  model: process.env.TYPESAFE_DEFAULT_MODEL,
+  legacyModel: process.env.TYPESAFE_JEV_MODEL,
 };
 
 afterEach(() => {
@@ -17,7 +18,8 @@ afterEach(() => {
   if (original.path === undefined) delete process.env.INTENT_WORLD_DECISION_SETTINGS_FILE; else process.env.INTENT_WORLD_DECISION_SETTINGS_FILE = original.path;
   if (original.provider === undefined) delete process.env.SAKASAKA_DECISION_PROVIDER; else process.env.SAKASAKA_DECISION_PROVIDER = original.provider;
   if (original.key === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = original.key;
-  if (original.model === undefined) delete process.env.TYPESAFE_JEV_MODEL; else process.env.TYPESAFE_JEV_MODEL = original.model;
+  if (original.model === undefined) delete process.env.TYPESAFE_DEFAULT_MODEL; else process.env.TYPESAFE_DEFAULT_MODEL = original.model;
+  if (original.legacyModel === undefined) delete process.env.TYPESAFE_JEV_MODEL; else process.env.TYPESAFE_JEV_MODEL = original.legacyModel;
 });
 
 function isolate() {
@@ -26,6 +28,7 @@ function isolate() {
   process.env.INTENT_WORLD_DECISION_SETTINGS_FILE = join(dir, "decision-settings.json");
   delete process.env.SAKASAKA_DECISION_PROVIDER;
   delete process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_DEFAULT_MODEL;
   delete process.env.TYPESAFE_JEV_MODEL;
 }
 
@@ -49,7 +52,7 @@ describe("decision settings", () => {
     await updateStoredDecisionSettings({ provider: "codex-cli", jevApiKey: "local-key" });
     process.env.SAKASAKA_DECISION_PROVIDER = "jev";
     process.env.TYPESAFE_API_KEY = "env-key";
-    process.env.TYPESAFE_JEV_MODEL = "jev-env";
+    process.env.TYPESAFE_DEFAULT_MODEL = "jev-env";
     expect(resolveDecisionSettings()).toMatchObject({ provider: "jev", jevModel: "jev-env", jevApiKey: "env-key", source: { provider: "environment", model: "environment", apiKey: "environment" } });
     expect(readStoredDecisionSettings()?.jevApiKey).toBe("local-key");
   });
