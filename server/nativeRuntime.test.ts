@@ -205,19 +205,18 @@ describe("mission native runtime", () => {
     expect(getRun(store.read(), "native-test")?.execution).toBeUndefined();
   });
 
-  it("누적 토큰 알림은 중복 과금하지 않고 상한 없이 계속 계측한다", async () => {
+  it("누적 토큰 알림을 중복 과금하지 않고 토큰 한도에서 실행을 멈춘다", async () => {
     const store = fixture({ maxNativeTokens: 100 });
     const client = new FakeClient(async (c) => {
       const params = { threadId: "thread-test", turnId: "turn-test", tokenUsage: { total: { totalTokens: 80, inputTokens: 60, cachedInputTokens: 10, outputTokens: 20 } } };
       c.notify("thread/tokenUsage/updated", params); c.notify("thread/tokenUsage/updated", params);
       c.notify("thread/tokenUsage/updated", { ...params, tokenUsage: { total: { totalTokens: 101, inputTokens: 75, cachedInputTokens: 30, outputTokens: 26 } } });
-      c.finish();
     });
     await runNativeEpisode(store, "native-test", { clientFactory: () => client });
     expect(store.read().resourceLedger.reduce((n, l) => n + l.tokens, 0)).toBe(101);
     expect(getRun(store.read(), "native-test")?.nativeSession?.accountedCachedInputTokens).toBe(30);
-    expect(getRun(store.read(), "native-test")?.stopReason).toBeUndefined();
-    expect(getProject(store.read(), "native-test")?.status).not.toBe("STALLED");
+    expect(getRun(store.read(), "native-test")?.stopReason).toContain("토큰");
+    expect(getProject(store.read(), "native-test")?.status).toBe("STALLED");
   });
 
   it("자동 permission escalation을 거절해도 에이전트는 안전한 대안을 계속 선택한다", async () => {
