@@ -24,6 +24,11 @@ jobs:
       - run: npm run build:api
       - run: npm test -- --run
       - run: npm run build
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config
       - name: Check Tauri desktop bridge
         run: |
           rustc --version
