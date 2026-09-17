@@ -24,15 +24,6 @@ jobs:
       - run: npm run build:api
       - run: npm test -- --run
       - run: npm run build
-      - name: Install Tauri Linux prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config
-      - name: Check Tauri desktop bridge
-        run: |
-          rustc --version
-          cargo check --manifest-path src-tauri/Cargo.toml
       - run: npm run acceptance:desktop
       - run: npx playwright install --with-deps chromium
       - run: npm run acceptance
@@ -40,6 +31,26 @@ jobs:
       - run: npm run acceptance:autonomous
       - run: npm run acceptance:experiments
       - run: npm run acceptance:ui
+
+  tauri-desktop-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev pkg-config
+      - name: Check Tauri desktop bridge
+        shell: bash
+        run: |
+          rustc --version
+          if ! cargo check -q --manifest-path src-tauri/Cargo.toml 2> "$RUNNER_TEMP/tauri-check.err"; then
+            echo "Tauri cargo check failed:"
+            tail -n 120 "$RUNNER_TEMP/tauri-check.err"
+            exit 1
+          fi
 
   security-and-gates:
     runs-on: ubuntu-latest
