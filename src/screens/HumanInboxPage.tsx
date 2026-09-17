@@ -25,7 +25,7 @@ export function HumanInboxPage({ projectId }: { projectId: string }) {
 
   const sendAnswer = () => {
     if (!selected) return;
-    const answer = draft.trim() || choice || undefined;
+    const answer = choice || draft.trim() || undefined;
     if (selected.kind === "QUESTION") {
       if (!answer) return;
       dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: selected.id, action: "answer", answer });
@@ -78,7 +78,7 @@ export function HumanInboxPage({ projectId }: { projectId: string }) {
 
           <Surface className="assumption-panel"><SurfaceHeader title="현재 가정 / 이유" meta="되돌릴 수 있는 범위만" /><p>{selected.rationale}</p><small>답변과 충돌하면 영향받는 작업만 재계획하고 다시 검증합니다.</small></Surface>
 
-          {!!selected.options.length && <div className="human-options"><span className="human-options-label">선택지</span>{selected.options.map((option) => <button key={option.id} className={choice === option.title || choice === option.id ? "active" : ""} onClick={() => setChoice(option.title)}><strong>{option.title}</strong><small>{option.description}</small></button>)}</div>}
+          {!!selected.options.length && <div className="human-options"><span className="human-options-label">선택지</span>{selected.options.map((option) => <button key={option.id} className={choice === option.id ? "active" : ""} onClick={() => setChoice(option.id)}><strong>{option.title}</strong><small>{option.description}</small></button>)}</div>}
 
           {selected.status === "OPEN" ? <div className="human-answer-box">
             {selected.kind === "APPROVAL" ? <div className="approval-actions"><button className="danger" onClick={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: selected.id, action: "reject" })}>거부</button><button className="primary" onClick={() => dispatch({ type: "RESOLVE_HUMAN_ITEM", itemId: selected.id, action: "approve" })}>승인</button></div> : <>
