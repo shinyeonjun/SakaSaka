@@ -7,7 +7,7 @@ import { createProject, getProject } from "../src/runtime";
 import type { AppState } from "../src/types";
 import type { CycleStateStore } from "./cycleCoordinator";
 import { FileAutonomyStore } from "./autonomyStore";
-import { runAutonomyPostlude, runAutonomyPrelude } from "./autonomySupervisor";
+import { rebaseAutonomyForIntent, runAutonomyPostlude, runAutonomyPrelude } from "./autonomySupervisor";
 import type { DecisionGateway } from "./decisionGateway";
 
 const directories: string[] = [];
@@ -28,17 +28,23 @@ const gateway: DecisionGateway = {
   }),
 };
 
+const scoutRunner = async <T,>() => ({ value: { gaps: [{ category: "Security", title: "OAuth token storage", summary: "Storage and rotation have not been verified", impact: .95, uncertainty: .8, novelty: .9, urgency: .9, roleHint: "OAuth security specialist", evidenceNeeded: ["token storage code"], sourceRefs: [] }] } as T, usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 } });
+
 describe("autonomy supervisor", () => {
-  it("discovers gaps, creates one mission, and publishes runtime observation for Codex projects", async () => {
+  it("discovers gaps, creates one mission, and publishes UNCERTAIN control-plane evidence without overwriting World runtime", async () => {
     const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
     const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
     const initial = createProject(createEmptyState(), "Build a secure calendar app", "project-test", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native" });
+    const runtimeBefore = initial.worldSnapshots.at(-1)?.sources.runtime.summary;
     const store = memoryStore(initial);
-    const scoutRunner = async <T,>() => ({ value: { gaps: [{ category: "Security", title: "OAuth token storage", summary: "Storage and rotation have not been verified", impact: .95, uncertainty: .8, novelty: .9, urgency: .9, roleHint: "OAuth security specialist", evidenceNeeded: ["token storage code"], sourceRefs: [] }] } as T, usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 } });
     const autonomy = await runAutonomyPrelude(store, "project-test", { store: fileStore, decisionGateway: gateway, scoutRunner, discoveryParallelism: 1, now: () => new Date("2026-09-17T00:00:00Z") });
     expect(autonomy?.gaps.some((gap) => gap.title === "OAuth token storage")).toBe(true);
     expect(autonomy?.missions.filter((mission) => mission.status === "RUNNING")).toHaveLength(1);
-    expect(store.read().observations.some((observation) => observation.rawRef.startsWith("autonomy://"))).toBe(true);
+    const controlEvidence = store.read().evidence.find((evidence) => evidence.source === "sakasaka-autonomy");
+    expect(controlEvidence).toMatchObject({ kind: "metric", verdict: "UNCERTAIN", evaluator: "autonomy-control-plane" });
+    expect(controlEvidence?.rawRef).toMatch(/^autonomy:\/\//);
+    expect(store.read().worldSnapshots.at(-1)?.sources.runtime.summary).toBe(runtimeBefore);
+    expect(store.read().observations.some((observation) => observation.rawRef.startsWith("autonomy://"))).toBe(false);
   });
 
   it("does not mutate legacy deterministic provider world state by default", async () => {
@@ -51,7 +57,7 @@ describe("autonomy supervisor", () => {
     expect(result).toBeUndefined();
     expect(fileStore.readProject("project-legacy")).toBeUndefined();
     expect(store.read().observations).toHaveLength(beforeObservations);
-    expect(store.read().observations.some((observation) => observation.rawRef.startsWith("autonomy://"))).toBe(false);
+    expect(store.read().evidence.some((evidence) => evidence.source === "sakasaka-autonomy")).toBe(false);
   });
 
   it("wakes equilibrium when Codex coverage still has material unresolved work", async () => {
@@ -64,5 +70,21 @@ describe("autonomy supervisor", () => {
     await fileStore.putProject({ version: 1, projectId: project.id, intentVersion: 1, gaps: [{ id: "g1", key: "x", projectId: project.id, category: "Security", title: "gap", summary: "gap", impact: 1, uncertainty: 1, novelty: 1, urgency: 1, status: "OPEN", source: "scout", priority: 1, createdAt: "2026-09-17T00:00:00Z", updatedAt: "2026-09-17T00:00:00Z" }], missions: [], decisions: [], coverageSnapshots: [], updatedAt: "2026-09-17T00:00:00Z" });
     await runAutonomyPostlude(store, "project-wake", { store: fileStore });
     expect(getProject(store.read(), "project-wake")?.status).toBe("ACTIVE");
+  });
+
+  it("supersedes the old active mission and reopens coverage when Intent version changes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
+    const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
+    const initial = createProject(createEmptyState(), "Build app v1", "project-rebase", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native" });
+    const store = memoryStore(initial);
+    const autonomy = await runAutonomyPrelude(store, "project-rebase", { store: fileStore, decisionGateway: gateway, scoutRunner, discoveryParallelism: 1, now: () => new Date("2026-09-17T00:00:00Z") });
+    expect(autonomy?.missions.some((mission) => mission.status === "RUNNING")).toBe(true);
+    const rebased = rebaseAutonomyForIntent(autonomy!, 2, "2026-09-17T01:00:00Z");
+    expect(rebased.intentVersion).toBe(2);
+    expect(rebased.missions.some((mission) => mission.status === "SUPERSEDED")).toBe(true);
+    expect(rebased.gaps.filter((gap) => gap.source === "taxonomy").every((gap) => gap.status === "UNEXPLORED")).toBe(true);
+    expect(rebased.gaps.some((gap) => gap.title === "Primary intent outcome v1" && gap.status === "DEFERRED")).toBe(true);
+    expect(rebased.lastDiscoveryAt).toBeUndefined();
+    expect(rebased.lastPublishedDigest).toBeUndefined();
   });
 });
