@@ -11,6 +11,14 @@ const request = {
   },
 };
 
+const value = {
+  answers: {
+    retry: { kind: "noul", probability: .8 },
+    route: { kind: "choice", choice: "retry", probabilities: { retry: .7, stop: .3 }, confidence: .55 },
+    risk: { kind: "score", score: 1, probabilities: [.2, .6, .2], confidence: .5 },
+  },
+};
+
 describe("decision gateways", () => {
   it("normalizes a Jev response without exposing the API key", async () => {
     const calls: RequestInit[] = [];
@@ -30,9 +38,7 @@ describe("decision gateways", () => {
   });
 
   it("uses Codex structured output for bounded decisions", async () => {
-    const gateway = new CodexDecisionGateway(async () => ({ value: { answers: {
-      retry: { kind: "noul", probability: .8 }, route: { kind: "choice", choice: "retry", probabilities: { retry: .7, stop: .3 }, confidence: .55 }, risk: { kind: "score", score: 1, probabilities: [.2, .6, .2], confidence: .5 },
-    } }, usage: { modelVersion: "codex-cli:test", tokens: 10, cost: 0, latencyMs: 1 } }));
+    const gateway = new CodexDecisionGateway(async <T,>() => ({ value: value as T, usage: { modelVersion: "codex-cli:test", tokens: 10, cost: 0, latencyMs: 1 } }));
     const result = await gateway.decide(request);
     expect(result.provider).toBe("codex-cli");
     expect(result.answers.route).toMatchObject({ kind: "choice", choice: "retry" });
@@ -40,9 +46,8 @@ describe("decision gateways", () => {
 
   it("hybrid falls back to Codex when Jev is not configured", async () => {
     const jev = new JevDecisionGateway({ apiKey: "" });
-    const codex = new CodexDecisionGateway(async () => ({ value: { answers: {
-      retry: { kind: "noul", probability: .6 }, route: { kind: "choice", choice: "stop", probabilities: { retry: .4, stop: .6 }, confidence: .4 }, risk: { kind: "score", score: 1, probabilities: [.2, .7, .1], confidence: .5 },
-    } }, usage: { modelVersion: "codex-cli:test", tokens: 5, cost: 0, latencyMs: 1 } }));
+    const fallback = { ...value, answers: { ...value.answers, route: { kind: "choice", choice: "stop", probabilities: { retry: .4, stop: .6 }, confidence: .4 } } };
+    const codex = new CodexDecisionGateway(async <T,>() => ({ value: fallback as T, usage: { modelVersion: "codex-cli:test", tokens: 5, cost: 0, latencyMs: 1 } }));
     const result = await new HybridDecisionGateway(jev, codex).decide(request);
     expect(result.provider).toBe("hybrid");
     expect(result.fallbackUsed).toBe(true);
