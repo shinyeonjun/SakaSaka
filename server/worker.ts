@@ -21,7 +21,7 @@ const configuredConcurrency = Number(process.env.WORKER_MAX_CONCURRENCY ?? "1");
 const maxJobsPerTick = Number.isFinite(configuredConcurrency) ? Math.max(1, Math.min(32, Math.floor(configuredConcurrency))) : 1;
 
 function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): ProjectSettings {
-  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: raw?.maxNativeTokens, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs, modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
+  return { budgetLimit: raw?.budgetLimit ?? 30, maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200, resourceLimitsDisabled: raw?.resourceLimitsDisabled ?? true, localActions: raw?.localActions ?? true, requireExternalApproval: raw?.requireExternalApproval ?? true, productionBlocked: raw?.productionBlocked ?? true, networkPolicy: raw?.networkPolicy ?? "allowlist", workspacePath: raw?.workspacePath, previewUrl: raw?.previewUrl, allowedDomains: raw?.allowedDomains, sandboxMode: raw?.sandboxMode ?? "process", executionMode: raw?.executionMode ?? "atomic", maxNativeTurns: raw?.maxNativeTurns, maxNativeTokens: raw?.maxNativeTokens, nativeTurnTimeoutMs: raw?.nativeTurnTimeoutMs, modelProvider: raw?.modelProvider ?? "auto", modelName: raw?.modelName, reviewIntervalMinutes: raw?.reviewIntervalMinutes ?? 360, failureThreshold: raw?.failureThreshold ?? 3, noProgressThreshold: raw?.noProgressThreshold ?? 5, cycleDelayMs: raw?.cycleDelayMs ?? 250, approvalTtlMinutes: raw?.approvalTtlMinutes ?? 60, processMaxLifetimeMs: raw?.processMaxLifetimeMs ?? 1_800_000, maxConcurrentProcesses: raw?.maxConcurrentProcesses ?? 4 };
 }
 
 function normalizeProjectMetrics(raw: Partial<ProjectMetrics> | undefined): ProjectMetrics {
@@ -31,7 +31,7 @@ function normalizeProjectMetrics(raw: Partial<ProjectMetrics> | undefined): Proj
 function normalizeState(candidate: unknown): AppState {
   const value = candidate as Partial<AppState>;
   if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) throw new Error("state snapshot is missing required collections");
-  return {
+  const normalized: AppState = {
     ...(value as AppState),
     projects: value.projects.map((project) => ({
       ...project,
@@ -62,6 +62,14 @@ function normalizeState(candidate: unknown): AppState {
     retrievalIndex: Array.isArray(value.retrievalIndex) ? value.retrievalIndex : [],
     approvalGrants: Array.isArray(value.approvalGrants) ? value.approvalGrants : [],
     processes: Array.isArray(value.processes) ? value.processes : [],
+  };
+  const resourceLimitStop = /(?:토큰.*(?:상한|한도)|실행 예산|최대 모델 호출|OUTPUT_LIMIT)/i;
+  const recoverableProjectIds = new Set(normalized.runs.filter((run) => run.status === "STALLED" && resourceLimitStop.test(`${run.stopReason ?? ""} ${run.lastModelFailure?.code ?? ""} ${run.lastModelFailure?.message ?? ""}`)).map((run) => run.projectId));
+  if (!recoverableProjectIds.size) return normalized;
+  return {
+    ...normalized,
+    projects: normalized.projects.map((project) => recoverableProjectIds.has(project.id) && project.status === "STALLED" ? { ...project, status: "ACTIVE", nextReviewAt: undefined } : project),
+    runs: normalized.runs.map((run) => recoverableProjectIds.has(run.projectId) && run.status === "STALLED" ? { ...run, status: "ACTIVE", phase: "wake", stopReason: undefined, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, execution: undefined } : run),
   };
 }
 

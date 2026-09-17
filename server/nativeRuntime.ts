@@ -94,7 +94,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     if (blocked) return stallProject(state, projectId, blocked);
     const native = run.nativeSession ?? newNativeSession();
     if (native.turnsStarted >= limit(project.settings.maxNativeTurns, 40, 1000)) return stallProject(state, projectId, "Native 작업 구간 상한에 도달했습니다.");
-    if (native.accountedTokens >= limit(project.settings.maxNativeTokens, 250000, 10000000)) return stallProject(state, projectId, "Native 토큰 상한에 도달했습니다.");
+    if (project.settings.resourceLimitsDisabled === false && native.accountedTokens >= limit(project.settings.maxNativeTokens, 250000, 10000000)) return stallProject(state, projectId, "Native 토큰 상한에 도달했습니다.");
     claimed = true;
     return { ...state, runs: state.runs.map((r) => r.id === run.id ? { ...r, nativeSession: native, execution: { id: leaseId, owner: `native-${process.pid}`, stage: "decide", expiresAt: new Date(Date.now() + 60000).toISOString() }, phase: "decide" } : r) };
   });
@@ -275,7 +275,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
           const price = safeNumber(Number(process.env.MODEL_COST_PER_MILLION ?? 0));
           let next = accountModelUsage(s, projectId, { modelVersion: `codex-app-server:${initial.settings.modelName ?? "configured"}`, tokens: delta, inputTokens: input - previousInput, outputTokens: output - previousOutput, cost: delta * price / 1000000, latencyMs: 0, usageKnown: true, rawRef });
           next = patchNativeSession(next, projectId, { accountedTokens: tokens, accountedInputTokens: input, accountedCachedInputTokens: cachedInput, accountedOutputTokens: output });
-          if (tokens >= limit(initial.settings.maxNativeTokens, 250000, 10000000)) tokenLimited = true;
+          if (initial.settings.resourceLimitsDisabled === false && tokens >= limit(initial.settings.maxNativeTokens, 250000, 10000000)) tokenLimited = true;
           return next;
         });
         if (tokenLimited) interrupt("Native 토큰 한도에 도달했습니다.");

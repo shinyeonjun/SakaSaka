@@ -66,6 +66,7 @@ function normalizeProjectSettings(raw: Partial<ProjectSettings> | undefined): Pr
   return {
     budgetLimit: raw?.budgetLimit ?? 30,
     maxHours: raw?.maxHours ?? 12, maxModelCalls: raw?.maxModelCalls ?? 200,
+    resourceLimitsDisabled: raw?.resourceLimitsDisabled ?? true,
     localActions: raw?.localActions ?? true,
     requireExternalApproval: raw?.requireExternalApproval ?? true,
     productionBlocked: raw?.productionBlocked ?? true,
@@ -95,7 +96,7 @@ class BadRequestError extends Error {}
 function normalizeState(candidate: unknown): AppState {
   const value = candidate as Partial<AppState>;
   if (!Array.isArray(value.projects) || !Array.isArray(value.intents) || !Array.isArray(value.runs) || !Array.isArray(value.events)) throw new Error("state snapshot is missing required collections");
-  return {
+  const normalized: AppState = {
     ...(value as AppState),
     projects: value.projects.map((project) => ({
       ...project,
@@ -126,6 +127,14 @@ function normalizeState(candidate: unknown): AppState {
     retrievalIndex: Array.isArray(value.retrievalIndex) ? value.retrievalIndex : [],
     approvalGrants: Array.isArray(value.approvalGrants) ? value.approvalGrants : [],
     processes: Array.isArray(value.processes) ? value.processes : [],
+  };
+  const resourceLimitStop = /(?:토큰.*(?:상한|한도)|실행 예산|최대 모델 호출|OUTPUT_LIMIT)/i;
+  const recoverableProjectIds = new Set(normalized.runs.filter((run) => run.status === "STALLED" && resourceLimitStop.test(`${run.stopReason ?? ""} ${run.lastModelFailure?.code ?? ""} ${run.lastModelFailure?.message ?? ""}`)).map((run) => run.projectId));
+  if (!recoverableProjectIds.size) return normalized;
+  return {
+    ...normalized,
+    projects: normalized.projects.map((project) => recoverableProjectIds.has(project.id) && project.status === "STALLED" ? { ...project, status: "ACTIVE", nextReviewAt: undefined } : project),
+    runs: normalized.runs.map((run) => recoverableProjectIds.has(run.projectId) && run.status === "STALLED" ? { ...run, status: "ACTIVE", phase: "wake", stopReason: undefined, lastFailureSignature: undefined, lastModelFailure: undefined, retryAfter: undefined, execution: undefined } : run),
   };
 }
 
@@ -394,9 +403,11 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   const localActions = booleanSetting("localActions", true);
   const requireExternalApproval = booleanSetting("requireExternalApproval", true);
   const productionBlocked = booleanSetting("productionBlocked", true);
+  const resourceLimitsDisabled = booleanSetting("resourceLimitsDisabled", true);
   if (typeof localActions === "string") return { error: localActions };
   if (typeof requireExternalApproval === "string") return { error: requireExternalApproval };
   if (typeof productionBlocked === "string") return { error: productionBlocked };
+  if (typeof resourceLimitsDisabled === "string") return { error: resourceLimitsDisabled };
   const networkPolicy = body.networkPolicy === undefined ? "allowlist" : body.networkPolicy;
   if (networkPolicy !== "deny" && networkPolicy !== "allowlist") return { error: "networkPolicy must be deny or allowlist" };
   const executionMode = body.executionMode ?? "atomic";
@@ -440,7 +451,7 @@ function parseProjectSettings(raw: unknown): { settings?: Partial<ProjectSetting
   if (previewHost && !allowedDomains.some((domain) => domain === previewHost || domain === `*.${previewHost}`)) allowedDomains.push(previewHost);
   const workspacePath = body.workspacePath === undefined ? undefined : normalizeWorkspacePath(body.workspacePath);
   if (body.workspacePath !== undefined && !workspacePath) return { error: "workspacePath must be an existing directory or a future path inside WORKSPACE_ROOT" };
-  return { settings: { budgetLimit, maxHours, maxModelCalls, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, executionMode, maxNativeTurns: maxNativeTurns as number, maxNativeTokens: maxNativeTokens as number, nativeTurnTimeoutMs: nativeTurnTimeoutMs as number, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
+  return { settings: { budgetLimit, maxHours, maxModelCalls, resourceLimitsDisabled, reviewIntervalMinutes, failureThreshold: failureThreshold as number, noProgressThreshold: noProgressThreshold as number, cycleDelayMs: cycleDelayMs as number, approvalTtlMinutes: approvalTtlMinutes as number, processMaxLifetimeMs: processMaxLifetimeMs as number, maxConcurrentProcesses: maxConcurrentProcesses as number, localActions, requireExternalApproval, productionBlocked, networkPolicy, sandboxMode, executionMode, maxNativeTurns: maxNativeTurns as number, maxNativeTokens: maxNativeTokens as number, nativeTurnTimeoutMs: nativeTurnTimeoutMs as number, modelProvider, modelName: modelName === undefined ? undefined : (modelName as string).trim(), workspacePath, previewUrl, allowedDomains } };
 }
 
 function parseModelSettings(body: Record<string, unknown>): { settings?: Pick<ProjectSettings, "modelProvider" | "modelName">; error?: string } {

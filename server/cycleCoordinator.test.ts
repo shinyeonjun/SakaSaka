@@ -106,7 +106,7 @@ describe("short transaction durable cognition", () => {
 
   it("checks budget before calling a paid model", async () => {
     const { store } = fixture(); let calls = 0;
-    await store.transact((state) => ({ ...state, projects: state.projects.map((item) => ({ ...item, budgetSpent: item.settings.budgetLimit })) }));
+    await store.transact((state) => ({ ...state, projects: state.projects.map((item) => ({ ...item, settings: { ...item.settings, resourceLimitsDisabled: false }, budgetSpent: item.settings.budgetLimit })) }));
     await runDurableCycle(store, "p", { modelGateway: model(async (context) => { calls++; return selected(context); }) });
     expect(calls).toBe(0); expect(getProject(store.read(), "p")?.status).toBe("STALLED");
   });
@@ -131,7 +131,7 @@ describe("short transaction durable cognition", () => {
   });
   it("enforces a model call cap even when CLI cost is unknown", async () => {
     const { store } = fixture(); let calls = 0;
-    await store.transact((state) => ({ ...state, projects: state.projects.map((project) => ({ ...project, settings: { ...project.settings, maxModelCalls: 1 } })) }));
+    await store.transact((state) => ({ ...state, projects: state.projects.map((project) => ({ ...project, settings: { ...project.settings, maxModelCalls: 1, resourceLimitsDisabled: false } })) }));
     const gateway = { ...model(async (context) => { calls++; return selected(context, "workspace.list", {}); }), usage: async () => ({ modelVersion: "fixture", tokens: 0, cost: 0, latencyMs: 1, usageKnown: false }) };
     await runDurableCycle(store, "p", { modelGateway: gateway });
     await runDurableCycle(store, "p", { modelGateway: gateway });
