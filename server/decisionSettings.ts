@@ -33,7 +33,10 @@ export interface DecisionSettingsUpdate {
 const modelIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 function settingsPath(): string {
-  return resolve(process.cwd(), process.env.INTENT_WORLD_DECISION_SETTINGS_FILE ?? ".data/decision-settings.json");
+  const explicit = process.env.INTENT_WORLD_DECISION_SETTINGS_FILE?.trim();
+  if (explicit) return resolve(explicit);
+  const statePath = resolve(process.cwd(), process.env.INTENT_WORLD_STATE_FILE ?? ".data/state.json");
+  return resolve(dirname(statePath), "decision-settings.json");
 }
 
 function lockPath(): string { return `${settingsPath()}.lock`; }
@@ -43,10 +46,16 @@ function isProvider(value: unknown): value is DecisionProviderPreference {
   return value === "codex-cli" || value === "jev" || value === "hybrid";
 }
 
+function safeApiKey(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const key = value.trim();
+  return key && key.length <= 4096 && !/[\r\n\0]/.test(key) ? key : undefined;
+}
+
 function validStored(value: unknown): value is StoredDecisionSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Partial<StoredDecisionSettings>;
-  return record.version === 1 && isProvider(record.provider) && typeof record.jevModel === "string" && modelIdPattern.test(record.jevModel) && typeof record.updatedAt === "string" && (record.jevApiKey === undefined || typeof record.jevApiKey === "string");
+  return record.version === 1 && isProvider(record.provider) && typeof record.jevModel === "string" && modelIdPattern.test(record.jevModel) && typeof record.updatedAt === "string" && (record.jevApiKey === undefined || safeApiKey(record.jevApiKey) !== undefined);
 }
 
 function readJson(path: string): StoredDecisionSettings | undefined {
@@ -98,8 +107,8 @@ export async function updateStoredDecisionSettings(update: DecisionSettingsUpdat
     const next: StoredDecisionSettings = { ...current, provider, jevModel: model, updatedAt: new Date().toISOString() };
     if (update.clearJevKey) delete next.jevApiKey;
     else if (update.jevApiKey !== undefined) {
-      const key = update.jevApiKey.trim();
-      if (!key || key.length > 4096 || /[\r\n\0]/.test(key)) throw new Error("Jev API key is invalid");
+      const key = safeApiKey(update.jevApiKey);
+      if (!key) throw new Error("Jev API key is invalid");
       next.jevApiKey = key;
     }
     secureWrite(next);
@@ -113,7 +122,7 @@ function envProvider(): DecisionProviderPreference | undefined {
 }
 
 function envModel(): string | undefined {
-  const value = process.env.TYPESAFE_JEV_MODEL?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim();
+  const value = process.env.TYPESAFE_DEFAULT_MODEL?.trim() || process.env.TYPESAFE_JEV_MODEL?.trim();
   return value && modelIdPattern.test(value) ? value : undefined;
 }
 
@@ -121,7 +130,7 @@ export function resolveDecisionSettings(): ResolvedDecisionSettings {
   const stored = readStoredDecisionSettings();
   const providerFromEnv = envProvider();
   const modelFromEnv = envModel();
-  const keyFromEnv = process.env.TYPESAFE_API_KEY?.trim() || undefined;
+  const keyFromEnv = safeApiKey(process.env.TYPESAFE_API_KEY);
   return {
     provider: providerFromEnv ?? stored?.provider ?? "codex-cli",
     jevModel: modelFromEnv ?? stored?.jevModel ?? "jev-latest",
