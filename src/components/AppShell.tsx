@@ -111,7 +111,7 @@ export function AppShell({ children }: PropsWithChildren) {
     <header className="ss-toolbar">
       <button className="ss-toolbar-brand" onClick={() => projectId ? go(projectPath(projectId)) : go("/projects/new")}><strong>SakaSaka</strong><span>{project ? project.name : "Autonomous Dev OS"}</span></button>
       <form className="ss-command-search" onSubmit={onSearch}><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="명령, 프로젝트, 근거 검색" aria-label="명령, 프로젝트, 근거 검색" /><kbd>Ctrl K</kbd></form>
-      <div className="ss-toolbar-right"><span className="ss-online"><i />{project?.status === "ACTIVE" ? "Worker 연결됨" : statusLabel(project?.status ?? "ACTIVE")}</span>{project && <span>${project.budgetSpent.toFixed(2)} / ${project.settings.budgetLimit}</span>}<time>{clock.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })}</time></div>
+      <div className="ss-toolbar-right"><span className="ss-online"><i />{project?.status === "ACTIVE" ? "Worker 연결됨" : statusLabel(project?.status ?? "ACTIVE")}</span>{project && <span>${project.budgetSpent.toFixed(2)} · 무제한</span>}<time>{clock.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })}</time></div>
       <button className="mobile-menu-button" onClick={() => setMobileOpen((open) => !open)} aria-label="메뉴 열기">{mobileOpen ? "×" : "☰"}</button>
     </header>
 
