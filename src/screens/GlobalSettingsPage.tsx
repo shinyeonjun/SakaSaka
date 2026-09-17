@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { fetchModelCatalog, fetchModelConnectionStatus, isControlPlaneEnabled } from "../apiClient";
 import { Button, Card, InlineNotice, PageHeading, Pill, SectionHeader } from "../components/ui";
+import { getDesktopDecisionSettings, isDesktopApp, saveDesktopDecisionSettings, type DesktopDecisionSettingsStatus } from "../desktop";
 import { getRecommendedCodexModels } from "../modelCatalog";
 import { loadUserPreferences, saveUserPreferences, type UserPreferences } from "../preferences";
 import { useRouter } from "../router";
@@ -58,6 +59,8 @@ function browserStatus(provider: ModelProvider, modelName?: string): ModelProvid
   };
 }
 
+const emptyDecisionStatus: DesktopDecisionSettingsStatus = { provider: "codex-cli", jevModel: "jev-latest", apiKeyConfigured: false };
+
 export function GlobalSettingsPage() {
   const { navigate } = useRouter();
   const [modelProvider, setModelProvider] = useState<ModelProvider>(() => loadUserPreferences().modelProvider);
@@ -68,6 +71,13 @@ export function GlobalSettingsPage() {
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [decisionStatus, setDecisionStatus] = useState<DesktopDecisionSettingsStatus>(emptyDecisionStatus);
+  const [decisionProvider, setDecisionProvider] = useState<DesktopDecisionSettingsStatus["provider"]>("codex-cli");
+  const [jevModel, setJevModel] = useState("jev-latest");
+  const [jevApiKey, setJevApiKey] = useState("");
+  const [decisionLoading, setDecisionLoading] = useState(false);
+  const [decisionSaved, setDecisionSaved] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | undefined>();
   const modelOptions = [...catalogModels, ...status.availableModels.filter((id) => !catalogModels.some((entry) => entry.id === id)).map((id) => ({ id, label: id, group: "configured" as const }))];
   const selectedDropdownModel = modelName || status.selectedModel || catalogDefaultModel;
 
@@ -97,9 +107,28 @@ export function GlobalSettingsPage() {
     }
   }, []);
 
+  const loadDecisionStatus = useCallback(async () => {
+    if (!isDesktopApp) return;
+    setDecisionLoading(true);
+    setDecisionError(undefined);
+    try {
+      const next = await getDesktopDecisionSettings();
+      if (!next) return;
+      setDecisionStatus(next);
+      setDecisionProvider(next.provider);
+      setJevModel(next.jevModel);
+    } catch (reason: unknown) {
+      setDecisionError(reason instanceof Error ? reason.message : "자율 판단 계층 설정을 읽지 못했습니다.");
+    } finally {
+      setDecisionLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadStatus(modelProvider, modelName);
   }, [loadStatus, modelProvider]);
+
+  useEffect(() => { void loadDecisionStatus(); }, [loadDecisionStatus]);
 
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -116,21 +145,68 @@ export function GlobalSettingsPage() {
     void loadStatus(modelProvider, normalizedModel);
   };
 
+  const saveDecision = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const model = jevModel.trim();
+    if (!modelIdPattern.test(model)) {
+      setDecisionError("Jev 모델 ID는 영문·숫자로 시작하고 영문·숫자·._:/-만 사용할 수 있습니다.");
+      setDecisionSaved(false);
+      return;
+    }
+    if (decisionProvider !== "codex-cli" && !decisionStatus.apiKeyConfigured && !jevApiKey.trim()) {
+      setDecisionError("Jev 또는 hybrid를 사용하려면 TypeSafe API key를 입력해야 합니다.");
+      setDecisionSaved(false);
+      return;
+    }
+    setDecisionLoading(true);
+    setDecisionError(undefined);
+    try {
+      const next = await saveDesktopDecisionSettings({ provider: decisionProvider, jevModel: model, jevApiKey: jevApiKey.trim() || undefined });
+      setDecisionStatus(next);
+      setDecisionProvider(next.provider);
+      setJevModel(next.jevModel);
+      setJevApiKey("");
+      setDecisionSaved(true);
+    } catch (reason: unknown) {
+      setDecisionError(reason instanceof Error ? reason.message : "자율 판단 계층 설정을 저장하지 못했습니다.");
+      setDecisionSaved(false);
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
+  const clearDecisionKey = async () => {
+    if (!isDesktopApp || decisionLoading) return;
+    setDecisionLoading(true);
+    setDecisionError(undefined);
+    try {
+      const next = await saveDesktopDecisionSettings({ provider: "codex-cli", jevModel: jevModel.trim() || "jev-latest", clearJevKey: true });
+      setDecisionStatus(next);
+      setDecisionProvider("codex-cli");
+      setJevApiKey("");
+      setDecisionSaved(true);
+    } catch (reason: unknown) {
+      setDecisionError(reason instanceof Error ? reason.message : "TypeSafe API key를 지우지 못했습니다.");
+    } finally {
+      setDecisionLoading(false);
+    }
+  };
+
   return (
     <div className="screen screen-global-settings">
       <PageHeading
         title="환경 설정"
-        description="프로젝트를 만들기 전에 연결할 모델과 기본값을 정합니다. 저장한 값은 다음 프로젝트 생성에 자동으로 적용됩니다."
+        description="프로젝트를 만들기 전에 모델과 자율 판단 계층을 정합니다. 모델 기본값은 다음 프로젝트에 복사됩니다."
         actions={<Button variant="primary" size="small" onClick={() => navigate("/projects/new")}>새 프로젝트 시작</Button>}
       />
 
       <div className="screen-stack settings-stack">
         <Card className="settings-hero-card">
           <div>
-            <span className="settings-overline">프로젝트 전 기본값</span>
-            <h2>모델을 먼저 정하고 Intent를 시작하세요</h2>
+            <span className="settings-overline">Intent-driven runtime</span>
+            <h2>Codex는 깊게 작업하고, 판단 계층은 무엇을 볼지 계속 고릅니다</h2>
           </div>
-          <p>여기서 선택한 provider와 모델은 새 프로젝트의 초기 설정으로 복사됩니다. 프로젝트를 만든 뒤에도 프로젝트별로 바꿀 수 있습니다.</p>
+          <p>Coverage scout가 사용자가 미리 알지 못한 문제 영역을 찾고, bounded DecisionGateway가 다음 mission과 완료 여부를 판단합니다. 실제 권한과 검증은 deterministic boundary에 남습니다.</p>
         </Card>
 
         {error && <InlineNotice tone="red" title="연결 확인 실패">{error}</InlineNotice>}
@@ -138,7 +214,7 @@ export function GlobalSettingsPage() {
         <div className="split-grid split-grid-2">
           <Card className="settings-panel">
             <SectionHeader title="새 프로젝트 모델" action={saved ? <Pill tone="mint">저장됨</Pill> : undefined} />
-            <p className="settings-panel-title">다음 프로젝트에 사용할 기본 연결</p>
+            <p className="settings-panel-title">실제 코딩·설계·복구를 맡을 System 2</p>
             <form className="settings-model-form" onSubmit={save}>
               <div className="settings-form-field">
                 <label htmlFor="global-model-provider">모델 연결 방식</label>
@@ -181,7 +257,7 @@ export function GlobalSettingsPage() {
           </Card>
 
           <Card className="settings-panel">
-            <SectionHeader title="현재 연결 상태" action={<Pill tone={connectionTone(status.state)}>{loading ? "확인 중…" : connectionLabel(status.state)}</Pill>} />
+            <SectionHeader title="현재 모델 연결" action={<Pill tone={connectionTone(status.state)}>{loading ? "확인 중…" : connectionLabel(status.state)}</Pill>} />
             <p className="settings-panel-title">{status.displayName}</p>
             <dl className="settings-definition-list">
               <div><dt>선택 provider</dt><dd>{providerLabel(status.requested)}</dd></div>
@@ -195,15 +271,62 @@ export function GlobalSettingsPage() {
           </Card>
         </div>
 
-        <InlineNotice tone={status.effective === "codex-cli" ? "blue" : status.effective === "deterministic" ? "yellow" : "orange"} title="연결 순서">
+        <Card className="settings-panel">
+          <SectionHeader title="자율 판단 계층 · System 1" action={<Pill tone={decisionStatus.apiKeyConfigured ? "mint" : decisionProvider === "codex-cli" ? "blue" : "yellow"}>{decisionLoading ? "확인 중…" : decisionStatus.apiKeyConfigured ? "Jev key 설정됨" : "Codex 판단"}</Pill>} />
+          <p className="settings-panel-title">발견된 gap 중 무엇을 우선할지, evidence가 충분한지 빠르게 판단합니다.</p>
+          {decisionError && <InlineNotice tone="red" title="판단 계층 설정 실패">{decisionError}</InlineNotice>}
+          {isDesktopApp ? (
+            <form className="settings-model-form" onSubmit={(event) => void saveDecision(event)}>
+              <div className="split-grid split-grid-2">
+                <div className="settings-form-field">
+                  <label htmlFor="decision-provider">Decision provider</label>
+                  <select id="decision-provider" value={decisionProvider} onChange={(event) => { setDecisionProvider(event.target.value as DesktopDecisionSettingsStatus["provider"]); setDecisionSaved(false); }}>
+                    <option value="codex-cli">Codex CLI · 별도 키 없음</option>
+                    <option value="hybrid">Jev 우선 · Codex fallback</option>
+                    <option value="jev">Jev only</option>
+                  </select>
+                </div>
+                <div className="settings-form-field">
+                  <label htmlFor="jev-model">Jev model</label>
+                  <input id="jev-model" value={jevModel} onChange={(event) => { setJevModel(event.target.value); setDecisionSaved(false); }} maxLength={128} pattern="[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}" placeholder="jev-latest" />
+                </div>
+              </div>
+              {decisionProvider !== "codex-cli" && <div className="settings-form-field">
+                <label htmlFor="jev-api-key">TypeSafe API key</label>
+                <input
+                  id="jev-api-key"
+                  type="password"
+                  autoComplete="off"
+                  value={jevApiKey}
+                  onChange={(event) => { setJevApiKey(event.target.value); setDecisionSaved(false); }}
+                  placeholder={decisionStatus.apiKeyConfigured ? "이미 앱 데이터에 저장됨 · 교체할 때만 입력" : "Jev 승인 후 발급된 API key"}
+                  maxLength={4096}
+                />
+                <span className="field-help">브라우저 localStorage, AppState, event journal, Codex/Jev model context에는 key를 넣지 않습니다.</span>
+              </div>}
+              <div className="button-row">
+                <Button variant="primary" size="small" type="submit" disabled={decisionLoading}>판단 계층 저장</Button>
+                {decisionStatus.apiKeyConfigured && <Button variant="neutral" size="small" type="button" disabled={decisionLoading} onClick={() => void clearDecisionKey()}>Jev key 제거 · Codex로 전환</Button>}
+                {decisionSaved && <span className="settings-save-state" role="status">앱 데이터에 저장됨</span>}
+              </div>
+            </form>
+          ) : (
+            <div>
+              <p className="muted-copy">브라우저 개발 모드에서는 secret을 페이지에 저장하지 않습니다. 터미널에서 <code>npm run decision:setup</code>을 실행하거나 TypeSafe 환경변수를 worker에 전달하세요.</p>
+            </div>
+          )}
+          <p className="small-copy">Jev/Codex의 확률 판단은 권한 승인이 아닙니다. workspace, production, network, budget, human approval은 기존 deterministic boundary가 계속 강제합니다.</p>
+        </Card>
+
+        <InlineNotice tone={status.effective === "codex-cli" ? "blue" : status.effective === "deterministic" ? "yellow" : "orange"} title="System 2 연결 순서">
           {status.effective === "codex-cli"
-            ? "Codex CLI는 도구가 아니라 ModelGateway로 다음 행동 하나를 결정합니다. 실제 파일 변경은 선택한 workspace 경계 안에서 실행됩니다."
-            : "실제 Codex를 사용하려면 API 서버를 실행하고 CODEX_CLI_ENABLED=true와 codex login을 설정하세요. 모델 목록은 기본 추천 목록을 먼저 표시하고, CODEX_CLI_MODELS로 서버별 목록을 바꿀 수 있습니다."}
+            ? "Codex CLI는 지속형 프로젝트 세션에서 실제 파일·명령·복구를 수행합니다. Coverage scout와 DecisionGateway가 그 앞뒤에서 누락된 영역과 다음 mission을 계속 찾습니다."
+            : "실제 지속형 Codex를 사용하려면 API/desktop runtime에서 CODEX_CLI_ENABLED=true와 codex login을 준비하고 새 프로젝트의 모델을 Codex CLI로 설정하세요."}
         </InlineNotice>
 
         <Card className="settings-panel global-settings-next-step">
           <SectionHeader title="다음 단계" />
-          <p>모델 설정을 저장한 뒤 새 프로젝트에서 Intent와 작업 폴더를 정하면 됩니다. 작업 폴더를 비워두면 서버가 WORKSPACE_ROOT 안에 전용 폴더를 준비합니다.</p>
+          <p>모델과 판단 계층을 저장한 뒤 새 프로젝트에서 Intent와 작업 폴더를 정하면 됩니다. 사용자가 PM·보안·인프라 체크리스트를 미리 만들 필요 없이 coverage scout가 현재 World에서 필요한 전문 관점을 탐색합니다.</p>
           <Button variant="neutral" size="small" onClick={() => navigate("/projects/new")}>Intent 입력으로 이동</Button>
         </Card>
       </div>
