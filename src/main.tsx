@@ -9,6 +9,7 @@ import "./desktopV2Screens.css";
 import "./productUI.css";
 import "./productForms.css";
 import "./productCompat.css";
+import "./readability.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

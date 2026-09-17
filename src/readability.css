@@ -1,0 +1,217 @@
+/*
+ * Readability pass for the current product shell.
+ *
+ * The product UI was originally tuned as a dense control plane and several
+ * labels ended up at 7–9px. Keep the compact layout, but make the smallest
+ * text readable without scaling the whole application or changing legacy
+ * screens outside the v3 shell.
+ */
+.app-frame-v3 {
+  --ss-toolbar-height: 50px;
+  font-size: 13px;
+}
+
+.app-frame-v3 .ss-toolbar {
+  height: var(--ss-toolbar-height);
+}
+
+.app-frame-v3 .ss-body {
+  min-height: calc(100vh - var(--ss-toolbar-height));
+}
+
+.app-frame-v3 .ss-sidebar {
+  top: var(--ss-toolbar-height);
+  height: calc(100vh - var(--ss-toolbar-height));
+}
+
+.app-frame-v3 .ss-content,
+.app-frame-v3 .ss-content > .screen,
+.app-frame-v3 .product-workspace {
+  min-height: calc(100vh - var(--ss-toolbar-height));
+}
+
+.app-frame-v3 .global-notice-stack {
+  top: var(--ss-toolbar-height);
+}
+
+/* Toolbar and navigation */
+.app-frame-v3 .ss-toolbar-brand strong { font-size: 15px; }
+.app-frame-v3 .ss-toolbar-brand span { font-size: 11px; }
+.app-frame-v3 .ss-command-search { height: 34px; }
+.app-frame-v3 .ss-command-search input { font-size: 12px; }
+.app-frame-v3 .ss-command-search kbd { padding: 3px 6px; font-size: 10px; }
+.app-frame-v3 .ss-toolbar-right { font-size: 11px; }
+.app-frame-v3 .ss-project-switcher { height: 52px; }
+.app-frame-v3 .ss-project-switcher small { font-size: 10px; }
+.app-frame-v3 .ss-project-switcher strong { font-size: 12px; }
+.app-frame-v3 .ss-global-brand strong { font-size: 13px; }
+.app-frame-v3 .ss-global-brand span { font-size: 11px; }
+.app-frame-v3 .ss-section-label { font-size: 10px; }
+.app-frame-v3 .ss-nav-item { min-height: 38px; font-size: 12px; }
+.app-frame-v3 .ss-nav-item em { font-size: 11px; }
+.app-frame-v3 .ss-runtime-foot { font-size: 10px; }
+.app-frame-v3 .ss-recent-projects strong { font-size: 11px; }
+.app-frame-v3 .ss-recent-projects small { font-size: 10px; }
+
+/* Shared product shell */
+.app-frame-v3 .product-main-pane { gap: 14px; padding: 22px 24px; }
+.app-frame-v3 .product-inspector { gap: 12px; padding: 18px; }
+.app-frame-v3 .product-eyebrow { margin-bottom: 4px; font-size: 11px; }
+.app-frame-v3 .product-header h1 { font-size: 22px; }
+.app-frame-v3 .product-header p { margin-top: 5px; font-size: 12px; }
+.app-frame-v3 .product-surface { padding: 16px; }
+.app-frame-v3 .product-surface-header { margin-bottom: 11px; }
+.app-frame-v3 .product-surface-header h2 { font-size: 14px; }
+.app-frame-v3 .product-surface-meta { font-size: 11px; }
+.app-frame-v3 .product-link-button { font-size: 11px; }
+.app-frame-v3 .product-muted { font-size: 11px; }
+.app-frame-v3 .product-empty { font-size: 12px; }
+.app-frame-v3 .product-loading { font-size: 13px; }
+.app-frame-v3 .product-pill { min-height: 24px; padding: 5px 9px; font-size: 10px; }
+.app-frame-v3 .product-inspector-header { min-height: 22px; }
+.app-frame-v3 .product-inspector-header strong { font-size: 13px; }
+.app-frame-v3 .product-inspector-header span { font-size: 11px; }
+.app-frame-v3 .inspector-card { gap: 10px; padding: 15px; }
+.app-frame-v3 .inspector-card-head strong { font-size: 14px; }
+.app-frame-v3 .inspector-card-head span { font-size: 11px; }
+.app-frame-v3 .inspector-strong { font-size: 12px; }
+.app-frame-v3 .product-kv { font-size: 11px; }
+.app-frame-v3 .inspector-button-row button,
+.app-frame-v3 .approval-actions button { min-height: 30px; padding: 6px 9px; font-size: 11px; }
+.app-frame-v3 .inspector-action-row > span { font-size: 11px; }
+.app-frame-v3 .inspector-action-row small { font-size: 10px; }
+
+/* Dashboard and mission detail content */
+.app-frame-v3 .metric-cell { min-height: 82px; padding: 12px; }
+.app-frame-v3 .metric-cell > span { font-size: 11px; }
+.app-frame-v3 .metric-cell > strong { font-size: 22px; }
+.app-frame-v3 .metric-cell > small { font-size: 10px; }
+.app-frame-v3 .mission-focus-copy h3 { font-size: 17px; }
+.app-frame-v3 .mission-focus-copy p { font-size: 11px; }
+.app-frame-v3 .mission-contract span { font-size: 11px; }
+.app-frame-v3 .mission-contract b { font-size: 9px; }
+.app-frame-v3 .priority { font-size: 10px; }
+.app-frame-v3 .gap-copy strong { font-size: 11px; }
+.app-frame-v3 .gap-copy small,
+.app-frame-v3 .evidence-mini-row small,
+.app-frame-v3 .activity-compact span { font-size: 10px; }
+.app-frame-v3 .gap-score { font-size: 11px; }
+.app-frame-v3 .evidence-mini-row strong,
+.app-frame-v3 .activity-compact strong { font-size: 10px; }
+.app-frame-v3 .mission-switcher-label { font-size: 11px; }
+.app-frame-v3 .mission-switcher-item span,
+.app-frame-v3 .mission-switcher-item small { font-size: 10px; }
+.app-frame-v3 .mission-switcher-item strong { font-size: 11px; }
+.app-frame-v3 .mission-hero-top { font-size: 11px; }
+.app-frame-v3 .mission-hero h2 { font-size: 19px; }
+.app-frame-v3 .mission-hero > p { font-size: 12px; }
+.app-frame-v3 .mission-meta-row { font-size: 10px; }
+.app-frame-v3 .mission-tabs button { min-height: 32px; font-size: 11px; }
+.app-frame-v3 .timeline-time { font-size: 10px; }
+.app-frame-v3 .mission-timeline strong,
+.app-frame-v3 .mission-simple-list strong { font-size: 10px; }
+.app-frame-v3 .mission-timeline small,
+.app-frame-v3 .mission-simple-list small { font-size: 10px; }
+.app-frame-v3 .evidence-contract-list,
+.app-frame-v3 .inspector-evidence-row,
+.app-frame-v3 .world-summary,
+.app-frame-v3 .recent-lineage,
+.app-frame-v3 .lineage-stack { font-size: 11px; }
+.app-frame-v3 .inspector-dependency strong,
+.app-frame-v3 .world-source-row strong { font-size: 10px; }
+.app-frame-v3 .inspector-dependency small,
+.app-frame-v3 .world-source-row small,
+.app-frame-v3 .world-source-row em { font-size: 10px; }
+
+/* Coverage, inbox, evidence and shared lists */
+.app-frame-v3 .product-filters button { min-height: 31px; font-size: 11px; }
+.app-frame-v3 .domain-card .domain-name,
+.app-frame-v3 .domain-card > strong { font-size: 10px; }
+.app-frame-v3 .domain-card > small { font-size: 10px; }
+.app-frame-v3 .discovery-strip span { font-size: 10px; }
+.app-frame-v3 .discovery-strip strong { font-size: 13px; }
+.app-frame-v3 .human-row > div span,
+.app-frame-v3 .human-row small { font-size: 10px; }
+.app-frame-v3 .human-row strong { font-size: 11px; }
+.app-frame-v3 .human-detail-top { font-size: 11px; }
+.app-frame-v3 .human-detail-pane > h2 { font-size: 18px; }
+.app-frame-v3 .human-detail-summary { font-size: 12px; }
+.app-frame-v3 .scope-card strong { font-size: 12px; }
+.app-frame-v3 .scope-card span,
+.app-frame-v3 .scope-card p,
+.app-frame-v3 .assumption-panel p { font-size: 11px; }
+.app-frame-v3 .assumption-panel small,
+.app-frame-v3 .human-options small { font-size: 10px; }
+.app-frame-v3 .human-options-label { font-size: 11px; }
+.app-frame-v3 .human-options strong { font-size: 11px; }
+.app-frame-v3 .human-answer-box textarea { font-size: 12px; }
+.app-frame-v3 .human-answer-box button { min-height: 30px; font-size: 11px; }
+.app-frame-v3 .resolved-human,
+.app-frame-v3 .dependency-line,
+.app-frame-v3 .compact-steps { font-size: 11px; }
+.app-frame-v3 .evidence-head { min-height: 34px; font-size: 10px; }
+.app-frame-v3 .evidence-row > strong { font-size: 10px; }
+.app-frame-v3 .evidence-row > span { font-size: 10px; }
+
+/* Codex setup panel used by the new-project and settings screens */
+.app-frame-v3 .codex-setup-panel { gap: 15px; padding: 18px; }
+.app-frame-v3 .codex-setup-panel .eyebrow { font-size: 11px; }
+.app-frame-v3 .codex-setup-heading h2 { font-size: 17px; }
+.app-frame-v3 .codex-setup-heading p { font-size: 12px; }
+.app-frame-v3 .codex-step { min-height: 40px; padding: 8px 10px; font-size: 12px; }
+.app-frame-v3 .codex-step > span { width: 20px; height: 20px; font-size: 10px; }
+.app-frame-v3 .codex-environment-facts dt { font-size: 11px; }
+.app-frame-v3 .codex-environment-facts dd { font-size: 12px; }
+.app-frame-v3 .codex-credential-note { font-size: 11px; }
+.app-frame-v3 .codex-setup-compact { padding: 14px; }
+.app-frame-v3 .codex-setup-compact .codex-setup-heading h2 { font-size: 15px; }
+.app-frame-v3 .button-small { min-height: 32px; font-size: 11px; }
+.app-frame-v3 .button-medium { font-size: 12px; }
+.app-frame-v3 .pill { font-size: 11px; }
+
+/* New project and settings forms */
+.app-frame-v3 .figma-intent-composer textarea { font-size: 14px; line-height: 1.55; }
+.app-frame-v3 .figma-workspace-row input { min-height: 38px; font-size: 12px; }
+.app-frame-v3 .figma-workspace-row button,
+.app-frame-v3 .figma-secondary-button,
+.app-frame-v3 .settings-inline-actions button,
+.app-frame-v3 .jev-secret-row button { min-height: 32px; font-size: 11px; }
+.app-frame-v3 .figma-form-error { font-size: 11px; }
+.app-frame-v3 .strong-defaults-figma > div { min-height: 24px; }
+.app-frame-v3 .strong-defaults-figma > div > span,
+.app-frame-v3 .strong-defaults-figma strong { font-size: 11px; }
+.app-frame-v3 .new-boundary-title { font-size: 11px; }
+.app-frame-v3 .figma-setting-row { min-height: 46px; }
+.app-frame-v3 .figma-setting-row > span { font-size: 11px; }
+.app-frame-v3 .figma-setting-row input,
+.app-frame-v3 .figma-setting-row select { min-height: 36px; font-size: 11px; }
+.app-frame-v3 .figma-launch-row strong { font-size: 11px; }
+.app-frame-v3 .figma-launch-row span { font-size: 10px; }
+.app-frame-v3 .figma-primary-button { min-height: 36px; font-size: 12px; }
+.app-frame-v3 .figma-warning { font-size: 11px; }
+.app-frame-v3 .figma-settings-categories button { min-height: 36px; font-size: 11px; }
+.app-frame-v3 .figma-decision-options strong { font-size: 11px; }
+.app-frame-v3 .figma-decision-options small { font-size: 10px; }
+.app-frame-v3 .settings-field-label span { font-size: 11px; }
+.app-frame-v3 .settings-field-label small { font-size: 10px; }
+.app-frame-v3 .jev-secret-row input { font-size: 11px; }
+.app-frame-v3 .settings-two-fields label > span { font-size: 10px; }
+.app-frame-v3 .settings-two-fields input,
+.app-frame-v3 .settings-two-fields select { min-height: 36px; font-size: 11px; }
+.app-frame-v3 .responsibility-card strong { font-size: 11px; }
+.app-frame-v3 .responsibility-card span,
+.app-frame-v3 .settings-env-line { font-size: 10px; }
+
+@media (max-width: 900px) {
+  .app-frame-v3 .ss-sidebar { top: var(--ss-toolbar-height); }
+  .app-frame-v3 .product-main-pane { padding: 20px; }
+}
+
+@media (max-width: 600px) {
+  .app-frame-v3 .product-main-pane { padding: 18px 16px; }
+  .app-frame-v3 .product-header h1 { font-size: 20px; }
+  .app-frame-v3 .product-header p { font-size: 12px; }
+  .app-frame-v3 .product-surface { padding: 14px; }
+  .app-frame-v3 .figma-intent-composer textarea { font-size: 13px; }
+  .app-frame-v3 .figma-setting-row { gap: 6px; }
+}
