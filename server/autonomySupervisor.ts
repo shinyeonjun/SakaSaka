@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import type { AppState, Observation, Project } from "../src/types";
+import type { AppState, Evidence, Project } from "../src/types";
 import type { ModelUsage } from "../src/ports";
 import { redactSecretLikeText } from "../src/security";
-import { accountModelUsage, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, recordObservedWorldRefresh, wakeProject } from "../src/runtime";
+import { accountModelUsage, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, wakeProject } from "../src/runtime";
 import type { CycleStateStore } from "./cycleCoordinator";
 import {
   activeMission, appendCoverageSnapshot, appendDecision, completeDiscoveryPass, coverageCategories, coverageCounts,
-  createAutonomyProject, hasMaterialUnresolvedWork, mergeGapCandidates, selectableGaps, settleMission, startMissionForGap,
+  createAutonomyProject, hasMaterialUnresolvedWork, mergeGapCandidates, priorityForGap, selectableGaps, settleMission, startMissionForGap,
   type AutonomyProjectState, type DecisionTrace, type GapCandidate,
 } from "./autonomyDomain";
 import { autonomyStore, type FileAutonomyStore } from "./autonomyStore";
@@ -107,6 +107,27 @@ function primaryIntentGap(rawIntent: string, intentVersion: number): GapCandidat
     ],
     sourceRefs: [`intent:v${intentVersion}`],
   };
+}
+
+export function rebaseAutonomyForIntent(autonomy: AutonomyProjectState, intentVersion: number, at: string): AutonomyProjectState {
+  if (autonomy.intentVersion === intentVersion) return autonomy;
+  const activeStatuses = new Set(["PROPOSED", "READY", "RUNNING", "VERIFYING", "BLOCKED"]);
+  const missions = autonomy.missions.map((mission) => activeStatuses.has(mission.status)
+    ? { ...mission, status: "SUPERSEDED" as const, completedAt: at, updatedAt: at }
+    : mission);
+  const gaps = autonomy.gaps.map((gap) => {
+    if (gap.source === "taxonomy") {
+      const reopened = { ...gap, status: "UNEXPLORED" as const, uncertainty: Math.max(.9, gap.uncertainty), resolvedAt: undefined, updatedAt: at };
+      return { ...reopened, priority: priorityForGap(reopened, "UNEXPLORED") };
+    }
+    if ((gap.sourceRefs ?? []).some((ref) => /^intent:v\d+$/.test(ref))) return { ...gap, status: "DEFERRED" as const, priority: 0, resolvedAt: undefined, updatedAt: at };
+    if (gap.status === "INVESTIGATING" || gap.status === "BLOCKED") {
+      const reopened = { ...gap, status: "OPEN" as const, uncertainty: Math.min(1, gap.uncertainty + .08), resolvedAt: undefined, updatedAt: at };
+      return { ...reopened, priority: priorityForGap(reopened, "OPEN") };
+    }
+    return gap;
+  });
+  return { ...autonomy, intentVersion, gaps, missions, lastDiscoveryAt: undefined, lastPublishedDigest: undefined, updatedAt: at };
 }
 
 function needsDiscovery(autonomy: AutonomyProjectState, intentVersion: number, nowMs: number): boolean {
@@ -245,30 +266,61 @@ async function prioritize(store: CycleStateStore, projectId: string, autonomy: A
   return fileStore.putProject(next);
 }
 
-function observationSummary(autonomy: AutonomyProjectState): string {
+function controlPlaneSummary(autonomy: AutonomyProjectState): string {
   const mission = activeMission(autonomy), counts = coverageCounts(autonomy), top = autonomy.gaps.filter((gap) => !["RESOLVED", "DEFERRED"].includes(gap.status)).sort((a, b) => b.priority - a.priority).slice(0, 5);
   const provider = decisionProviderStatus();
   return [
     `SakaSaka autonomy: decision=${provider.effective}; open=${counts.open}, investigating=${counts.investigating}, blocked=${counts.blocked}, unexplored=${counts.unexplored}, highPriority=${counts.highPriorityOpen}.`,
     mission ? `Active mission [${mission.role}] ${mission.objective}. Evidence contract: ${mission.evidenceContract.join(" | ")}.` : "No active specialist mission.",
     top.length ? `Priority gaps: ${top.map((gap) => `${gap.id} ${gap.category}/${gap.title}(${gap.priority.toFixed(2)})`).join("; ")}.` : "No unresolved priority gaps.",
-    "This is verified control-plane state, not permission to bypass policy or proof that a gap is solved.",
+    "This is control-plane state, not permission to bypass policy or proof that a product claim is true.",
   ].join(" ").slice(0, 4_000);
 }
 
-async function publishObservation(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, fileStore: FileAutonomyStore, now: () => Date): Promise<AutonomyProjectState> {
-  const summary = observationSummary(autonomy), digest = createHash("sha256").update(summary).digest("hex");
+async function publishControlPlaneEvidence(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, fileStore: FileAutonomyStore, now: () => Date): Promise<AutonomyProjectState> {
+  const summary = controlPlaneSummary(autonomy), digest = createHash("sha256").update(summary).digest("hex");
   if (digest === autonomy.lastPublishedDigest) return autonomy;
   const at = now().toISOString();
   const next = { ...autonomy, lastPublishedDigest: digest, updatedAt: at };
   await fileStore.putProject(next);
   const counts = coverageCounts(next), mission = activeMission(next);
-  const observation: Observation = {
-    id: makeId("observation"), projectId, source: "runtime", status: counts.highPriorityOpen || mission ? "warning" : "healthy", observedAt: at, freshness: "fresh",
-    rawRef: `autonomy://${projectId}/${digest.slice(0, 16)}`, compactView: summary, trustLevel: "verified", confidence: .99,
-    relatedEntities: [mission?.id, ...next.gaps.filter((gap) => !["RESOLVED", "DEFERRED"].includes(gap.status)).slice(0, 8).map((gap) => gap.id)].filter((value): value is string => Boolean(value)),
-  };
-  await store.transact((state) => recordObservedWorldRefresh(state, projectId, [observation]));
+  await store.transact((state) => {
+    const evidenceId = makeId("evidence");
+    const evidence: Evidence = {
+      id: evidenceId,
+      projectId,
+      kind: "metric",
+      verdict: "UNCERTAIN",
+      summary,
+      source: "sakasaka-autonomy",
+      createdAt: at,
+      evaluator: "autonomy-control-plane",
+      evaluatorVersion: "2",
+      rawRef: `autonomy://${projectId}/${digest.slice(0, 16)}`,
+      metadata: {
+        open: counts.open,
+        unexplored: counts.unexplored,
+        investigating: counts.investigating,
+        blocked: counts.blocked,
+        highPriorityOpen: counts.highPriorityOpen,
+        activeMission: Boolean(mission),
+      },
+    };
+    const event = {
+      id: makeId("event"),
+      sequence: state.events.reduce((max, item) => Math.max(max, item.sequence ?? -1), -1) + 1,
+      projectId,
+      type: "EVIDENCE_RECORDED" as const,
+      actor: "system" as const,
+      summary: "Autonomy coverage state updated",
+      detail: "Control-plane metric only; UNCERTAIN is intentional and does not certify product completion.",
+      createdAt: at,
+      runId: getRun(state, projectId)?.id,
+      evidenceIds: [evidenceId],
+      schemaVersion: 1 as const,
+    };
+    return { ...state, evidence: [...state.evidence, evidence], events: [...state.events, event] };
+  });
   return next;
 }
 
@@ -277,14 +329,15 @@ export async function runAutonomyPrelude(store: CycleStateStore, projectId: stri
   if (!project || !intent || !autonomyEnabled(project)) return undefined;
   const fileStore = options.store ?? autonomyStore, now = options.now ?? (() => new Date()), scoutRunner = options.scoutRunner ?? runCodexStructured, gateway = options.decisionGateway ?? createDecisionGateway();
   const existing = fileStore.readProject(projectId);
-  let autonomy = existing ?? createAutonomyProject(projectId, intent.version, now().toISOString(), makeId);
   const at = now().toISOString();
+  let autonomy = existing ?? createAutonomyProject(projectId, intent.version, at, makeId);
+  autonomy = rebaseAutonomyForIntent(autonomy, intent.version, at);
   autonomy = mergeGapCandidates(autonomy, [primaryIntentGap(intent.rawText, intent.version)], at, makeId);
   if (!existing || autonomy !== existing) await fileStore.putProject(autonomy);
   autonomy = await reviewMission(store, projectId, autonomy, gateway, fileStore, now);
   if (needsDiscovery(autonomy, intent.version, now().getTime())) autonomy = await discover(store, projectId, autonomy, { ...options, store: fileStore, scoutRunner, now });
   autonomy = await prioritize(store, projectId, autonomy, gateway, fileStore, now);
-  return publishObservation(store, projectId, autonomy, fileStore, now);
+  return publishControlPlaneEvidence(store, projectId, autonomy, fileStore, now);
 }
 
 export async function runAutonomyPostlude(store: CycleStateStore, projectId: string, options: AutonomySupervisorOptions = {}): Promise<void> {
