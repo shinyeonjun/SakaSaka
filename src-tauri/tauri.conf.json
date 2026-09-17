@@ -5,7 +5,7 @@
   "identifier": "com.shinyeonjun.sakasaka",
   "build": {
     "beforeDevCommand": {
-      "script": "npm run dev -- --host 127.0.0.1 --port 4173",
+      "script": "npm run dev -- --host 127.0.0.1 --port 4173 --strictPort",
       "wait": false
     },
     "beforeBuildCommand": "npm run build:desktop:assets",
