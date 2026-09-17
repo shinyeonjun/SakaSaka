@@ -94,17 +94,17 @@ async function main(): Promise<void> {
     assert.equal(await newPage.getByRole("heading", { name: "원하는 결과만 말해 주세요", exact: true }).count(), 1);
     assert.equal(await newPage.getByLabel("원하는 결과").count(), 1, "Intent 입력이 없습니다.");
     assert.equal(await newPage.getByText("강한 기본값", { exact: true }).count(), 1, "강한 기본값 요약이 없습니다.");
-    assert.equal(await newPage.getByText("데스크톱 앱에서 자동 준비", { exact: true }).count(), 1, "브라우저 모드 Codex 준비 안내가 없습니다.");
 
     // Global settings: model preference remains reusable between projects.
-    await newPage.getByRole("button", { name: "환경 설정", exact: true }).click();
+    await newPage.getByRole("button", { name: "환경 설정", exact: true }).first().click();
     await newPage.waitForURL(/\/settings$/);
     assert.equal(await newPage.getByRole("heading", { name: "환경 설정", exact: true }).count(), 1);
+    assert.equal(await newPage.getByText("데스크톱 앱에서 자동 준비", { exact: true }).count(), 1, "브라우저 모드 Codex 준비 안내가 없습니다.");
     await newPage.getByLabel("연결 방식").selectOption("codex-cli");
     await newPage.getByLabel("모델").fill("configured-test-model");
     await newPage.getByRole("button", { name: "기본값 저장" }).click();
     assert.equal(await newPage.getByText("저장됨", { exact: true }).count() > 0, true);
-    await newPage.getByRole("button", { name: "새 프로젝트", exact: true }).click();
+    await newPage.getByRole("button", { name: "새 프로젝트", exact: true }).first().click();
     await newPage.waitForURL(/\/projects\/new$/);
 
     // Browser-only mode keeps atomic compatibility, while remembering model preference.
