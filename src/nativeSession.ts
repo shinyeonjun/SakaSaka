@@ -315,8 +315,9 @@ export function updateExecutionSettings(state: AppState, projectId: string, inpu
   const project = getProject(state, projectId), run = getRun(state, projectId);
   if (!project || !run || project.status === "KILLED") return state;
   if (input.executionMode !== "native" && input.executionMode !== "atomic") return state;
-  for (const [value, max] of [[input.maxNativeTurns, 1000], [input.maxNativeTokens, 10000000]] as const) if (value !== undefined && (!Number.isInteger(value) || value <= 0 || value > max)) return state;
-  const settings = { ...project.settings, executionMode: input.executionMode, maxNativeTurns: input.maxNativeTurns ?? project.settings.maxNativeTurns ?? 40, maxNativeTokens: input.maxNativeTokens ?? project.settings.maxNativeTokens ?? 250000 };
+  if (input.maxNativeTurns !== undefined && (!Number.isInteger(input.maxNativeTurns) || input.maxNativeTurns <= 0 || input.maxNativeTurns > 1000)) return state;
+  if (input.maxNativeTokens !== undefined && (!Number.isInteger(input.maxNativeTokens) || input.maxNativeTokens < 0 || input.maxNativeTokens > 10000000)) return state;
+  const settings = { ...project.settings, executionMode: input.executionMode, maxNativeTurns: input.maxNativeTurns ?? project.settings.maxNativeTurns ?? 40, maxNativeTokens: 0 };
   const at = new Date().toISOString();
   const next: AppState = { ...state, projects: state.projects.map((p) => p.id === projectId ? { ...p, settings, status: "PAUSED", nextReviewAt: undefined, updatedAt: at } : p), runs: state.runs.map((r) => r.id === run.id ? { ...r, status: "PAUSED", phase: "sleep" } : r) };
   return missionEvent(next, projectId, "RUN_STATE_CHANGED", "PAUSED · 실행 방식 변경", `${input.executionMode} · 기존 파일과 질문·경험은 보존됩니다. 설정 확인 후 재개하십시오.`, { actor: "human" });
