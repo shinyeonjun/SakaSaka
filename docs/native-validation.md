@@ -6,7 +6,7 @@
 
 | 검사 | 결과 / 범위 |
 |---|---|
-| `npm test -- --run` | 105개 테스트 / 24개 파일 통과. 기존 88개 검사 보존 + 신규 17개 |
+| `npm test -- --run` | 118개 테스트 / 24개 파일 통과. 기존 native 회귀와 checkpoint/reference 회귀 포함 |
 | `npm run build:api` | TypeScript API 검사 통과 |
 | `npm run build` | TypeScript와 Vite 빌드 통과 |
 | `npm run acceptance` | 실제 로컬 실행·계속 실행·질문 미루기/답변·경계 검사 통과 |
@@ -15,7 +15,17 @@
 | `npm run acceptance:native:core` | 실제 공개 Codex 0.154.0 App Server + 로컬 모의 Responses 서버로 검사. 실제 파일 쓰기/실패한 테스트/수정/같은 thread의 질문 답변/세션 재개/유지보수/작업 폴더 밖 쓰기 거절/재개 후 사용량 증가 확인 |
 | 전체 Native + Chromium | 아직 미통과. 실행 환경의 브라우저 탐색이 관리자 정책으로 차단됨. HTTP fallback을 브라우저 PASS로 처리하지 않음 |
 | 원격 GitHub CI | 이 변경의 원격 실행 결과가 아직 없음. 기존 PR의 초록색 CI는 이 새 코드의 검증으로 사용하지 않음 |
-| 실제 로그인한 Codex + 실제 모델 제품 개발 | 미실행. 사용자의 실제 CLI 인증은 이 환경에 없음 |
+| 실제 로그인한 Codex + 작은 native smoke | 0.153.2에서 전용 `SAKASAKA_CODEX_HOME`·Windows sandbox·실제 파일·checkpoint까지 통과. 제품 전체 개발 능력 검증은 아님 |
+
+이 표의 `acceptance:native:core` 행은 이전 CI의 Codex 0.154.0 fixture 실행 기록이다. 이번 로컬 환경의 Codex CLI는 0.153.2이므로 두 결과를 합치지 않는다.
+
+## 이번 checkpoint 계약 수정 검증
+
+- 실제 실패 응답의 Windows 절대 경로를 fixture로 넣은 오프라인 회귀를 수정 전 먼저 재현했다. 기존 파서는 같은 입력을 3회 연속 거절했고, 수정 후에는 schema와 parser가 공백·한글·역슬래시 경로를 같은 문자열 제약으로 허용한다.
+- `npm run smoke:native -- --keep`에서 모델을 호출하지 않고 `codex-cli 0.153.2`, 전용 홈, 실제 `shell_environment_policy.inherit=core`, `windowsSandbox/readiness=ready`, Node의 15바이트 파일 쓰기·읽기, PowerShell 기동을 각각 확인했다.
+- 같은 사전 검사를 통과한 뒤 `--run`을 한 번 실행했다. 실제 임시 작업공간의 `native-smoke.txt`가 정확히 15바이트로 일치했고, 프로젝트/run은 `EQUILIBRIUM`, native 세션은 `resting`이었다. checkpoint는 정상 처리됐으며 모델의 `artifact:native-smoke.txt`는 `artifact / unverified`로 보존하고 관련 실제 evidence ID만 연결했다. 사용량은 total 34,823 / input 34,564 / cached input 17,024 / output 259였다.
+- `SAKASAKA_CODEX_HOME`이 없을 때는 기본 사용자 `.codex`로 폴백하지 않고 모델을 호출하지 않는다. 외부 MCP/hook 설정이 있는 홈도 native 시작 전에 거절한다.
+- 같은 0.153.2에서 `npm run acceptance:native:core`의 로컬 fixture는 `logic.mjs`를 만들기 전에 equilibrium을 반환해 파일 assertion에서 실패했다. 이는 실제 모델 smoke 통과와 별개의 실패이며, 이전 0.154.0 CI 결과를 0.153.2 성공으로 표시하지 않는다.
 
 `acceptance:native:core`는 브라우저를 실행하지 않는 별도 범위다. 필수 CI `native-codex-integration`은 축소하지 않은 `acceptance:native`를 사용한다. 검사 순서의 모의 모델은 테스트 fixture일 뿐 production의 개발 workflow가 아니다.
 
@@ -28,6 +38,7 @@
 - 미리보기 ID가 잘못됐을 때 도구 피드백으로 복구. native ID와 managed preview ID를 혼합하지 않음.
 - 정확한 외부 패키지 승인 선소비 및 1회 실행. 일반 native 권한 확대는 거절한 뒤 가능한 작업 계속.
 - 누적 토큰 중복 과금 방지/한도 중단, Pause/interrupt, 외부 MCP/hook 설정 차단.
+- checkpoint schema/parser 동등 제약, 실제 Windows 경로, 한글·공백 경로, 작업공간 밖/경로 탈출/다른 프로젝트 Evidence ID/임의 URI의 분리. 산출물 경로는 Evidence ID로 승격하지 않으며, 파싱 불가능한 checkpoint는 원본 thread·작업 기록을 보존하고 자동 재실행하지 않는다.
 - 실제 명령 상태가 누락된 raw 결과는 UNCERTAIN으로 보존. 결과·경험·검색 인덱스의 출처 연결 및 중복 방지.
 - 숨겨진 reasoning/encrypted 내용을 도구 증거로 보존하지 않음.
 - 원문 Intent는 변경하지 않고 모델에 전송하는 중복 Intent 필드에서도 비밀 패턴을 제거.
