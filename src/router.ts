@@ -4,8 +4,11 @@ export type RouteMatch =
   | { kind: "new" }
   | { kind: "global-settings" }
   | { kind: "overview"; projectId: string }
+  | { kind: "missions"; projectId: string }
+  | { kind: "coverage"; projectId: string }
   | { kind: "needs-you"; projectId: string }
   | { kind: "human-item"; projectId: string; itemId: string }
+  | { kind: "evidence"; projectId: string }
   | { kind: "activity"; projectId: string }
   | { kind: "world"; projectId: string }
   | { kind: "artifacts"; projectId: string }
@@ -25,8 +28,11 @@ export function matchRoute(pathname: string): RouteMatch {
   if (parts[0] !== "projects" || !parts[1]) return { kind: "not-found" };
   const projectId = decodeURIComponent(parts[1]);
   if (parts.length === 2) return { kind: "overview", projectId };
+  if (parts[2] === "missions" && parts.length === 3) return { kind: "missions", projectId };
+  if (parts[2] === "coverage" && parts.length === 3) return { kind: "coverage", projectId };
   if (parts[2] === "needs-you" && parts.length === 3) return { kind: "needs-you", projectId };
   if (parts[2] === "human-items" && parts[3]) return { kind: "human-item", projectId, itemId: decodeURIComponent(parts[3]) };
+  if (parts[2] === "evidence" && parts.length === 3) return { kind: "evidence", projectId };
   if (parts[2] === "activity" && parts.length === 3) return { kind: "activity", projectId };
   if (parts[2] === "world" && parts.length === 3) return { kind: "world", projectId };
   if (parts[2] === "artifacts" && parts.length === 3) return { kind: "artifacts", projectId };
