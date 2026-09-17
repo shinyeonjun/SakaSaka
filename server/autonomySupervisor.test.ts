@@ -29,10 +29,10 @@ const gateway: DecisionGateway = {
 };
 
 describe("autonomy supervisor", () => {
-  it("discovers gaps, creates one mission, and publishes runtime observation", async () => {
+  it("discovers gaps, creates one mission, and publishes runtime observation for Codex projects", async () => {
     const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
     const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
-    const initial = createProject(createEmptyState(), "Build a secure calendar app", "project-test", { workspacePath: directory, modelProvider: "deterministic", executionMode: "native" });
+    const initial = createProject(createEmptyState(), "Build a secure calendar app", "project-test", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native" });
     const store = memoryStore(initial);
     const scoutRunner = async <T,>() => ({ value: { gaps: [{ category: "Security", title: "OAuth token storage", summary: "Storage and rotation have not been verified", impact: .95, uncertainty: .8, novelty: .9, urgency: .9, roleHint: "OAuth security specialist", evidenceNeeded: ["token storage code"], sourceRefs: [] }] } as T, usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 } });
     const autonomy = await runAutonomyPrelude(store, "project-test", { store: fileStore, decisionGateway: gateway, scoutRunner, discoveryParallelism: 1, now: () => new Date("2026-09-17T00:00:00Z") });
@@ -41,10 +41,21 @@ describe("autonomy supervisor", () => {
     expect(store.read().observations.some((observation) => observation.rawRef.startsWith("autonomy://"))).toBe(true);
   });
 
-  it("wakes equilibrium when coverage still has material unresolved work", async () => {
+  it("does not mutate legacy deterministic provider world state by default", async () => {
     const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
     const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
-    let initial = createProject(createEmptyState(), "Build app", "project-wake", { workspacePath: directory, modelProvider: "deterministic", executionMode: "native" });
+    const initial = createProject(createEmptyState(), "Legacy deterministic contract", "project-legacy", { workspacePath: directory, modelProvider: "deterministic" });
+    const store = memoryStore(initial);
+    const result = await runAutonomyPrelude(store, "project-legacy", { store: fileStore, decisionGateway: gateway });
+    expect(result).toBeUndefined();
+    expect(fileStore.readProject("project-legacy")).toBeUndefined();
+    expect(store.read().observations).toHaveLength(0);
+  });
+
+  it("wakes equilibrium when Codex coverage still has material unresolved work", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
+    const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
+    let initial = createProject(createEmptyState(), "Build app", "project-wake", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native" });
     initial = { ...initial, projects: initial.projects.map((project) => project.id === "project-wake" ? { ...project, status: "EQUILIBRIUM" } : project) };
     const store = memoryStore(initial);
     const project = getProject(store.read(), "project-wake")!;
