@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { fetchModelCatalog, fetchWorkspaceRoot, isControlPlaneEnabled, setWorkspaceRoot } from "../apiClient";
 import { CodexSetupPanel } from "../components/CodexSetupPanel";
-import { Button, Card, InlineNotice, Label, PageHeading, Pill, SectionHeader } from "../components/ui";
+import { InspectorCard, InspectorHeader, KeyValue, ProductHeader, ProductWorkspace, StatusDot, StatusPill, Surface, SurfaceHeader } from "../components/ProductWorkspace";
 import { isDesktopApp, pickDirectory } from "../desktop";
 import { getRecommendedCodexModels } from "../modelCatalog";
 import { loadUserPreferences, saveUserPreferences } from "../preferences";
@@ -21,7 +21,6 @@ export function NewProjectPage() {
   const [codexReady, setCodexReady] = useState(!isDesktopApp);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showError, setShowError] = useState(false);
-
   const [executionMode, setExecutionMode] = useState<"native" | "atomic">(isControlPlaneEnabled ? "native" : "atomic");
   const [modelProvider, setModelProvider] = useState<NonNullable<ProjectSettings["modelProvider"]>>(isDesktopApp ? "codex-cli" : preferences.modelProvider);
   const [modelName, setModelName] = useState(preferences.modelName ?? "");
@@ -42,10 +41,7 @@ export function NewProjectPage() {
   }, []);
 
   useEffect(() => {
-    if (!isControlPlaneEnabled) {
-      setAvailableModels(modelProvider === "codex-cli" ? getRecommendedCodexModels() : []);
-      return;
-    }
+    if (!isControlPlaneEnabled) { setAvailableModels(modelProvider === "codex-cli" ? getRecommendedCodexModels() : []); return; }
     let cancelled = false;
     void fetchModelCatalog().then((catalog) => {
       if (cancelled) return;
@@ -57,24 +53,19 @@ export function NewProjectPage() {
 
   const chooseWorkspace = async () => {
     if (!isDesktopApp || workspacePicking) return;
-    setWorkspacePicking(true);
-    setWorkspaceError(undefined);
+    setWorkspacePicking(true); setWorkspaceError(undefined);
     try {
       const selected = await pickDirectory();
       if (!selected) return;
       const status = await setWorkspaceRoot(selected);
-      setWorkspaceRootValue(status.root);
-      setWorkspacePath(status.root);
+      setWorkspaceRootValue(status.root); setWorkspacePath(status.root);
     } catch (reason: unknown) {
       setWorkspaceError(reason instanceof Error ? reason.message : "작업 폴더를 연결하지 못했습니다.");
-    } finally {
-      setWorkspacePicking(false);
-    }
+    } finally { setWorkspacePicking(false); }
   };
 
   const requiresCodex = executionMode === "native";
   const canStart = Boolean(intent.trim()) && (!isDesktopApp || !requiresCodex || codexReady);
-
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!intent.trim()) { setShowError(true); return; }
@@ -82,99 +73,80 @@ export function NewProjectPage() {
     const effectiveProvider = executionMode === "native" ? "codex-cli" : modelProvider;
     saveUserPreferences({ modelProvider: effectiveProvider, modelName: modelName.trim() || undefined });
     const settings: Partial<ProjectSettings> = {
-      budgetLimit: budget,
-      maxHours,
-      maxModelCalls,
-      executionMode,
-      maxNativeTurns,
-      maxNativeTokens,
-      modelProvider: effectiveProvider,
-      modelName: modelName.trim() || undefined,
-      sandboxMode,
-      networkPolicy: "allowlist",
-      requireExternalApproval: true,
-      productionBlocked: true,
-      localActions: true,
+      budgetLimit: budget, maxHours, maxModelCalls, executionMode, maxNativeTurns, maxNativeTokens,
+      modelProvider: effectiveProvider, modelName: modelName.trim() || undefined, sandboxMode,
+      networkPolicy: "allowlist", requireExternalApproval: true, productionBlocked: true, localActions: true,
     };
     if (isControlPlaneEnabled && workspacePath.trim()) settings.workspacePath = workspacePath.trim();
-    const id = createProject(intent.trim(), settings);
-    navigate(projectPath(id));
+    navigate(projectPath(createProject(intent.trim(), settings)));
   };
-
   const selectedModel = modelName || defaultModel;
 
-  return (
-    <div className="screen screen-new-project screen-new-project-v2">
-      <PageHeading title="원하는 결과만 말해 주세요" description="방법·기술 스택·작업 분해는 SakaSaka가 월드를 관찰하며 스스로 만들어갑니다." actions={<Button variant="subtle" size="small" onClick={() => navigate("/settings")}>환경 설정</Button>} />
-      <form onSubmit={onSubmit} className="new-project-layout">
-        <div className="new-project-main">
-          <Card className="intent-card intent-card-v2">
-            <div className="new-project-card-heading"><div><span className="eyebrow">Intent</span><h2>무엇을 갖고 싶은지 적어 주세요</h2></div><Pill tone={intent.trim() ? "mint" : "neutral"}>{intent.trim() ? "입력됨" : "필수"}</Pill></div>
-            <Label htmlFor="intent">원하는 결과</Label>
-            <textarea
-              id="intent"
-              value={intent}
-              onChange={(event) => { setIntent(event.target.value); setShowError(false); }}
-              placeholder="예: 개발자가 개인 프로젝트를 관리하는 로컬 우선 프로젝트 대시보드를 만들어줘. 실제로 매일 쓸 수 있는 완성된 제품이었으면 좋겠어. 나머지 제품/UX/기술 결정은 네가 판단해서 진행해."
-              aria-describedby={showError ? "intent-error" : "intent-help"}
-            />
-            <p id="intent-help" className="field-help">이 문장은 고정 task list가 아니라 지속적으로 유지할 의도입니다. 시스템이 Goals · Gaps · Missions를 필요에 따라 다시 구성합니다.</p>
-            {showError && <p id="intent-error" className="field-error" role="alert">먼저 원하는 결과를 적어 주세요.</p>}
-          </Card>
+  const inspector = <>
+    <InspectorHeader title="실행 프로필" meta="기본값" />
+    <InspectorCard title="실행" meta="안전 기본값">
+      <KeyValue label="작업자" value="Codex CLI" tone="working" />
+      <KeyValue label="모드" value={executionMode === "native" ? "native / 지속형" : "atomic"} tone="evidence" />
+      <KeyValue label="샌드박스" value="workspace-write" tone="success" />
+      <KeyValue label="네트워크" value="정책 경계" tone="success" />
+      <KeyValue label="최대 작업 구간" value={maxNativeTurns} />
+      <KeyValue label="토큰 상한" value={`${Math.round(maxNativeTokens / 1000)}k`} />
+    </InspectorCard>
+    <InspectorCard title="예산 & 한도" meta="수정 가능">
+      <KeyValue label="예산" value={`$${budget}`} /><KeyValue label="최대 시간" value={`${maxHours}h`} /><KeyValue label="모델 호출" value={maxModelCalls} /><KeyValue label="재탐색" value="60m" />
+    </InspectorCard>
+    <InspectorCard title="사람 경계" meta="강제">
+      <strong className="text-success new-boundary-title">자동</strong><p className="product-muted">로컬 파일 · 테스트 · 분석 · 되돌릴 수 있는 작업</p>
+      <strong className="text-danger new-boundary-title">승인 필요</strong><p className="product-muted">외부 배포 · 결제 · 데이터 삭제 · 되돌릴 수 없는 외부 영향</p>
+    </InspectorCard>
+    <InspectorCard title="고급 설정" meta={advancedOpen ? "열림" : "접힘"}><p className="product-muted">Model · sandbox · budgets · discovery cadence · preview URL</p></InspectorCard>
+  </>;
 
-          <Card className="workspace-binding-card workspace-v2-card">
-            <div className="workspace-binding-heading"><div><span className="eyebrow">작업 공간</span><h2>실제로 변경할 로컬 폴더</h2></div><Pill tone={workspacePath ? "mint" : "blue"}>{workspacePath ? "연결됨" : "자동 생성 가능"}</Pill></div>
-            <div className="workspace-v2-row">
-              <input className="workspace-path-input" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder={workspaceRoot ? `${workspaceRoot} 아래 전용 폴더를 자동 생성` : "프로젝트 작업 폴더"} disabled={!isControlPlaneEnabled} />
-              {isDesktopApp && <Button variant="neutral" size="small" onClick={() => void chooseWorkspace()} disabled={workspacePicking}>{workspacePicking ? "연결 중…" : "폴더 선택"}</Button>}
-            </div>
-            <p className="field-help">비우면 안전한 프로젝트 전용 폴더를 자동 생성합니다. 지정된 작업 경계 밖의 파일 접근과 심볼릭 링크 탈출은 거부됩니다.</p>
-            {workspaceError && <p className="field-error">{workspaceError}</p>}
-          </Card>
+  return <ProductWorkspace inspector={inspector}>
+    <ProductHeader eyebrow="새 프로젝트" title="원하는 결과만 말해 주세요" description="방법·기술 스택·작업 분해는 시스템이 스스로 발견합니다." />
+    <form className="figma-new-project-form" onSubmit={onSubmit}>
+      <Surface className="figma-intent-composer">
+        <SurfaceHeader title="의도" meta="필수" />
+        <label className="sr-only" htmlFor="intent">원하는 결과</label>
+        <textarea id="intent" value={intent} onChange={(event) => { setIntent(event.target.value); setShowError(false); }} placeholder="예: 개발자가 개인 프로젝트를 관리하는 로컬 우선 프로젝트 대시보드를 만들어줘. 프로젝트, 할 일, 메모, 마일스톤을 관리할 수 있고 실제로 매일 쓸 수 있는 완성된 제품이었으면 좋겠어. 나머지 제품/UX/기술 결정은 네가 판단해서 진행해." />
+        <p className="product-muted">이 문장은 task list로 고정되지 않고, World를 관찰하면서 Goals / Gaps / Missions로 계속 재구성됩니다.</p>
+        {showError && <p className="figma-form-error">먼저 원하는 결과를 적어 주세요.</p>}
+      </Surface>
 
-          {requiresCodex && <CodexSetupPanel compact onReadyChange={setCodexReady} />}
+      <Surface>
+        <SurfaceHeader title="작업 공간" meta="로컬 경계" />
+        <div className="figma-workspace-row"><input value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder={workspaceRoot ? `${workspaceRoot} 아래 전용 폴더를 자동 생성` : "프로젝트 작업 폴더"} disabled={!isControlPlaneEnabled} />{isDesktopApp && <button type="button" onClick={() => void chooseWorkspace()}>{workspacePicking ? "연결 중…" : "폴더 선택"}</button>}</div>
+        <p className="product-muted">이 경로 밖은 강제 경계로 거부합니다. 비우면 WORKSPACE_ROOT 아래 전용 폴더를 자동 생성합니다.</p>{workspaceError && <p className="figma-form-error">{workspaceError}</p>}
+      </Surface>
 
-          <Card className="strong-defaults-card">
-            <div className="new-project-card-heading"><div><span className="eyebrow">강한 기본값</span><h2>대부분은 이대로 시작하면 됩니다</h2></div><Pill tone="purple">권장</Pill></div>
-            <dl className="strong-defaults-list">
-              <div><dt>실행</dt><dd>지속형 Codex App Server</dd></div>
-              <div><dt>판단</dt><dd>Codex CLI · Jev 연결 준비됨</dd></div>
-              <div><dt>네트워크</dt><dd>허용목록 기반 · production 차단</dd></div>
-              <div><dt>탐색</dt><dd>독립 read-only scout + Gap Graph</dd></div>
-              <div><dt>사람</dt><dd>비동기 질문 · 영향 범위만 부분 대기</dd></div>
-              <div><dt>위험 행동</dt><dd>외부 배포·결제·파괴적 작업 승인 필요</dd></div>
-            </dl>
-          </Card>
+      {requiresCodex && <CodexSetupPanel compact onReadyChange={setCodexReady} />}
 
-          {advancedOpen && <Card className="advanced-settings advanced-settings-v2">
-            <div className="advanced-setting-row"><div><strong>실행 방식</strong><span>지속형 Codex가 기본입니다. atomic은 연구/호환용입니다.</span></div><select value={executionMode} onChange={(event) => { const mode = event.target.value as "native" | "atomic"; setExecutionMode(mode); if (mode === "native") setModelProvider("codex-cli"); }}><option value="native">지속형 Codex</option><option value="atomic">Atomic 호환 실행</option></select></div>
-            <div className="advanced-setting-row"><div><strong>예산</strong><span>비용 피해 반경</span></div><input type="number" min="1" max="1000" value={budget} onChange={(event) => setBudget(Number(event.target.value) || 1)} /></div>
-            <div className="advanced-setting-row"><div><strong>최대 실행 시간</strong><span>worker lease 상한</span></div><input type="number" min="1" max="168" value={maxHours} onChange={(event) => setMaxHours(Number(event.target.value) || 1)} /></div>
-            <div className="advanced-setting-row"><div><strong>모델 호출 상한</strong><span>탐색·판단·작업 전체 공유</span></div><input type="number" min="1" max="10000" value={maxModelCalls} onChange={(event) => setMaxModelCalls(Number(event.target.value) || 1)} /></div>
-            {executionMode === "native" && <>
-              <div className="advanced-setting-row"><div><strong>최대 작업 구간</strong><span>같은 Codex thread에서 이어갈 turn 수</span></div><input type="number" min="1" max="1000" value={maxNativeTurns} onChange={(event) => setMaxNativeTurns(Number(event.target.value) || 1)} /></div>
-              <div className="advanced-setting-row"><div><strong>Codex 토큰 상한</strong><span>프로젝트 세션 누적 한도</span></div><input type="number" min="1000" max="10000000" value={maxNativeTokens} onChange={(event) => setMaxNativeTokens(Number(event.target.value) || 1000)} /></div>
-            </>}
-            <div className="advanced-setting-row model-setting-row"><div><strong>모델</strong><span>비워두면 Codex/provider 기본값을 사용합니다.</span></div><div className="model-picker"><select value={availableModels.some((model) => model.id === selectedModel) ? selectedModel : ""} onChange={(event) => setModelName(event.target.value)}><option value="">기본 모델</option>{availableModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select><input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="직접 모델 ID" /></div></div>
-            <div className="advanced-setting-row"><div><strong>도구 샌드박스</strong><span>Codex 자체 workspace sandbox와 별도의 로컬 도구 실행 경계</span></div><select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as "process" | "docker")}><option value="docker">Docker</option><option value="process">Host process</option></select></div>
-          </Card>}
-
-          <div className="new-project-actions">
-            <div><strong>시작하면 바로 관찰 → 탐색 → 첫 미션으로 이어집니다.</strong><span>필요할 때만 사람이 개입합니다.</span></div>
-            <div className="button-row"><Button variant="subtle" size="medium" onClick={() => setAdvancedOpen((open) => !open)} aria-expanded={advancedOpen}>{advancedOpen ? "고급 설정 닫기" : "고급 설정"}</Button><Button variant="primary" size="medium" type="submit" disabled={!canStart}>프로젝트 시작</Button></div>
-          </div>
-          {isDesktopApp && requiresCodex && !codexReady && <InlineNotice tone="yellow">지속형 Codex 실행을 시작하려면 위의 Codex 실행환경 준비를 완료해 주세요.</InlineNotice>}
+      <Surface>
+        <SurfaceHeader title="권장 기본값" meta="권장" />
+        <div className="strong-defaults-figma">
+          <DefaultRow label="실행" value="지속형 Codex App Server" tone="working" />
+          <DefaultRow label="판단" value="Jev / Hybrid 사용 가능" tone="evidence" />
+          <DefaultRow label="네트워크" value="허용목록 + production 차단" tone="success" />
+          <DefaultRow label="탐색" value="읽기 전용 독립 탐색 3개" tone="evidence" />
+          <DefaultRow label="사람 개입" value="비동기 질문 · 부분 차단" tone="human" />
         </div>
+      </Surface>
 
-        <aside className="new-project-inspector" aria-label="새 프로젝트 실행 프로필">
-          <Card className="settings-panel">
-            <SectionHeader title="실행 프로필" action={<Pill tone="blue">기본값</Pill>} />
-            <dl className="settings-definition-list"><div><dt>작업자</dt><dd>Codex CLI</dd></div><div><dt>방식</dt><dd>{executionMode === "native" ? "지속형" : "Atomic"}</dd></div><div><dt>샌드박스</dt><dd>workspace-write</dd></div><div><dt>네트워크</dt><dd>정책 경계 적용</dd></div><div><dt>작업 구간</dt><dd>{maxNativeTurns}</dd></div><div><dt>토큰 상한</dt><dd>{Math.round(maxNativeTokens / 1000)}k</dd></div></dl>
-          </Card>
-          <Card className="settings-panel"><SectionHeader title="예산 & 한도" /><dl className="settings-definition-list"><div><dt>예산</dt><dd>${budget}</dd></div><div><dt>최대 시간</dt><dd>{maxHours}h</dd></div><div><dt>모델 호출</dt><dd>{maxModelCalls}</dd></div></dl></Card>
-          <Card className="settings-panel"><SectionHeader title="사람 경계" /><p className="small-copy"><strong className="safe-copy">자동:</strong> 로컬 파일 · 테스트 · 분석 · 되돌릴 수 있는 작업</p><p className="small-copy"><strong className="danger-copy">승인 필요:</strong> 외부 배포 · 결제 · 데이터 삭제 · 되돌리기 어려운 영향</p></Card>
-        </aside>
-      </form>
-    </div>
-  );
+      {advancedOpen && <Surface className="figma-advanced-settings"><SurfaceHeader title="고급 설정" meta="필요할 때만" />
+        <SettingRow label="실행 방식"><select value={executionMode} onChange={(event) => { const mode = event.target.value as "native" | "atomic"; setExecutionMode(mode); if (mode === "native") setModelProvider("codex-cli"); }}><option value="native">지속형 Codex</option><option value="atomic">Atomic 호환 실행</option></select></SettingRow>
+        <SettingRow label="예산"><input type="number" min="1" max="1000" value={budget} onChange={(event) => setBudget(Number(event.target.value) || 1)} /></SettingRow>
+        <SettingRow label="최대 실행 시간"><input type="number" min="1" max="168" value={maxHours} onChange={(event) => setMaxHours(Number(event.target.value) || 1)} /></SettingRow>
+        <SettingRow label="모델 호출 상한"><input type="number" min="1" max="10000" value={maxModelCalls} onChange={(event) => setMaxModelCalls(Number(event.target.value) || 1)} /></SettingRow>
+        {executionMode === "native" && <><SettingRow label="최대 작업 구간"><input type="number" min="1" max="1000" value={maxNativeTurns} onChange={(event) => setMaxNativeTurns(Number(event.target.value) || 1)} /></SettingRow><SettingRow label="Codex 토큰 상한"><input type="number" min="1000" max="10000000" value={maxNativeTokens} onChange={(event) => setMaxNativeTokens(Number(event.target.value) || 1000)} /></SettingRow></>}
+        <SettingRow label="모델"><div className="figma-model-row"><select value={availableModels.some((model) => model.id === selectedModel) ? selectedModel : ""} onChange={(event) => setModelName(event.target.value)}><option value="">기본 모델</option>{availableModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select><input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="직접 모델 ID" /></div></SettingRow>
+        <SettingRow label="도구 샌드박스"><select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as "process" | "docker")}><option value="docker">Docker</option><option value="process">Host process</option></select></SettingRow>
+      </Surface>}
+
+      <div className="figma-launch-row"><div><strong>시작하면 바로 observe → discovery → first mission</strong><span>필요할 때만 사람이 개입합니다.</span></div><div><button type="button" className="figma-secondary-button" onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? "고급 설정 닫기" : "고급 설정"}</button><button type="submit" className="figma-primary-button" disabled={!canStart}>프로젝트 시작</button></div></div>
+      {isDesktopApp && requiresCodex && !codexReady && <div className="figma-warning">지속형 Codex 실행을 시작하려면 위의 Codex 실행환경 준비를 완료해 주세요.</div>}
+    </form>
+  </ProductWorkspace>;
 }
+
+function DefaultRow({ label, value, tone }: { label: string; value: string; tone: "working" | "evidence" | "success" | "human" }) { return <div><span>{label}</span><strong><StatusDot tone={tone} />{value}</strong></div>; }
+function SettingRow({ label, children }: { label: string; children: React.ReactNode }) { return <div className="figma-setting-row"><span>{label}</span><div>{children}</div></div>; }
