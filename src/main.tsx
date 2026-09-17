@@ -5,6 +5,7 @@ import { AppProvider } from "./store";
 import "./styles.css";
 import "./runtimeDiagnostics.css";
 import "./desktopV2.css";
+import "./desktopV2Screens.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
