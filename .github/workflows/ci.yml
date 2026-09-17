@@ -37,6 +37,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare sidecar paths for Rust-only compile check
+        run: |
+          mkdir -p src-tauri/binaries
+          touch src-tauri/binaries/sakasaka-api-x86_64-unknown-linux-gnu
+          touch src-tauri/binaries/sakasaka-worker-x86_64-unknown-linux-gnu
       - name: Install Tauri Linux prerequisites
         run: |
           sudo apt-get update -qq
