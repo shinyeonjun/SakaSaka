@@ -39,10 +39,10 @@ async function open(page: Page, baseUrl: string, path: string): Promise<void> {
 }
 
 async function assertNoHorizontalOverflow(page: Page, label: string): Promise<void> {
-  const dimensions = await page.evaluate(() => ({
-    clientWidth: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
+  const dimensions = await page.evaluate(() => {
+    const doc = (globalThis as unknown as { document: { documentElement: { clientWidth: number; scrollWidth: number } } }).document;
+    return { clientWidth: doc.documentElement.clientWidth, scrollWidth: doc.documentElement.scrollWidth };
+  });
   assert.ok(dimensions.scrollWidth <= dimensions.clientWidth + 1, `${label} 가로 overflow: ${JSON.stringify(dimensions)}`);
 }
 
@@ -59,6 +59,11 @@ function dynamicQuestionState(): AppState {
     params: { options: ["첫 번째 기준", "두 번째 기준"], blockingScope: ["사용자 기준"], continuingScope: ["독립 관찰"] },
   });
   return state;
+}
+
+function seedState(state: AppState): void {
+  const storage = (globalThis as unknown as { localStorage: { setItem(key: string, value: string): void } }).localStorage;
+  storage.setItem("intent-world-agent-state-v2", JSON.stringify(state));
 }
 
 async function closeContext(context: BrowserContext): Promise<void> {
@@ -118,7 +123,7 @@ async function main(): Promise<void> {
     const fixtureContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     contexts.push(fixtureContext);
     const desktop = await fixtureContext.newPage();
-    await fixtureContext.addInitScript((state: AppState) => localStorage.setItem("intent-world-agent-state-v2", JSON.stringify(state)), dynamicQuestionState());
+    await fixtureContext.addInitScript(seedState, dynamicQuestionState());
     const projectPath = "/projects/ui-acceptance-project";
     await open(desktop, baseUrl, projectPath);
     await assertNoHorizontalOverflow(desktop, "프로젝트 개요 데스크톱");
@@ -160,7 +165,7 @@ async function main(): Promise<void> {
     const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     contexts.push(mobileContext);
     const mobile = await mobileContext.newPage();
-    await mobileContext.addInitScript((state: AppState) => localStorage.setItem("intent-world-agent-state-v2", JSON.stringify(state)), dynamicQuestionState());
+    await mobileContext.addInitScript(seedState, dynamicQuestionState());
     for (const path of ["/projects/new", projectPath, `${projectPath}/needs-you`, `${projectPath}/world`, `${projectPath}/experiments`]) {
       await open(mobile, baseUrl, path);
       await assertNoHorizontalOverflow(mobile, `${path} 모바일`);
