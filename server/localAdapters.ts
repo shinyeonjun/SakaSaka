@@ -475,9 +475,10 @@ export class DeterministicLocalModelGateway implements ModelGateway {
       rememberUsage();
       return { type: "WAIT", intentRef: context.intentRef, worldCursor: context.worldCursor, rationaleSummary: "독립 범위의 현재 evidence는 충분하고 human-owned scope의 결정을 기다림", expectedValue: 0.02, riskClass: "P0", evidencePlan: ["human", "world"] };
     }
-    if (context.boundary.remainingBudget <= 0 || (!shell && !repo)) {
+    const budgetExhausted = context.boundary.resourceLimits !== "unlimited" && (context.boundary.remainingBudget ?? 0) <= 0;
+    if (budgetExhausted || (!shell && !repo)) {
       rememberUsage();
-      return { type: "WAIT", intentRef: context.intentRef, worldCursor: context.worldCursor, rationaleSummary: "사용 가능한 local capability 또는 budget이 없어 대기", expectedValue: 0, riskClass: "P0", evidencePlan: ["world"] };
+      return { type: "WAIT", intentRef: context.intentRef, worldCursor: context.worldCursor, rationaleSummary: budgetExhausted ? "bounded budget이 소진되어 대기" : "사용 가능한 local capability가 없어 대기", expectedValue: 0, riskClass: "P0", evidencePlan: ["world"] };
     }
     const action: ActionEnvelope = {
       type: "ACT",
