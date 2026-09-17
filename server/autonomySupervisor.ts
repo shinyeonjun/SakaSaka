@@ -57,7 +57,7 @@ function defaultParallelism(): number {
 function remainingModelCalls(state: AppState, projectId: string): number {
   const project = getProject(state, projectId), run = getRun(state, projectId);
   if (!project || !run) return 0;
-  if (project.settings.resourceLimitsDisabled) return Number.MAX_SAFE_INTEGER;
+  if (project.settings.resourceLimitsDisabled !== false) return Number.MAX_SAFE_INTEGER;
   const used = state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length;
   return Math.max(0, (project.settings.maxModelCalls ?? 200) - used);
 }
@@ -86,7 +86,7 @@ function compactState(state: AppState, projectId: string, autonomy: AutonomyProj
   const currentMission = activeMission(autonomy);
   return {
     intent: { version: intent.version, text: redactSecretLikeText(intent.rawText).slice(0, 12_000), constraints: intent.constraints.map((item) => redactSecretLikeText(item)).slice(0, 64) },
-    project: { status: project.status, budgetRemaining: project.settings.resourceLimitsDisabled ? "unlimited" : Math.max(0, project.settings.budgetLimit - project.budgetSpent), spendObserved: project.budgetSpent, productionBlocked: project.settings.productionBlocked, networkPolicy: project.settings.networkPolicy },
+    project: { status: project.status, budgetRemaining: project.settings.resourceLimitsDisabled !== false ? "unlimited" : Math.max(0, project.settings.budgetLimit - project.budgetSpent), spendObserved: project.budgetSpent, productionBlocked: project.settings.productionBlocked, networkPolicy: project.settings.networkPolicy },
     runtime: { cycleCount: run.cycleCount, noProgressCycles: run.noProgressCycles, checkpoint: run.nativeSession?.checkpoint },
     world: { observedAt: world.observedAt, sources: Object.fromEntries(Object.entries(world.sources).map(([key, value]) => [key, { status: value.status, freshness: value.freshness, trust: value.trustLevel, summary: redactSecretLikeText(value.summary).slice(0, 2_000) }])) },
     human: human.map((item) => ({ kind: item.kind, status: item.status, title: redactSecretLikeText(item.title), answer: item.answerLabel ?? item.answer, blockingScope: item.blockingScope, continuingScope: item.continuingScope })),
