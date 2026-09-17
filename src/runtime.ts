@@ -610,9 +610,9 @@ export function assembleContext(state: AppState, projectId: string, assembledAt 
     activeProcessViews: activeProcesses.map((process) => ({ id: process.id, argv: [...process.argv], status: process.status, pid: process.pid, port: process.port, previewUrl: process.previewUrl, stdoutRawRef: process.stdoutRawRef, stderrRawRef: process.stderrRawRef })),
     activeIncidentRefs: activeIncidentRefs(state, projectId),
     boundary: {
-      remainingBudget: project.settings.resourceLimitsDisabled ? Number.MAX_SAFE_INTEGER : Math.max(0, Number((project.settings.budgetLimit - project.budgetSpent).toFixed(2))),
+      remainingBudget: project.settings.resourceLimitsDisabled !== false ? Number.MAX_SAFE_INTEGER : Math.max(0, Number((project.settings.budgetLimit - project.budgetSpent).toFixed(2))),
       maxHours: project.settings.maxHours,
-      remainingModelCalls: project.settings.resourceLimitsDisabled ? Number.MAX_SAFE_INTEGER : Math.max(0, (project.settings.maxModelCalls ?? 200) - state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length),
+      remainingModelCalls: project.settings.resourceLimitsDisabled !== false ? Number.MAX_SAFE_INTEGER : Math.max(0, (project.settings.maxModelCalls ?? 200) - state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length),
       networkPolicy: project.settings.networkPolicy,
       productionBlocked: project.settings.productionBlocked,
       openApprovalRefs: openItems.filter((item) => item.kind === "APPROVAL").map((item) => item.id),
@@ -1141,7 +1141,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   const toolCost = typeof toolResult?.cost === "number" && Number.isFinite(toolResult.cost) ? Math.max(0, toolResult.cost) : 0;
   const modelCost = typeof modelUsage?.cost === "number" && Number.isFinite(modelUsage.cost) ? Math.max(0, modelUsage.cost) : 0;
   const cost = Number((toolCost + modelCost).toFixed(6));
-  if (!project.settings.resourceLimitsDisabled && !toolResult && project.budgetSpent + cost > project.settings.budgetLimit) {
+  if (project.settings.resourceLimitsDisabled === false && !toolResult && project.budgetSpent + cost > project.settings.budgetLimit) {
     return setRuntimeStatus(observedState, projectId, "STALLED", "sleep", "budget hard stop · 추가 실행 비용이 상한을 초과");
   }
   if (!toolResult && Date.parse(run.leaseExpiresAt) <= Date.now()) {
@@ -1393,7 +1393,7 @@ export function runCycle(state: AppState, projectId: string, input: RuntimeCycle
   const noProgressCycles = meaningfulProgress ? 0 : run.noProgressCycles + 1;
   const failureThreshold = positiveSetting(project.settings.failureThreshold, 3, 32);
   const noProgressThreshold = positiveSetting(project.settings.noProgressThreshold, 5, 128);
-  const hardLimitReached = (!project.settings.resourceLimitsDisabled && project.budgetSpent + cost >= project.settings.budgetLimit) || Date.parse(run.leaseExpiresAt) <= Date.now() || Date.now() - Date.parse(run.startedAt) >= project.settings.maxHours * 60 * 60 * 1000;
+  const hardLimitReached = (project.settings.resourceLimitsDisabled === false && project.budgetSpent + cost >= project.settings.budgetLimit) || Date.parse(run.leaseExpiresAt) <= Date.now() || Date.now() - Date.parse(run.startedAt) >= project.settings.maxHours * 60 * 60 * 1000;
   const thresholdStalled = hardLimitReached || consecutiveFailures >= failureThreshold || noProgressCycles >= noProgressThreshold;
   const hasBlockingHumanItem = getOpenHumanItems(next, projectId).some((item) => item.blockingScope.length > 0);
   const nextStatus: RuntimeStatus = thresholdStalled
@@ -1789,8 +1789,8 @@ export function executionBlockReason(state: AppState, projectId: string): string
   const run = getRun(state, projectId);
   if (!project || !run) return "프로젝트 또는 실행을 찾을 수 없습니다.";
   if (project.status !== "ACTIVE" && project.status !== "WAITING") return `실행 상태: ${project.status}`;
-  if (!project.settings.resourceLimitsDisabled && state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length >= (project.settings.maxModelCalls ?? 200)) return "최대 모델 호출 횟수에 도달했습니다.";
-  if (!project.settings.resourceLimitsDisabled && project.budgetSpent >= project.settings.budgetLimit) return "실행 예산이 소진되었습니다.";
+  if (project.settings.resourceLimitsDisabled === false && state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length >= (project.settings.maxModelCalls ?? 200)) return "최대 모델 호출 횟수에 도달했습니다.";
+  if (project.settings.resourceLimitsDisabled === false && project.budgetSpent >= project.settings.budgetLimit) return "실행 예산이 소진되었습니다.";
   if (!Number.isFinite(Date.parse(run.leaseExpiresAt)) || Date.parse(run.leaseExpiresAt) <= Date.now()) return "실행 허가 시간이 만료되었습니다.";
   if (Date.now() - Date.parse(run.startedAt) >= project.settings.maxHours * 3_600_000) return "최대 실행 시간이 지났습니다.";
   return undefined;
@@ -1807,7 +1807,7 @@ export function recordModelFailure(state: AppState, projectId: string, error: Mo
   if (["PAUSED", "KILLED"].includes(project.status) || failure.code === "CANCELLED") return next;
   const count = (run.lastFailureSignature === `model:${failure.code}` ? run.consecutiveFailures : 0) + 1;
   const threshold = positiveSetting(project.settings.failureThreshold, 3, 32);
-  const exhausted = !project.settings.resourceLimitsDisabled && (getProject(next, projectId)?.budgetSpent ?? 0) >= project.settings.budgetLimit;
+  const exhausted = project.settings.resourceLimitsDisabled === false && (getProject(next, projectId)?.budgetSpent ?? 0) >= project.settings.budgetLimit;
   const status: RuntimeStatus = !failure.retryable || exhausted || count >= threshold ? "STALLED" : "ACTIVE";
   const retryAfter = status === "ACTIVE" ? new Date(Date.now() + Math.min(60_000, 1_000 * 2 ** (count - 1))).toISOString() : undefined;
   next = updateProject(next, { ...getProject(next, projectId)!, status, updatedAt: createdAt, nextReviewAt: undefined });
