@@ -39,11 +39,11 @@ Early access 승인을 받은 뒤:
 npm run decision:setup
 ```
 
-대화형 setup은 TypeSafe API key를 TTY에서 숨김 입력으로 받습니다. key는 AppState, event journal, model context, browser localStorage에 저장되지 않습니다. 기본적으로 `state.json`과 같은 디렉터리의 `runtime-config.json`에만 저장되고, POSIX에서는 `0600` 권한을 적용합니다.
+대화형 setup은 TypeSafe API key를 TTY에서 숨김 입력으로 받습니다. key는 AppState, event journal, model context, browser localStorage에 저장되지 않습니다. 기본적으로 `state.json`과 같은 디렉터리의 `decision-settings.json`에만 저장되고, POSIX에서는 `0600` 권한을 적용합니다.
 
 `hybrid`는 bounded judgment에서 Jev를 우선 사용하고 Jev 호출이 실패하거나 사용할 수 없을 때 Codex structured decision으로 fallback합니다. hard policy와 실제 side effect는 어느 경우에도 fallback으로 우회되지 않습니다.
 
-환경변수로 관리하고 싶으면 TypeSafe 공식 SDK와 같은 이름을 fallback으로 사용할 수 있습니다.
+운영 환경에서 환경변수로 강제 설정하면 그것이 로컬 setup보다 우선합니다. TypeSafe 공식 SDK와 같은 이름을 사용할 수 있습니다.
 
 ```bash
 SAKASAKA_DECISION_PROVIDER=hybrid
@@ -52,7 +52,7 @@ TYPESAFE_BASE_URL=https://api.typesafe.ai
 TYPESAFE_DEFAULT_MODEL=jev-latest
 ```
 
-로컬 `runtime-config.json`의 provider/key/model 값이 해당 환경변수보다 우선합니다. 완전한 endpoint를 직접 지정해야 하는 실험 환경에서만 `TYPESAFE_API_URL`을 사용합니다.
+환경변수가 없을 때만 로컬 `decision-settings.json`의 provider/key/model을 사용합니다. 완전한 endpoint를 직접 지정해야 하는 실험 환경에서만 `TYPESAFE_API_URL`을 사용합니다.
 
 ## Coverage / Gap Graph
 
@@ -80,15 +80,15 @@ SAKASAKA_COVERAGE_REVIEW_MINUTES=60
 ## 저장 파일
 
 ```text
-.data/state.json           기존 source-linked runtime state
+.data/state.json              기존 source-linked runtime state
 .data/state.json.events.jsonl
 .data/state.json.queue.json
-.data/autonomy.json        gap / mission / coverage / decision traces
-.data/runtime-config.json  local decision provider + TypeSafe secret
-.data/raw/                 Codex/Jev/tool 원본 provenance
+.data/autonomy.json           gap / mission / coverage / decision traces
+.data/decision-settings.json  local decision provider + TypeSafe secret
+.data/raw/                    Codex/Jev/tool 원본 provenance
 ```
 
-`runtime-config.json`은 Git에 커밋하지 마십시오. 기본 `.gitignore`의 `.data` 경계 안에 두는 것을 권장합니다.
+`decision-settings.json`은 Git에 커밋하지 마십시오. 기본 `.gitignore`의 `.data` 경계 안에 두는 것을 권장합니다.
 
 ## Safety invariants
 
