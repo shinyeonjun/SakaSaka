@@ -100,6 +100,18 @@ export function runtimeDecisionPublicConfig(): RuntimeDecisionPublicConfig {
   };
 }
 
+function replaceConfigFile(path: string, temporary: string): void {
+  if (process.platform !== "win32") {
+    renameSync(temporary, path);
+    return;
+  }
+  // Windows rename cannot reliably replace an existing file. Runtime config is
+  // reconstructible, so remove the old secret file only after the new file is
+  // fully written. This avoids keeping a stale secret backup after key rotation.
+  if (existsSync(path)) rmSync(path, { force: true });
+  renameSync(temporary, path);
+}
+
 export function updateRuntimeDecisionConfig(update: RuntimeDecisionConfigUpdate): RuntimeDecisionPublicConfig {
   const previous = readFileConfig();
   const provider = update.provider === undefined ? previous?.provider : safeProvider(update.provider);
@@ -130,7 +142,7 @@ export function updateRuntimeDecisionConfig(update: RuntimeDecisionConfigUpdate)
   try {
     writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: "utf8", mode: 0o600 });
     if (process.platform !== "win32") chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    replaceConfigFile(path, temporary);
     if (process.platform !== "win32") chmodSync(path, 0o600);
   } catch (error) {
     try { rmSync(temporary, { force: true }); } catch { /* best effort */ }
