@@ -11,7 +11,7 @@ const filters = ["전체 영역", "열린 갭", "미탐색", "검증 완료", "�
 export function CoveragePage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
   const project = getProject(state, projectId);
-  const autonomy = useAutonomyProjection(projectId, state.revision);
+  const autonomy = useAutonomyProjection(projectId, state.revision, Boolean(project));
   const control = latestControlPlane(state, projectId);
   const legacyGaps = gapHistory(state, projectId);
   const fullGaps = autonomyGapHistory(autonomy);

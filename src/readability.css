@@ -52,6 +52,7 @@
 .app-frame-v3 .ss-runtime-foot { font-size: 10px; }
 .app-frame-v3 .ss-recent-projects strong { font-size: 11px; }
 .app-frame-v3 .ss-recent-projects small { font-size: 10px; }
+.app-frame-v3 .ss-recent-project-delete { font-size: 10px; }
 
 /* Shared product shell */
 .app-frame-v3 .product-main-pane { gap: 14px; padding: 22px 24px; }
@@ -194,6 +195,7 @@
 .app-frame-v3 .figma-decision-options small { font-size: 10px; }
 .app-frame-v3 .settings-field-label span { font-size: 11px; }
 .app-frame-v3 .settings-field-label small { font-size: 10px; }
+.app-frame-v3 .jev-key-status { font-size: 11px; }
 .app-frame-v3 .jev-secret-row input { font-size: 11px; }
 .app-frame-v3 .settings-two-fields label > span { font-size: 10px; }
 .app-frame-v3 .settings-two-fields input,

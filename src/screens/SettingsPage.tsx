@@ -6,6 +6,7 @@ import { getProject } from "../runtime";
 import { useApp } from "../store";
 import type { ModelCatalogEntry, ModelProvider, Project, ResolvedModelProvider, RuntimeConnectionStatus } from "../types";
 import { projectPath, useRouter } from "../router";
+import { confirmDestructiveAction } from "../desktop";
 
 function providerLabel(provider: ModelProvider): string {
   return {
@@ -143,13 +144,17 @@ export function SettingsPage({ projectId }: { projectId: string }) {
     dispatch({ type: "UPDATE_PROJECT_MODEL", projectId, modelProvider, modelName: normalizedModel || undefined });
   };
 
-  const removeProject = () => {
+  const removeProject = async () => {
     if (!project || deleting) return;
-    const confirmed = window.confirm("이 프로젝트를 삭제할까요? 프로젝트 기록은 화면과 저장 상태에서 제거되고, 작업 폴더의 파일은 보존됩니다.");
-    if (!confirmed) return;
     setDeleting(true);
-    dispatch({ type: "DELETE_PROJECT", projectId });
-    navigate("/projects/new");
+    try {
+      const confirmed = await confirmDestructiveAction("이 프로젝트를 삭제할까요? 프로젝트 기록은 화면과 저장 상태에서 제거되고, 작업 폴더의 파일은 보존됩니다.", "프로젝트 삭제");
+      if (!confirmed) return;
+      dispatch({ type: "DELETE_PROJECT", projectId });
+      navigate("/projects/new");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   if (!project) {
@@ -289,7 +294,7 @@ export function SettingsPage({ projectId }: { projectId: string }) {
         <Card className="settings-danger-zone">
           <SectionHeader title="프로젝트 제거" />
           <p>이 프로젝트를 화면과 저장 상태에서 제거합니다. 연결된 작업 폴더와 그 안의 파일은 삭제하지 않습니다.</p>
-          <Button variant="danger" size="small" onClick={removeProject} disabled={deleting}>{deleting ? "제거 중…" : "이 프로젝트 삭제"}</Button>
+          <Button variant="danger" size="small" onClick={() => void removeProject()} disabled={deleting}>{deleting ? "제거 중…" : "이 프로젝트 삭제"}</Button>
         </Card>
 
         <div className="button-row"><Button variant="subtle" size="small" onClick={() => navigate(projectPath(projectId))}>개요로 돌아가기</Button></div>

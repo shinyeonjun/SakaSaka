@@ -6,7 +6,7 @@ import { getProject, statusLabel } from "../runtime";
 import { projectPath, useRouter } from "../router";
 import { useApp } from "../store";
 import { cn, InlineNotice } from "./ui";
-import { getDesktopDecisionSettings, isDesktopApp } from "../desktop";
+import { confirmDestructiveAction, getDesktopDecisionSettings, isDesktopApp } from "../desktop";
 
 const projectNav = [
   { key: "overview", label: "제어 센터" },
@@ -31,7 +31,7 @@ function routeFor(projectId: string, key: NavKey): string {
 }
 
 export function AppShell({ children }: PropsWithChildren) {
-  const { state, syncError, pendingCommands } = useApp();
+  const { state, dispatch, syncError, pendingCommands } = useApp();
   const { route, navigate } = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [clock, setClock] = useState(() => new Date());
@@ -40,7 +40,7 @@ export function AppShell({ children }: PropsWithChildren) {
   const searchRef = useRef<HTMLInputElement>(null);
   const projectId = "projectId" in route ? route.projectId : state.activeProjectId;
   const project = getProject(state, projectId);
-  const autonomy = useAutonomyProjection(projectId, state.revision);
+  const autonomy = useAutonomyProjection(projectId, state.revision, Boolean(project));
   const control = projectId ? latestControlPlane(state, projectId) : undefined;
   const legacyMissions = projectId ? missionHistory(state, projectId) : [];
   const liveMissions = activeAutonomyMissions(autonomy);
@@ -80,6 +80,12 @@ export function AppShell({ children }: PropsWithChildren) {
   }, []);
 
   const go = (path: string) => { navigate(path); setMobileOpen(false); setQuery(""); };
+  const removeRecentProject = async (projectId: string, projectName: string) => {
+    const confirmed = await confirmDestructiveAction(`${projectName} 프로젝트를 삭제할까요?\n프로젝트 기록만 삭제되고 작업 폴더의 파일은 보존됩니다.`, "프로젝트 삭제");
+    if (!confirmed) return;
+    dispatch({ type: "DELETE_PROJECT", projectId });
+  };
+
   const onSearch = (event: FormEvent) => {
     event.preventDefault();
     const q = query.trim().toLowerCase();
@@ -115,7 +121,7 @@ export function AppShell({ children }: PropsWithChildren) {
           <div className="ss-global-brand"><strong>SAKASAKA</strong><span>자율 개발 OS</span></div>
           <button className="ss-nav-item active" onClick={() => go("/projects/new")}><i /><span>새 프로젝트</span></button>
           <span className="ss-section-label">최근 프로젝트</span>
-          <div className="ss-recent-projects">{recentProjects.map((item) => <button key={item.id} onClick={() => go(projectPath(item.id))}><span><strong>{item.name}</strong><i className={`project-status-dot status-${item.status.toLowerCase()}`} /></span><small>{statusLabel(item.status)}</small></button>)}</div>
+          <div className="ss-recent-projects">{recentProjects.map((item) => <div className="ss-recent-project-row" key={item.id}><button className="ss-recent-project-open" onClick={() => go(projectPath(item.id))}><span><strong>{item.name}</strong><i className={`project-status-dot status-${item.status.toLowerCase()}`} /></span><small>{statusLabel(item.status)}</small></button><button className="ss-recent-project-delete" aria-label={`${item.name} 프로젝트 삭제`} title="프로젝트 삭제" onClick={(event) => { event.stopPropagation(); void removeRecentProject(item.id, item.name); }}>삭제</button></div>)}</div>
         </> : <>
           <button className="ss-project-switcher" onClick={() => go("/projects/new")}><small>현재 프로젝트</small><strong>{topProjectName}</strong></button>
           <span className="ss-section-label">작업 공간</span>

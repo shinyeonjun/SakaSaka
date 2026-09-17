@@ -58,9 +58,13 @@ button:disabled { cursor:not-allowed; }
 .ss-runtime-foot { display:flex; flex-direction:column; gap:2px; margin-top:5px; color:var(--ss-text-secondary); font-size:8px; }
 .ss-runtime-foot span:last-child { color:var(--ss-text-tertiary); }
 .ss-recent-projects { display:grid; gap:2px; }
-.ss-recent-projects button { display:flex; flex-direction:column; gap:2px; width:176px; min-height:42px; padding:6px 10px; border:0; border-radius:7px; background:transparent; color:var(--ss-text-secondary); text-align:left; }
-.ss-recent-projects button:hover { background:var(--ss-bg-surface); }
-.ss-recent-projects button > span { display:flex; align-items:center; justify-content:space-between; width:100%; gap:6px; }
+.ss-recent-project-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:stretch; width:176px; border-radius:7px; }
+.ss-recent-project-row:hover { background:var(--ss-bg-surface); }
+.ss-recent-project-open { display:flex; min-width:0; flex-direction:column; gap:2px; min-height:42px; padding:6px 5px 6px 10px; border:0; border-radius:7px 0 0 7px; background:transparent; color:var(--ss-text-secondary); text-align:left; }
+.ss-recent-project-open:hover { color:var(--ss-text-primary); }
+.ss-recent-project-open > span { display:flex; align-items:center; justify-content:space-between; width:100%; gap:6px; }
+.ss-recent-project-delete { align-self:center; min-height:26px; margin-right:4px; padding:3px 5px; border:0; border-radius:5px; background:transparent; color:var(--ss-text-tertiary); font-size:9px; }
+.ss-recent-project-delete:hover { background:rgba(255,95,95,.12); color:var(--ss-status-danger); }
 .ss-recent-projects strong { overflow:hidden; font-size:9px; font-weight:550; text-overflow:ellipsis; white-space:nowrap; }
 .ss-recent-projects small { color:var(--ss-text-tertiary); font-size:8px; }
 .project-status-dot { width:6px; height:6px; border-radius:50%; background:var(--ss-status-working); }

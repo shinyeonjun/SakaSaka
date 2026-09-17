@@ -13,7 +13,7 @@ export function MissionsPage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
   const project = getProject(state, projectId);
   const run = getRun(state, projectId);
-  const autonomy = useAutonomyProjection(projectId, state.revision);
+  const autonomy = useAutonomyProjection(projectId, state.revision, Boolean(project));
   const legacyMissions = missionHistory(state, projectId);
   const fullMissions = autonomyMissionHistory(autonomy);
   const missions = autonomy?.available ? fullMissions : legacyMissions;

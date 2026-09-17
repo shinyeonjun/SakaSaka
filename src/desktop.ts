@@ -25,6 +25,18 @@ export async function pickDirectory(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+/**
+ * Use the native async dialog in Tauri and the browser dialog in development.
+ * Calling window.confirm directly in a Tauri webview is not a portable contract:
+ * the webview bridge may route it through the dialog plugin without the required
+ * permission and it cannot be awaited by the React event handler.
+ */
+export async function confirmDestructiveAction(message: string, title = "SakaSaka"): Promise<boolean> {
+  if (!isDesktopApp) return window.confirm(message);
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  return confirm(message, { title, kind: "warning" });
+}
+
 export async function getDesktopDecisionSettings(): Promise<DesktopDecisionSettingsStatus | undefined> {
   if (!isDesktopApp) return undefined;
   const { invoke } = await import("@tauri-apps/api/core");

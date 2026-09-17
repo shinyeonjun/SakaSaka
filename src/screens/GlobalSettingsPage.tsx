@@ -119,8 +119,9 @@ export function GlobalSettingsPage() {
             <SurfaceHeader title="TypeSafe Jev" meta={decisionStatus.apiKeyConfigured ? "키 저장됨" : "미설정"} />
             {decisionError && <div className="figma-form-error">{decisionError}</div>}
             {isDesktopApp ? <form className="jev-form-figma" onSubmit={(event) => void saveDecision(event)}>
-              <div className="settings-field-label"><span>API 키</span><small>로컬 secret · UI로 재노출 안 함</small></div>
+              <div className="settings-field-label"><span>API 키</span><StatusPill tone={decisionStatus.apiKeyConfigured ? "success" : "warning"}>{decisionStatus.apiKeyConfigured ? "설정 완료" : "미설정"}</StatusPill></div>
               <div className="jev-secret-row"><input type="password" autoComplete="off" value={jevApiKey} onChange={(event) => setJevApiKey(event.target.value)} placeholder={decisionStatus.apiKeyConfigured ? "저장됨 · 교체할 때만 입력" : "TypeSafe API key"} /><button type="submit" disabled={decisionLoading}>키 저장</button></div>
+              <div className={`jev-key-status ${decisionStatus.apiKeyConfigured ? "configured" : "missing"}`} role="status" aria-live="polite"><StatusDot tone={decisionStatus.apiKeyConfigured ? "success" : "warning"} /><span>{decisionStatus.apiKeyConfigured ? "Jev API 키가 안전하게 저장되어 있습니다." : "Jev API 키를 입력하면 이곳에 설정 완료로 표시됩니다."}</span></div>
               <div className="settings-two-fields"><label><span>모델</span><input value={jevModel} onChange={(event) => setJevModel(event.target.value)} /></label><label><span>기본 URL</span><input value="api.typesafe.ai" readOnly /></label></div>
               <div className="settings-inline-actions"><button type="submit" disabled={decisionLoading}>{decisionLoading ? "저장 중…" : "판단 엔진 저장"}</button>{decisionStatus.apiKeyConfigured && <button type="button" onClick={() => void clearJev()}>Jev key 제거</button>}{decisionSaved && <StatusPill tone="success">저장됨</StatusPill>}</div>
             </form> : <p className="product-muted">Jev secret 저장은 데스크톱 앱에서 제공됩니다.</p>}

@@ -196,8 +196,37 @@ fn user_home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("~"))
 }
 
+fn non_empty_env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+fn default_native_codex_home(is_windows: bool, local_app_data: Option<&Path>, home: &Path) -> PathBuf {
+    if is_windows {
+        local_app_data.unwrap_or(home).join("SakaSaka").join("codex-native")
+    } else {
+        home.join(".sakasaka").join("codex-native")
+    }
+}
+
+/// Native work must never silently inherit the user's global Codex config.
+/// An explicit SAKASAKA_CODEX_HOME remains supported for existing installations;
+/// otherwise use SakaSaka's own persistent native home.
+fn native_codex_home() -> PathBuf {
+    if let Some(configured) = non_empty_env_path("SAKASAKA_CODEX_HOME") {
+        return configured;
+    }
+    let local_app_data = non_empty_env_path("LOCALAPPDATA");
+    default_native_codex_home(cfg!(windows), local_app_data.as_deref(), &user_home_dir())
+}
+
 fn codex_home_path() -> PathBuf {
-    env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| user_home_dir().join(".codex"))
+    native_codex_home()
+}
+
+fn apply_codex_home(command: &mut Command, home: &Path) {
+    command.env("SAKASAKA_CODEX_HOME", home).env("CODEX_HOME", home);
 }
 
 fn codex_binary_label() -> String {
@@ -205,14 +234,22 @@ fn codex_binary_label() -> String {
 }
 
 fn build_codex_command(args: &[&str]) -> Command {
-    if let Ok(configured) = env::var("CODEX_CLI_BIN") {
+    let mut command = if let Ok(configured) = env::var("CODEX_CLI_BIN") {
         if !configured.trim().is_empty() {
             let mut command = Command::new(configured);
             command.args(args);
-            return command;
+            command
+        } else if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            let line = if args.is_empty() { "codex".to_string() } else { format!("codex {}", args.join(" ")) };
+            command.args(["/D", "/S", "/C", &line]);
+            command
+        } else {
+            let mut command = Command::new("codex");
+            command.args(args);
+            command
         }
-    }
-    if cfg!(windows) {
+    } else if cfg!(windows) {
         let mut command = Command::new("cmd.exe");
         let line = if args.is_empty() { "codex".to_string() } else { format!("codex {}", args.join(" ")) };
         command.args(["/D", "/S", "/C", &line]);
@@ -221,7 +258,10 @@ fn build_codex_command(args: &[&str]) -> Command {
         let mut command = Command::new("codex");
         command.args(args);
         command
-    }
+    };
+    let home = codex_home_path();
+    apply_codex_home(&mut command, &home);
+    command
 }
 
 fn command_text(command: &mut Command) -> Result<(bool, String), String> {
@@ -309,25 +349,29 @@ async fn install_codex_cli() -> Result<String, String> {
 
 fn launch_codex_login_terminal(method: &str) -> Result<(), String> {
     let command_line = if method == "device" { "codex login --device-auth" } else { "codex login" };
+    let codex_home = codex_home_path();
     if cfg!(windows) {
         let mut command = Command::new("cmd.exe");
         command.args(["/D", "/S", "/C", "start", "", "cmd.exe", "/K", command_line]);
+        apply_codex_home(&mut command, &codex_home);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         command.spawn().map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
         return Ok(());
     }
     if cfg!(target_os = "macos") {
         let script = format!("tell application \"Terminal\" to do script \"{}\"", command_line.replace('"', "\\\""));
-        Command::new("osascript")
-            .args(["-e", &script])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        let mut command = Command::new("osascript");
+        command.args(["-e", &script]);
+        apply_codex_home(&mut command, &codex_home);
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
             .spawn()
             .map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
         return Ok(());
     }
-    Command::new("x-terminal-emulator")
-        .args(["-e", "sh", "-lc", &format!("{}; printf '\\n로그인이 끝났으면 이 창을 닫아도 됩니다.\\n'; exec sh", command_line)])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+    let mut command = Command::new("x-terminal-emulator");
+    command.args(["-e", "sh", "-lc", &format!("{}; printf '\\n로그인이 끝났으면 이 창을 닫아도 됩니다.\\n'; exec sh", command_line)]);
+    apply_codex_home(&mut command, &codex_home);
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
     Ok(())
@@ -353,6 +397,8 @@ fn codex_logout() -> Result<String, String> {
 
 fn spawn_local_backend(app: &AppHandle, script: &str, data_dir: &Path) -> Result<BackendProcess, String> {
     let root = backend_root(app);
+    let codex_home = native_codex_home();
+    create_dir_all(&codex_home).map_err(|error| format!("SakaSaka 전용 Codex 홈을 만들 수 없습니다 ({codex_home:?}): {error}"))?;
     let stdout = log_file(data_dir)?;
     let stderr = stdout
         .try_clone()
@@ -365,6 +411,8 @@ fn spawn_local_backend(app: &AppHandle, script: &str, data_dir: &Path) -> Result
         .env("API_PORT", "8787")
         .env("DESKTOP_MODE", "true")
         .env("CODEX_CLI_ENABLED", "true")
+        .env("SAKASAKA_CODEX_HOME", &codex_home)
+        .env("CODEX_HOME", &codex_home)
         .env("INTENT_WORLD_STATE_FILE", data_dir.join("state.json"))
         .env("INTENT_WORLD_RAW_DIR", data_dir.join("raw"))
         .env("INTENT_WORLD_AUTONOMY_FILE", data_dir.join("autonomy.json"))
@@ -388,6 +436,8 @@ fn spawn_local_backend(app: &AppHandle, script: &str, data_dir: &Path) -> Result
 }
 
 fn spawn_packaged_backend(app: &AppHandle, sidecar: &str, data_dir: &Path) -> Result<BackendProcess, String> {
+    let codex_home = native_codex_home();
+    create_dir_all(&codex_home).map_err(|error| format!("SakaSaka 전용 Codex 홈을 만들 수 없습니다 ({codex_home:?}): {error}"))?;
     let command = app
         .shell()
         .sidecar(sidecar)
@@ -396,6 +446,8 @@ fn spawn_packaged_backend(app: &AppHandle, sidecar: &str, data_dir: &Path) -> Re
         .env("API_PORT", "8787")
         .env("DESKTOP_MODE", "true")
         .env("CODEX_CLI_ENABLED", "true")
+        .env("SAKASAKA_CODEX_HOME", &codex_home)
+        .env("CODEX_HOME", &codex_home)
         .env("INTENT_WORLD_STATE_FILE", data_dir.join("state.json"))
         .env("INTENT_WORLD_RAW_DIR", data_dir.join("raw"))
         .env("INTENT_WORLD_AUTONOMY_FILE", data_dir.join("autonomy.json"))
@@ -489,4 +541,29 @@ pub fn run() {
                 stop_backend(&app.state::<BackendProcesses>());
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_native_codex_home;
+    use std::path::Path;
+
+    #[test]
+    fn windows_native_home_is_scoped_to_sakasaka_local_data() {
+        let local_app_data = Path::new(r"C:\Users\tester\AppData\Local");
+        let home = Path::new(r"C:\Users\tester");
+        assert_eq!(
+            default_native_codex_home(true, Some(local_app_data), home),
+            Path::new(r"C:\Users\tester\AppData\Local\SakaSaka\codex-native")
+        );
+    }
+
+    #[test]
+    fn native_home_does_not_default_to_global_codex_directory() {
+        let home = Path::new(r"/home/tester");
+        assert_eq!(
+            default_native_codex_home(false, None, home),
+            Path::new(r"/home/tester/.sakasaka/codex-native")
+        );
+    }
 }

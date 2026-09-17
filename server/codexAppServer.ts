@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { once } from "node:events";
 import { stopProcessTree } from "./commandRunner";
@@ -154,10 +156,23 @@ export function asRecord(value: unknown): RpcRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as RpcRecord : {};
 }
 
+export function nativeCodexHome(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): string {
+  const configured = environment.SAKASAKA_CODEX_HOME?.trim();
+  if (configured) return configured;
+  const base = platform === "win32" ? environment.LOCALAPPDATA?.trim() || home : home;
+  return platform === "win32" ? join(base, "SakaSaka", "codex-native") : join(base, ".sakasaka", "codex-native");
+}
+
 export function nativeCliEnvironment(): NodeJS.ProcessEnv {
   // Provider authentication belongs to the CLI, never to model messages or child shell env.
   const safe = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|DATABASE_URL|REDIS_URL)/i.test(key)));
-  if (process.env.SAKASAKA_CODEX_HOME?.trim()) safe.CODEX_HOME = process.env.SAKASAKA_CODEX_HOME.trim();
+  const codexHome = nativeCodexHome();
+  safe.SAKASAKA_CODEX_HOME = codexHome;
+  safe.CODEX_HOME = codexHome;
   if (process.env.CODEX_API_KEY) safe.CODEX_API_KEY = process.env.CODEX_API_KEY;
   return safe;
 }

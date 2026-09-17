@@ -8,6 +8,13 @@ const baseUrl = (import.meta.env.VITE_API_URL ?? (isDesktopApp ? "http://127.0.0
 
 export const isControlPlaneEnabled = baseUrl.length > 0;
 
+export class ApiClientError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiClientError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
@@ -18,7 +25,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || `Control plane request failed (${response.status})`);
+    throw new ApiClientError(response.status, message || `Control plane request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
 }

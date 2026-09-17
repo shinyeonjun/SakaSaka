@@ -13,7 +13,7 @@ export function ControlCenterPage({ projectId }: { projectId: string }) {
   const intent = getIntent(state, projectId);
   const run = getRun(state, projectId);
   const world = getWorldSnapshot(state, projectId);
-  const autonomy = useAutonomyProjection(projectId, state.revision);
+  const autonomy = useAutonomyProjection(projectId, state.revision, Boolean(project));
   if (!project || !intent || !run || !world) return <div className="product-loading">{pendingCommands ? "프로젝트를 준비하고 있습니다…" : "프로젝트를 찾을 수 없습니다."}</div>;
 
   const legacyControl = latestControlPlane(state, projectId);

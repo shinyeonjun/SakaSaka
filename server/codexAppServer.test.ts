@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAppServer } from "./codexAppServer";
+import { CodexAppServer, nativeCliEnvironment, nativeCodexHome } from "./codexAppServer";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function client(extra = "", maxLineBytes?: number) {
@@ -21,6 +21,13 @@ rl.on('line',line=>{const m=JSON.parse(line);
   return new CodexAppServer({ binary: process.execPath, prefix: [script], cwd, requestTimeoutMs: 1000, maxLineBytes });
 }
 describe("Codex App Server stdio", () => {
+  it("uses a SakaSaka-owned Codex home instead of silently inheriting the global home", () => {
+    expect(nativeCodexHome({ SAKASAKA_CODEX_HOME: String.raw`C:\SakaSaka\codex-native` }, "win32", String.raw`C:\Users\tester`)).toBe(String.raw`C:\SakaSaka\codex-native`);
+    const environment = nativeCliEnvironment();
+    expect(environment.SAKASAKA_CODEX_HOME).toBe(environment.CODEX_HOME);
+    expect(environment.CODEX_HOME).toContain("codex-native");
+  });
+
   it("분할된 UTF-8 JSONL과 양방향 요청을 교착 없이 처리한다", async () => {
     const c = client(); let nested = "";
     c.onRequest(async () => { nested = String(await c.request("nested", {})); return {}; });

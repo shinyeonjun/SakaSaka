@@ -25,6 +25,7 @@
 - `npm run smoke:native -- --keep`에서 모델을 호출하지 않고 Windows에서 `codex-cli 0.153.2`, 전용 홈, 실제 `shell_environment_policy.inherit=core`, `windowsSandbox/readiness=ready`, Node의 15바이트 파일 쓰기·읽기, PowerShell 기동을 각각 확인했다. 비Windows에서는 Windows readiness와 PowerShell을 `not-applicable`로 보고하고 Node 검사는 계속한다.
 - 같은 사전 검사를 통과한 뒤 `--run`을 한 번 실행했다. 실제 임시 작업공간의 `native-smoke.txt`가 정확히 15바이트로 일치했고, 프로젝트/run은 `EQUILIBRIUM`, native 세션은 `resting`이었다. checkpoint는 정상 처리됐으며 모델의 `artifact:native-smoke.txt`는 `artifact / unverified`로 보존하고 관련 실제 evidence ID만 연결했다. 사용량은 total 34,823 / input 34,564 / cached input 17,024 / output 259였다.
 - `SAKASAKA_CODEX_HOME`이 없을 때는 기본 사용자 `.codex`로 폴백하지 않고 모델을 호출하지 않는다. 외부 MCP/hook 설정이 있는 홈도 native 시작 전에 거절한다.
+- 데스크톱 앱은 백엔드와 Codex CLI 상태 확인에 `SAKASAKA_CODEX_HOME`을 자동으로 주입한다. Windows 기본 경로는 `%LOCALAPPDATA%\SakaSaka\codex-native`이며, 명시적으로 지정한 전용 홈은 유지한다. 독립 smoke 스크립트는 재현성을 위해 여전히 이 환경변수를 직접 요구한다.
 - 같은 Windows·0.153.2에서 `npm run acceptance:native:core`의 로컬 fixture는 `logic.mjs`를 만들기 전에 equilibrium을 반환해 파일 assertion에서 `ENOENT`로 실패했다. 이는 실제 모델 smoke 통과와 별개의 미해결 실패이며, Ubuntu·0.154.0 원격 CI의 3개 성공 체크를 0.153.2 성공으로 표시하지 않는다.
 - PR #3의 원격 체크는 커밋 `9956280d…` 기준으로 실행됐다. 원격 `native-codex-integration`은 pinned Codex 0.154.0과 전체 `acceptance:native` 경로를 사용하고, 실제 Chromium 검사를 포함해 성공했다.
 
