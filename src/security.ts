@@ -117,7 +117,7 @@ export function validateActionBoundary(
   const capability = capabilities.find((candidate) => candidate.name === normalizedTool);
   if (!capability) return { status: "blocked", reason: `tool is not exposed by the current capability surface: ${action.tool ?? "missing"}`, normalizedTool };
   if (!capability.enabled) return { status: "blocked", reason: `tool capability is disabled: ${capability.name}`, capability, normalizedTool };
-  if (estimatedCost > Math.max(0, project.settings.budgetLimit - project.budgetSpent)) {
+  if (project.settings.resourceLimitsDisabled === false && estimatedCost > Math.max(0, project.settings.budgetLimit - project.budgetSpent)) {
     return { status: "blocked", reason: "resource budget would be exceeded", capability, normalizedTool };
   }
   if (capability.requiresNetwork && project.settings.networkPolicy === "deny") {
