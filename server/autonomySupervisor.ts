@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { AppState, Evidence, Project } from "../src/types";
 import type { ModelUsage } from "../src/ports";
 import { redactSecretLikeText } from "../src/security";
-import { accountModelUsage, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, wakeProject } from "../src/runtime";
+import { accountModelUsage, executionBlockReason, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, wakeProject } from "../src/runtime";
 import type { CycleStateStore } from "./cycleCoordinator";
 import {
   activeMission, appendCoverageSnapshot, appendDecision, completeDiscoveryPass, coverageCategories, coverageCounts,
@@ -52,6 +52,13 @@ function discoveryIntervalMs(): number {
 
 function defaultParallelism(): number {
   return Math.floor(boundedNumber(process.env.SAKASAKA_DISCOVERY_PARALLELISM, 3, 1, scoutLenses.length));
+}
+
+function remainingModelCalls(state: AppState, projectId: string): number {
+  const project = getProject(state, projectId), run = getRun(state, projectId);
+  if (!project || !run) return 0;
+  const used = state.events.filter((event) => event.runId === run.id && (event.type === "MODEL_TURN" || event.type === "MODEL_FAILED")).length;
+  return Math.max(0, (project.settings.maxModelCalls ?? 200) - used);
 }
 
 function candidateSchema(): Record<string, unknown> {
@@ -149,9 +156,35 @@ function traceFromDecision(projectId: string, runId: string | undefined, purpose
   };
 }
 
-async function accountUsage(store: CycleStateStore, projectId: string, usage: ModelUsage | undefined): Promise<void> {
+async function accountUsage(store: CycleStateStore, projectId: string, usage: ModelUsage | undefined, purpose: string): Promise<void> {
   if (!usage) return;
-  await store.transact((state) => accountModelUsage(state, projectId, usage));
+  await store.transact((state) => {
+    const run = getRun(state, projectId);
+    if (!run) return state;
+    const next = accountModelUsage(state, projectId, usage);
+    const event = {
+      id: makeId("event"),
+      sequence: next.events.reduce((max, item) => Math.max(max, item.sequence ?? -1), -1) + 1,
+      projectId,
+      type: "MODEL_TURN" as const,
+      actor: "system" as const,
+      summary: `Autonomy model call · ${purpose}`,
+      detail: "Coverage/decision-plane model usage is counted against the same project model-call and budget limits as execution models.",
+      createdAt: new Date().toISOString(),
+      runId: run.id,
+      schemaVersion: 1 as const,
+      modelVersion: usage.modelVersion,
+      payload: {
+        purpose: purpose.slice(0, 128),
+        tokens: Number.isFinite(usage.tokens) ? Math.max(0, usage.tokens) : 0,
+        cost: Number.isFinite(usage.cost) ? Math.max(0, usage.cost) : 0,
+        latencyMs: Number.isFinite(usage.latencyMs) ? Math.max(0, usage.latencyMs) : 0,
+        usageKnown: usage.usageKnown === true,
+        ...(usage.rawRef ? { rawRef: usage.rawRef.slice(0, 2_000) } : {}),
+      },
+    };
+    return { ...next, events: [...next.events, event] };
+  });
 }
 
 async function runScout(lens: string, stateView: Record<string, unknown>, workspacePath: string, runner: typeof runCodexStructured, signal?: AbortSignal): Promise<CodexStructuredResult<ScoutOutput>> {
@@ -176,7 +209,9 @@ async function runScout(lens: string, stateView: Record<string, unknown>, worksp
 async function discover(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, options: Required<Pick<AutonomySupervisorOptions, "store" | "scoutRunner" | "now">> & AutonomySupervisorOptions): Promise<AutonomyProjectState> {
   const state = store.read(), project = getProject(state, projectId), intent = getIntent(state, projectId), view = compactState(state, projectId, autonomy);
   if (!project?.settings.workspacePath || !intent || !view) return autonomy;
-  const parallelism = Math.max(1, Math.min(scoutLenses.length, options.discoveryParallelism ?? defaultParallelism()));
+  const remaining = remainingModelCalls(state, projectId);
+  if (remaining <= 0) return autonomy;
+  const parallelism = Math.max(1, Math.min(scoutLenses.length, options.discoveryParallelism ?? defaultParallelism(), remaining));
   const results = await Promise.allSettled(scoutLenses.slice(0, parallelism).map((lens) => runScout(lens, view, project.settings.workspacePath!, options.scoutRunner)));
   const candidates: GapCandidate[] = [];
   let successful = 0;
@@ -184,22 +219,22 @@ async function discover(store: CycleStateStore, projectId: string, autonomy: Aut
     if (result.status === "fulfilled") {
       successful += 1;
       candidates.push(...(Array.isArray(result.value.value.gaps) ? result.value.value.gaps : []));
-      await accountUsage(store, projectId, result.value.usage);
+      await accountUsage(store, projectId, result.value.usage, "coverage-scout");
     } else {
       const usage = (result.reason as { usage?: ModelUsage } | undefined)?.usage;
-      if (usage) await accountUsage(store, projectId, usage);
+      if (usage) await accountUsage(store, projectId, usage, "coverage-scout-failed");
     }
   }
   const at = options.now().toISOString();
   let next = mergeGapCandidates(autonomy, candidates, at, makeId);
-  if (successful === parallelism) next = completeDiscoveryPass(next, intent.version, at);
+  if (successful === parallelism && parallelism === Math.min(scoutLenses.length, options.discoveryParallelism ?? defaultParallelism())) next = completeDiscoveryPass(next, intent.version, at);
   else next = { ...next, intentVersion: intent.version, lastDiscoveryAt: at, updatedAt: at };
   return options.store.putProject(next);
 }
 
 async function reviewMission(store: CycleStateStore, projectId: string, autonomy: AutonomyProjectState, gateway: DecisionGateway, fileStore: FileAutonomyStore, now: () => Date): Promise<AutonomyProjectState> {
   const mission = activeMission(autonomy), state = store.read(), run = getRun(state, projectId);
-  if (!mission || mission.status === "BLOCKED" || !run || run.cycleCount <= mission.startCycle) return autonomy;
+  if (!mission || mission.status === "BLOCKED" || !run || run.cycleCount <= mission.startCycle || remainingModelCalls(state, projectId) <= 0) return autonomy;
   const view = compactState(state, projectId, autonomy);
   if (!view) return autonomy;
   let result: DecisionBatchResult;
@@ -209,7 +244,7 @@ async function reviewMission(store: CycleStateStore, projectId: string, autonomy
       evidenceSufficient: { type: "noul", instructions: "Is the evidence sufficient to accept the mission as completed?", criteria: "The mission evidence contract is supported by fresh test, world, browser, tool, or authoritative human evidence." },
       continueMission: { type: "noul", instructions: "Should the same mission remain the highest-value focus for the next work episode?", criteria: "Material work remains in this mission and changing focus would be premature." },
     } });
-    await accountUsage(store, projectId, result.usage);
+    await accountUsage(store, projectId, result.usage, "mission-review");
   } catch { return autonomy; }
   const at = now().toISOString(), trace = traceFromDecision(projectId, run.id, "mission-review", result, at);
   let next = appendDecision(autonomy, trace);
@@ -233,20 +268,22 @@ async function prioritize(store: CycleStateStore, projectId: string, autonomy: A
   }
   const criteria = Object.fromEntries(candidates.map((gap) => [gap.id, `${gap.category}: ${gap.title}. impact=${gap.impact.toFixed(2)}, uncertainty=${gap.uncertainty.toFixed(2)}, urgency=${gap.urgency.toFixed(2)}, deterministicPriority=${gap.priority.toFixed(2)}. ${gap.summary}`]));
   let result: DecisionBatchResult | undefined;
-  try {
-    result = await gateway.decide({ purpose: "priority-frontier", state: view, questions: {
-      nextGap: { type: "choice", instructions: "Which unresolved gap should the next specialist mission focus on now?", criteria },
-      projectRisk: { type: "score", instructions: "How much material unresolved project risk is visible now?", criteria: [
-        "No unresolved issue is likely to affect the intended outcome or safe operation.",
-        "Only minor reversible issues remain and they do not block the intended outcome.",
-        "At least one meaningful gap can degrade correctness, user value, or maintainability.",
-        "A gap can plausibly cause security, data, reliability, deployment, or major user-impact failure.",
-        "A known or strongly suspected gap can cause irreversible loss, serious security/privacy harm, or total failure of the intended outcome.",
-      ] },
-      coverageConverged: { type: "noul", instructions: "Has discovery converged enough that there is no material high-value unresolved gap right now?", criteria: "Broad independent coverage has been performed and no important unresolved gap or major evidence deficit remains; substantial uncertainty counts against convergence." },
-    } });
-    await accountUsage(store, projectId, result.usage);
-  } catch { /* deterministic priority remains a safe scheduling fallback, never a policy bypass */ }
+  if (remainingModelCalls(state, projectId) > 0) {
+    try {
+      result = await gateway.decide({ purpose: "priority-frontier", state: view, questions: {
+        nextGap: { type: "choice", instructions: "Which unresolved gap should the next specialist mission focus on now?", criteria },
+        projectRisk: { type: "score", instructions: "How much material unresolved project risk is visible now?", criteria: [
+          "No unresolved issue is likely to affect the intended outcome or safe operation.",
+          "Only minor reversible issues remain and they do not block the intended outcome.",
+          "At least one meaningful gap can degrade correctness, user value, or maintainability.",
+          "A gap can plausibly cause security, data, reliability, deployment, or major user-impact failure.",
+          "A known or strongly suspected gap can cause irreversible loss, serious security/privacy harm, or total failure of the intended outcome.",
+        ] },
+        coverageConverged: { type: "noul", instructions: "Has discovery converged enough that there is no material high-value unresolved gap right now?", criteria: "Broad independent coverage has been performed and no important unresolved gap or major evidence deficit remains; substantial uncertainty counts against convergence." },
+      } });
+      await accountUsage(store, projectId, result.usage, "priority-frontier");
+    } catch { /* deterministic priority remains a safe scheduling fallback, never a policy bypass */ }
+  }
   const at = now().toISOString();
   let next = autonomy;
   let chosen = candidates[0];
@@ -326,7 +363,7 @@ async function publishControlPlaneEvidence(store: CycleStateStore, projectId: st
 
 export async function runAutonomyPrelude(store: CycleStateStore, projectId: string, options: AutonomySupervisorOptions = {}): Promise<AutonomyProjectState | undefined> {
   const state = store.read(), project = getProject(state, projectId), intent = getIntent(state, projectId);
-  if (!project || !intent || !autonomyEnabled(project)) return undefined;
+  if (!project || !intent || !autonomyEnabled(project) || executionBlockReason(state, projectId)) return undefined;
   const fileStore = options.store ?? autonomyStore, now = options.now ?? (() => new Date()), scoutRunner = options.scoutRunner ?? runCodexStructured, gateway = options.decisionGateway ?? createDecisionGateway();
   const existing = fileStore.readProject(projectId);
   const at = now().toISOString();
@@ -335,7 +372,7 @@ export async function runAutonomyPrelude(store: CycleStateStore, projectId: stri
   autonomy = mergeGapCandidates(autonomy, [primaryIntentGap(intent.rawText, intent.version)], at, makeId);
   if (!existing || autonomy !== existing) await fileStore.putProject(autonomy);
   autonomy = await reviewMission(store, projectId, autonomy, gateway, fileStore, now);
-  if (needsDiscovery(autonomy, intent.version, now().getTime())) autonomy = await discover(store, projectId, autonomy, { ...options, store: fileStore, scoutRunner, now });
+  if (needsDiscovery(autonomy, intent.version, now().getTime()) && remainingModelCalls(store.read(), projectId) > 0) autonomy = await discover(store, projectId, autonomy, { ...options, store: fileStore, scoutRunner, now });
   autonomy = await prioritize(store, projectId, autonomy, gateway, fileStore, now);
   return publishControlPlaneEvidence(store, projectId, autonomy, fileStore, now);
 }
