@@ -1,3 +1,4 @@
+use std::env;
 use std::fs::{create_dir_all, read_to_string, remove_file, rename, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -188,6 +189,168 @@ fn save_decision_settings(
     decision_settings_status(app)
 }
 
+fn user_home_dir() -> PathBuf {
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("~"))
+}
+
+fn codex_home_path() -> PathBuf {
+    env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| user_home_dir().join(".codex"))
+}
+
+fn codex_binary_label() -> String {
+    env::var("CODEX_CLI_BIN").ok().filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "codex".into())
+}
+
+fn build_codex_command(args: &[&str]) -> Command {
+    if let Ok(configured) = env::var("CODEX_CLI_BIN") {
+        if !configured.trim().is_empty() {
+            let mut command = Command::new(configured);
+            command.args(args);
+            return command;
+        }
+    }
+    if cfg!(windows) {
+        let mut command = Command::new("cmd.exe");
+        let line = if args.is_empty() { "codex".to_string() } else { format!("codex {}", args.join(" ")) };
+        command.args(["/D", "/S", "/C", &line]);
+        command
+    } else {
+        let mut command = Command::new("codex");
+        command.args(args);
+        command
+    }
+}
+
+fn command_text(command: &mut Command) -> Result<(bool, String), String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let summary = format!("{} {}", stdout, stderr).split_whitespace().collect::<Vec<_>>().join(" ");
+    Ok((output.status.success(), summary.chars().take(240).collect()))
+}
+
+fn codex_environment_status_json() -> Result<String, String> {
+    let binary = codex_binary_label();
+    let home = codex_home_path().to_string_lossy().to_string();
+    let version = command_text(&mut build_codex_command(&["--version"]));
+    let (version_ok, version_text) = match version {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(format!(
+                "{{\"installed\":false,\"binary\":\"{}\",\"authState\":\"missing\",\"codexHome\":\"{}\",\"persistent\":false,\"detail\":\"{}\"}}",
+                json_escape(&binary), json_escape(&home), json_escape("Codex CLI를 찾지 못했습니다. 설치 후 한 번만 로그인하면 이후 실행에서는 Codex의 기존 인증을 재사용합니다.")
+            ));
+        }
+    };
+    if !version_ok {
+        return Ok(format!(
+            "{{\"installed\":false,\"binary\":\"{}\",\"authState\":\"missing\",\"codexHome\":\"{}\",\"persistent\":false,\"detail\":\"{}\"}}",
+            json_escape(&binary), json_escape(&home), json_escape("Codex CLI를 실행하지 못했습니다. PATH와 설치 상태를 확인하세요.")
+        ));
+    }
+
+    let login = command_text(&mut build_codex_command(&["login", "status"])).unwrap_or((false, String::new()));
+    let lower = login.1.to_lowercase();
+    let (auth_state, auth_method, persistent, detail) = if lower.contains("not logged in") {
+        ("missing", None, false, "Codex CLI는 설치되어 있지만 로그인이 필요합니다. 로그인은 Codex 자체 창에서 진행되며 SakaSaka에 비밀번호나 토큰이 저장되지 않습니다.")
+    } else if lower.contains("logged in using chatgpt") {
+        ("verified", Some("chatgpt"), true, "ChatGPT 로그인이 준비되어 있습니다. SakaSaka는 인증 토큰을 복사하지 않고 Codex가 관리하는 로그인 저장소를 그대로 재사용합니다.")
+    } else if lower.contains("logged in using") && lower.contains("api key") {
+        ("verified", Some("api-key"), true, "Codex API key 로그인이 준비되어 있습니다. 인증 저장소는 Codex가 직접 관리합니다.")
+    } else if lower.contains("logged in using") && lower.contains("agent identity") {
+        ("verified", Some("agent-identity"), true, "Codex Agent Identity 로그인이 준비되어 있습니다. 인증 저장소는 Codex가 직접 관리합니다.")
+    } else if lower.contains("logged in") {
+        ("verified", Some("unknown"), true, "Codex 로그인 상태를 확인했습니다. 인증 저장소는 Codex가 직접 관리합니다.")
+    } else {
+        ("unknown", None, false, "Codex CLI는 설치되어 있지만 로그인 상태를 확정하지 못했습니다. 다시 확인하거나 Codex 로그인을 진행하세요.")
+    };
+    let auth_field = auth_method.map(|method| format!(",\"authMethod\":\"{}\"", method)).unwrap_or_default();
+    Ok(format!(
+        "{{\"installed\":true,\"binary\":\"{}\",\"version\":\"{}\",\"authState\":\"{}\"{},\"codexHome\":\"{}\",\"persistent\":{},\"detail\":\"{}\"}}",
+        json_escape(&binary), json_escape(&version_text), auth_state, auth_field, json_escape(&home), if persistent { "true" } else { "false" }, json_escape(detail)
+    ))
+}
+
+#[tauri::command]
+fn codex_environment_status() -> Result<String, String> {
+    codex_environment_status_json()
+}
+
+fn install_codex_cli_sync() -> Result<String, String> {
+    if let Ok(status) = codex_environment_status_json() {
+        if status.contains("\"installed\":true") { return Ok(status); }
+    }
+    let mut command = Command::new(npm_binary());
+    command.args(["install", "-g", "@openai/codex@latest"]);
+    let (success, output) = command_text(&mut command).map_err(|error| format!("npm을 실행할 수 없습니다: {error}"))?;
+    if !success { return Err(format!("Codex CLI 설치에 실패했습니다: {}", if output.is_empty() { "npm 전역 설치 실패" } else { &output })); }
+    let status = codex_environment_status_json()?;
+    if !status.contains("\"installed\":true") {
+        return Err("설치는 완료됐지만 현재 앱에서 Codex CLI를 찾지 못했습니다. 앱을 다시 시작하거나 PATH를 확인하세요.".into());
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+async fn install_codex_cli() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(install_codex_cli_sync)
+        .await
+        .map_err(|error| format!("Codex 설치 작업을 완료하지 못했습니다: {error}"))?
+}
+
+fn launch_codex_login_terminal(method: &str) -> Result<(), String> {
+    let command_line = if method == "device" { "codex login --device-auth" } else { "codex login" };
+    if cfg!(windows) {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/S", "/C", "start", "", "cmd.exe", "/K", command_line]);
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        command.spawn().map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
+        return Ok(());
+    }
+    if cfg!(target_os = "macos") {
+        let script = format!("tell application \"Terminal\" to do script \"{}\"", command_line.replace('"', "\\\""));
+        Command::new("osascript")
+            .args(["-e", &script])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
+        return Ok(());
+    }
+    Command::new("x-terminal-emulator")
+        .args(["-e", "sh", "-lc", &format!("{}; printf '\\n로그인이 끝났으면 이 창을 닫아도 됩니다.\\n'; exec sh", command_line)])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Codex 로그인 터미널을 열 수 없습니다: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn start_codex_login(method: String) -> Result<String, String> {
+    if method != "browser" && method != "device" { return Err("지원하지 않는 Codex 로그인 방식입니다.".into()); }
+    let status = codex_environment_status_json()?;
+    if !status.contains("\"installed\":true") { return Err("먼저 Codex CLI를 설치하세요.".into()); }
+    launch_codex_login_terminal(&method)?;
+    Ok(status)
+}
+
+#[tauri::command]
+fn codex_logout() -> Result<String, String> {
+    let status = codex_environment_status_json()?;
+    if !status.contains("\"installed\":true") { return Ok(status); }
+    let (success, output) = command_text(&mut build_codex_command(&["logout"])).map_err(|error| format!("Codex 로그아웃을 실행할 수 없습니다: {error}"))?;
+    if !success { return Err(format!("Codex 로그아웃에 실패했습니다: {}", if output.is_empty() { "codex logout 실패" } else { &output })); }
+    codex_environment_status_json()
+}
+
 fn spawn_local_backend(app: &AppHandle, script: &str, data_dir: &Path) -> Result<BackendProcess, String> {
     let root = backend_root(app);
     let stdout = log_file(data_dir)?;
@@ -289,7 +452,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![decision_settings_status, save_decision_settings])
+        .invoke_handler(tauri::generate_handler![
+            decision_settings_status,
+            save_decision_settings,
+            codex_environment_status,
+            install_codex_cli,
+            start_codex_login,
+            codex_logout,
+        ])
         .setup(|app| {
             let data_dir = app
                 .path()

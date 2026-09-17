@@ -57,6 +57,23 @@ jobs:
             exit 1
           fi
 
+  tauri-windows-compile:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Windows sidecar paths for Rust-only compile check
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          New-Item -ItemType File -Force -Path src-tauri/binaries/sakasaka-api-x86_64-pc-windows-msvc.exe | Out-Null
+          New-Item -ItemType File -Force -Path src-tauri/binaries/sakasaka-worker-x86_64-pc-windows-msvc.exe | Out-Null
+      - name: Check Windows Tauri desktop bridge
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo check -q --manifest-path src-tauri/Cargo.toml
+
   security-and-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 15
