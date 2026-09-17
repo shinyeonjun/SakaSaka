@@ -18,8 +18,6 @@ export interface DesktopCodexEnvironmentStatus {
   detail: string;
 }
 
-const desktopApiUrl = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
-
 export async function pickDirectory(): Promise<string | null> {
   if (!isDesktopApp) return null;
   const { open } = await import("@tauri-apps/plugin-dialog");
@@ -55,39 +53,27 @@ export async function saveDesktopDecisionSettings(input: {
   return parsed as DesktopDecisionSettingsStatus;
 }
 
-function parseCodexEnvironment(value: unknown): DesktopCodexEnvironmentStatus {
-  const parsed = value as Partial<DesktopCodexEnvironmentStatus>;
-  if (typeof parsed.installed !== "boolean" || typeof parsed.binary !== "string" || typeof parsed.codexHome !== "string" || typeof parsed.persistent !== "boolean" || typeof parsed.detail !== "string") {
+function parseCodexEnvironment(raw: string): DesktopCodexEnvironmentStatus {
+  const value = JSON.parse(raw) as Partial<DesktopCodexEnvironmentStatus>;
+  if (typeof value.installed !== "boolean" || typeof value.binary !== "string" || typeof value.codexHome !== "string" || typeof value.persistent !== "boolean" || typeof value.detail !== "string") {
     throw new Error("Codex 실행 환경 상태 응답이 올바르지 않습니다.");
   }
-  if (parsed.authState !== "verified" && parsed.authState !== "missing" && parsed.authState !== "unknown") throw new Error("Codex 인증 상태 응답이 올바르지 않습니다.");
-  return parsed as DesktopCodexEnvironmentStatus;
+  if (value.authState !== "verified" && value.authState !== "missing" && value.authState !== "unknown") throw new Error("Codex 인증 상태 응답이 올바르지 않습니다.");
+  return value as DesktopCodexEnvironmentStatus;
 }
 
-async function codexRequest(path: string, init?: RequestInit): Promise<DesktopCodexEnvironmentStatus> {
-  const response = await fetch(`${desktopApiUrl}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  if (!response.ok) {
-    const raw = await response.text();
-    let message = raw;
-    try { message = (JSON.parse(raw) as { error?: string }).error ?? raw; } catch { /* plain text */ }
-    throw new Error(message || `Codex 실행 환경 요청 실패 (${response.status})`);
-  }
-  return parseCodexEnvironment(await response.json());
-}
-
-/** Reads only non-secret Codex installation/login metadata from the local control plane. */
+/** Reads only non-secret Codex installation/login metadata from the desktop shell. */
 export async function getDesktopCodexEnvironment(): Promise<DesktopCodexEnvironmentStatus | undefined> {
   if (!isDesktopApp) return undefined;
-  return codexRequest("/runtime/codex-environment");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return parseCodexEnvironment(await invoke<string>("codex_environment_status"));
 }
 
 /** User-triggered installation of the official @openai/codex CLI package. */
 export async function installDesktopCodexCli(): Promise<DesktopCodexEnvironmentStatus> {
   if (!isDesktopApp) throw new Error("Codex CLI 자동 설치는 데스크톱 앱에서만 사용할 수 있습니다.");
-  return codexRequest("/runtime/codex-environment/install", { method: "POST" });
+  const { invoke } = await import("@tauri-apps/api/core");
+  return parseCodexEnvironment(await invoke<string>("install_codex_cli"));
 }
 
 /**
@@ -96,10 +82,12 @@ export async function installDesktopCodexCli(): Promise<DesktopCodexEnvironmentS
  */
 export async function startDesktopCodexLogin(method: "browser" | "device" = "browser"): Promise<DesktopCodexEnvironmentStatus> {
   if (!isDesktopApp) throw new Error("Codex 로그인 준비는 데스크톱 앱에서만 사용할 수 있습니다.");
-  return codexRequest("/runtime/codex-environment/login", { method: "POST", body: JSON.stringify({ method }) });
+  const { invoke } = await import("@tauri-apps/api/core");
+  return parseCodexEnvironment(await invoke<string>("start_codex_login", { method }));
 }
 
 export async function logoutDesktopCodex(): Promise<DesktopCodexEnvironmentStatus> {
   if (!isDesktopApp) throw new Error("Codex 로그아웃은 데스크톱 앱에서만 사용할 수 있습니다.");
-  return codexRequest("/runtime/codex-environment/logout", { method: "POST" });
+  const { invoke } = await import("@tauri-apps/api/core");
+  return parseCodexEnvironment(await invoke<string>("codex_logout"));
 }
