@@ -24,6 +24,10 @@ jobs:
       - run: npm run build:api
       - run: npm test -- --run
       - run: npm run build
+      - name: Check Tauri desktop bridge
+        run: |
+          rustc --version
+          cargo check --manifest-path src-tauri/Cargo.toml
       - run: npm run acceptance:desktop
       - run: npx playwright install --with-deps chromium
       - run: npm run acceptance
