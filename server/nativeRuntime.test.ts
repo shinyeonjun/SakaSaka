@@ -8,7 +8,7 @@ import { runNativeEpisode } from "./nativeRuntime";
 import { createEmptyState } from "../src/emptyState";
 import { createProject, getProject, getRun, pauseProject, resolveHumanItem, resumeProject, wakeProject } from "../src/runtime";
 import type { AppState } from "../src/types";
-import { parseCheckpoint, registerMissionHuman } from "../src/nativeSession";
+import { checkpointSchema, inspectCheckpoint, parseCheckpoint, registerMissionHuman, resolveCheckpointReferences } from "../src/nativeSession";
 
 const directories: string[] = [];
 const saved = { raw: process.env.INTENT_WORLD_RAW_DIR, root: process.env.WORKSPACE_ROOT };
@@ -208,12 +208,13 @@ describe("mission native runtime", () => {
   it("누적 토큰 알림을 중복 과금하지 않고 토큰 한도에서 실행을 멈춘다", async () => {
     const store = fixture({ maxNativeTokens: 100 });
     const client = new FakeClient(async (c) => {
-      const params = { threadId: "thread-test", turnId: "turn-test", tokenUsage: { total: { totalTokens: 80, inputTokens: 60, outputTokens: 20 } } };
+      const params = { threadId: "thread-test", turnId: "turn-test", tokenUsage: { total: { totalTokens: 80, inputTokens: 60, cachedInputTokens: 10, outputTokens: 20 } } };
       c.notify("thread/tokenUsage/updated", params); c.notify("thread/tokenUsage/updated", params);
-      c.notify("thread/tokenUsage/updated", { ...params, tokenUsage: { total: { totalTokens: 101, inputTokens: 75, outputTokens: 26 } } });
+      c.notify("thread/tokenUsage/updated", { ...params, tokenUsage: { total: { totalTokens: 101, inputTokens: 75, cachedInputTokens: 30, outputTokens: 26 } } });
     });
     await runNativeEpisode(store, "native-test", { clientFactory: () => client });
     expect(store.read().resourceLedger.reduce((n, l) => n + l.tokens, 0)).toBe(101);
+    expect(getRun(store.read(), "native-test")?.nativeSession?.accountedCachedInputTokens).toBe(30);
     expect(getRun(store.read(), "native-test")?.stopReason).toContain("토큰");
     expect(getProject(store.read(), "native-test")?.status).toBe("STALLED");
   });
@@ -261,12 +262,78 @@ describe("mission native runtime", () => {
 
   it("엄격한 체크포인트와 외부 설정 경계, 해결된 질문 dedupe를 보존한다", () => {
     expect(parseCheckpoint('{"disposition":"equilibrium"}')).toBeUndefined();
-    expect(parseCheckpoint(JSON.stringify({ disposition: "equilibrium", summary: "확인", remainingWork: [], evidenceRefs: ["Authorization: Bearer leaked"], wakeReasons: [] }))).toBeUndefined();
+    expect(parseCheckpoint(JSON.stringify({ disposition: "equilibrium", summary: "확인", remainingWork: [], evidenceRefs: ["Authorization: Bearer leaked"], wakeReasons: [] }))).toBeDefined();
     expect(checkNativeConfig({ mcp_servers: { remote: {} } })).toContain("MCP");
     expect(checkNativeConfig({ mcp_servers: { remote: { enabled: false } } })).toBeUndefined();
     const store = fixture();
     const first = registerMissionHuman(store.read(), "native-test", "QUESTION", question);
     const answered = resolveHumanItem(first.state, first.item.id, "answer", "답변");
     expect(registerMissionHuman(answered, "native-test", "QUESTION", question).state.humanItems).toHaveLength(1);
+  });
+
+  it("실제 Windows smoke checkpoint의 작업공간 경로를 정상적으로 읽는다", () => {
+    const evidencePath = String.raw`C:\Users\plosind\AppData\Local\Temp\sakasaka-native-smoke-2nHjyj\workspace\native-smoke.txt`;
+    const parsed = parseCheckpoint(JSON.stringify({
+      disposition: "equilibrium",
+      summary: "native-smoke.txt를 생성하고 다시 읽어 내용이 정확히 일치함을 확인했습니다.",
+      remainingWork: [], evidenceRefs: [evidencePath], wakeReasons: [],
+    }));
+    expect(parsed).toMatchObject({ disposition: "equilibrium", evidenceRefs: [evidencePath] });
+  });
+
+  it("checkpoint 스키마와 파서는 공백·한글·Windows 경로를 같은 문자열로 취급한다", () => {
+    const evidenceItems = checkpointSchema.properties?.evidenceRefs?.items;
+    expect(evidenceItems).toMatchObject({ type: "string", minLength: 1, maxLength: 512 });
+    const parsed = parseCheckpoint(JSON.stringify({
+      disposition: "equilibrium", summary: "확인", remainingWork: [],
+      evidenceRefs: ["한글 파일.txt", String.raw`C:\작업 폴더\결과 파일.txt`, "record with spaces"], wakeReasons: [],
+    }));
+    expect(parsed?.evidenceRefs).toEqual(["한글 파일.txt", String.raw`C:\작업 폴더\결과 파일.txt`, "record with spaces"]);
+  });
+
+  it("checkpoint의 malformed JSON·잘못된 disposition·누락 필드는 계속 거절한다", () => {
+    expect(inspectCheckpoint("{malformed")).toMatchObject({ reason: "malformed-json" });
+    expect(inspectCheckpoint(JSON.stringify({ disposition: "done", summary: "확인", remainingWork: [], evidenceRefs: [], wakeReasons: [] }))).toMatchObject({ reason: "invalid-disposition" });
+    expect(inspectCheckpoint(JSON.stringify({ disposition: "equilibrium", summary: "확인", remainingWork: [], evidenceRefs: [] }))).toMatchObject({ reason: "invalid-wakeReasons" });
+  });
+
+  it("checkpoint 형식 오류는 작업 기록을 보존하고 성공한 작업을 자동 재실행하지 않는다", async () => {
+    const store = fixture();
+    const client = new FakeClient(async (c) => c.finish(JSON.stringify({ disposition: "equilibrium", summary: "파일 작업은 끝났지만", remainingWork: [], evidenceRefs: [] })));
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client });
+    expect(getProject(store.read(), "native-test")?.status).toBe("STALLED");
+    expect(getRun(store.read(), "native-test")).toMatchObject({ status: "STALLED", retryAfter: undefined, lastModelFailure: { code: "INVALID_OUTPUT", retryable: false, message: expect.stringContaining("invalid-wakeReasons") } });
+    expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  });
+
+  it("checkpoint 참조는 프로젝트 근거·원본 기록·산출물·거절·미해결을 구분한다", async () => {
+    const store = fixture();
+    await store.transact((s) => ({ ...s, evidence: [...s.evidence,
+      { id: "evidence-own", projectId: "native-test", kind: "world", verdict: "PASS", summary: "작업 결과", source: "test", createdAt: new Date().toISOString(), rawRef: "local-raw://own.jsonl" },
+      { id: "evidence-other", projectId: "other-project", kind: "world", verdict: "PASS", summary: "다른 프로젝트", source: "test", createdAt: new Date().toISOString() },
+    ] }));
+    const inside = join(store.root, "한글 폴더", "결과 파일.txt");
+    const outside = join(store.root, "..", "outside-result.txt");
+    const checkpoint = { disposition: "equilibrium" as const, summary: "확인", remainingWork: [], evidenceRefs: ["evidence-own", "local-raw://own.jsonl", inside, outside, String.raw`artifact:..\탈출.txt`, "https://example.com/result", "git://example.com/result", "evidence-other", "unseen-reference"], wakeReasons: [] };
+    const refs = resolveCheckpointReferences(store.read(), "native-test", checkpoint, store.root);
+    expect(refs.find((ref) => ref.input === "evidence-own")).toMatchObject({ kind: "evidence", status: "resolved", evidenceId: "evidence-own" });
+    expect(refs.find((ref) => ref.input === "local-raw://own.jsonl")).toMatchObject({ kind: "record", status: "resolved", recordRef: "local-raw://own.jsonl" });
+    expect(refs.find((ref) => ref.input === inside)).toMatchObject({ kind: "artifact", status: "unverified", relativePath: "한글 폴더/결과 파일.txt" });
+    expect(refs.find((ref) => ref.input === outside)).toMatchObject({ status: "rejected", reason: "outside-workspace" });
+    expect(refs.find((ref) => ref.input === String.raw`artifact:..\탈출.txt`)).toMatchObject({ status: "rejected", reason: "invalid-path" });
+    expect(refs.find((ref) => ref.input === "https://example.com/result")).toMatchObject({ status: "rejected", reason: "external-uri" });
+    expect(refs.find((ref) => ref.input === "git://example.com/result")).toMatchObject({ status: "rejected", reason: "external-uri" });
+    expect(refs.find((ref) => ref.input === "evidence-other")).toMatchObject({ status: "rejected", reason: "other-project-evidence" });
+    expect(refs.find((ref) => ref.input === "unseen-reference")).toMatchObject({ status: "unresolved", reason: "not-found" });
+  });
+
+  it("정상 checkpoint의 산출물 참조를 저장하되 파일 경로를 Evidence ID로 승격하지 않는다", async () => {
+    const store = fixture();
+    const artifact = join(store.root, "결과 파일.txt");
+    const client = new FakeClient(async (c) => c.finish(JSON.stringify({ disposition: "equilibrium", summary: "작업공간 산출물을 확인했습니다.", remainingWork: [], evidenceRefs: [artifact], wakeReasons: [] })));
+    await runNativeEpisode(store, "native-test", { clientFactory: () => client });
+    expect(getProject(store.read(), "native-test")?.status).toBe("EQUILIBRIUM");
+    expect(getRun(store.read(), "native-test")?.nativeSession?.checkpointReferences).toMatchObject([{ kind: "artifact", status: "unverified", relativePath: "결과 파일.txt" }]);
+    expect(getRun(store.read(), "native-test")?.nativeSession?.checkpointReferences?.[0]?.evidenceId).toBeUndefined();
   });
 });

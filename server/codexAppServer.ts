@@ -37,7 +37,7 @@ export class CodexAppServer implements AppServerClient {
   private resolveClosed!: (error: Error) => void;
   readonly closed = new Promise<Error>((resolve) => { this.resolveClosed = resolve; });
 
-  constructor(private readonly options: AppServerOptions) {}
+  constructor(private readonly options: AppServerOptions) { }
   onNotification(listener: (method: string, params: RpcRecord) => void): void { this.notify = listener; }
   onRequest(listener: (method: string, params: RpcRecord) => Promise<unknown>): void { this.serverRequest = listener; }
 
@@ -45,7 +45,7 @@ export class CodexAppServer implements AppServerClient {
     if (this.child || this.exitError) throw new Error("App Server client is not reusable");
     const binary = this.options.binary ?? process.env.CODEX_CLI_BIN?.trim() ?? (process.platform === "win32" ? "codex.exe" : "codex");
     const env = this.options.env ?? nativeCliEnvironment();
-    this.child = spawn(binary, [...(this.options.prefix ?? []), "app-server", "--listen", "stdio://", "-c", 'web_search="disabled"', "-c", "shell_environment_policy.inherit=none",
+    this.child = spawn(binary, [...(this.options.prefix ?? []), "app-server", "--listen", "stdio://", "-c", 'web_search="disabled"', "-c", "shell_environment_policy.inherit=core",
       "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "features.remote_plugin=false", "-c", "features.hooks=false",
       "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false", "-c", "features.in_app_browser=false"], {
       cwd: this.options.cwd, env, shell: false, windowsHide: true, detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"],
