@@ -21,11 +21,16 @@ Jev가 없어도 기본 DecisionGateway는 Codex CLI라서 기존 Codex 로그�
 ```bash
 npm install
 codex login
-npm run decision:setup
 npm run desktop:dev
 ```
 
-`npm run decision:setup`에서 `codex-cli`, `jev`, `hybrid` 중 판단 계층을 선택합니다. Jev 승인을 받기 전에는 `codex-cli`를 고르면 됩니다.
+데스크톱 앱의 **환경 설정 → 자율 판단 계층 · System 1**에서 `Codex CLI`, `Jev`, `Jev 우선 · Codex fallback`을 고를 수 있습니다. Jev 승인을 받기 전에는 Codex CLI를 그대로 쓰면 됩니다.
+
+API/worker를 터미널로 따로 실행하는 개발 모드에서는 다음 대화형 명령으로 같은 설정 파일을 만들 수 있습니다.
+
+```bash
+npm run decision:setup
+```
 
 새 프로젝트에서는 실제 workspace를 연결하고 모델 provider를 **Codex CLI**, 실행 방식을 **지속형 Codex App Server**로 선택한 뒤 Intent를 입력합니다.
 
@@ -33,13 +38,9 @@ npm run desktop:dev
 
 Jev는 hard governor가 아니라 빠른 bounded semantic decision layer입니다. 파일 쓰기·네트워크·production·승인·예산 같은 실행 권한을 Jev가 허용할 수 없습니다.
 
-Early access 승인을 받은 뒤:
+Early access 승인을 받은 뒤 데스크톱에서는 환경 설정에 TypeSafe API key를 입력하면 됩니다. key input은 password field이며 저장 후 다시 UI로 반환하지 않습니다. API/개발 모드에서는 `npm run decision:setup`이 TTY에서 key를 숨김 입력으로 받습니다.
 
-```bash
-npm run decision:setup
-```
-
-대화형 setup은 TypeSafe API key를 TTY에서 숨김 입력으로 받습니다. key는 AppState, event journal, model context, browser localStorage에 저장되지 않습니다. 기본적으로 `state.json`과 같은 디렉터리의 `decision-settings.json`에만 저장되고, POSIX에서는 `0600` 권한을 적용합니다.
+key는 AppState, event journal, model context, browser localStorage에 저장되지 않습니다. 데스크톱에서는 OS별 앱 데이터 디렉터리, API/개발 모드에서는 기본적으로 `state.json`과 같은 디렉터리의 `decision-settings.json`에만 저장합니다. POSIX에서는 `0600` 권한을 적용합니다.
 
 `hybrid`는 bounded judgment에서 Jev를 우선 사용하고 Jev 호출이 실패하거나 사용할 수 없을 때 Codex structured decision으로 fallback합니다. hard policy와 실제 side effect는 어느 경우에도 fallback으로 우회되지 않습니다.
 
@@ -60,7 +61,7 @@ TYPESAFE_DEFAULT_MODEL=jev-latest
 
 독립 Codex scout들은 서로 다른 fresh context lens로 잠재 gap을 생성합니다. 각 scout는 실제 workspace를 `read-only` sandbox에서 읽을 수 있지만 파일을 바꿀 수 없습니다. 후보는 정규화·중복 제거·risk/uncertainty/novelty/urgency 점수화되고, DecisionGateway가 현재 priority frontier를 판단합니다. 실제 write worker는 한 번에 가장 가치 있는 mission 하나만 지속형 Codex thread에서 수행합니다.
 
-Intent 자체의 end-to-end delivery도 1급 gap으로 유지해서, 보안이나 인프라 같은 부수 위험만 쫓다가 사용자가 원한 제품 완성을 잊지 않도록 합니다.
+Intent 자체의 end-to-end delivery도 1급 gap으로 유지해서, 보안이나 인프라 같은 부수 위험만 쫓다가 사용자가 원한 제품 완성을 잊지 않도록 합니다. Intent가 새 버전으로 바뀌면 기존 active mission은 `SUPERSEDED`가 되고 taxonomy coverage를 다시 열어 새 의도 기준으로 탐색합니다.
 
 ## 반복과 비용 제어
 
@@ -73,11 +74,19 @@ SAKASAKA_COVERAGE_REVIEW_MINUTES=60
 
 동일 gap은 normalized key로 병합되고 하나의 mission만 `RUNNING` 상태가 됩니다. Codex checkpoint가 `equilibrium`을 선언해도 material unresolved gap이 남아 있으면 postlude가 다시 깨웁니다. 반대로 mission 완료는 checkpoint 문구만 믿지 않고 objective satisfied와 evidence sufficient 판단을 함께 요구합니다.
 
+Coverage scout와 bounded DecisionGateway 호출도 기존 프로젝트의 `maxModelCalls`, budget, wall-time 경계를 공유합니다. 별도 판단 계층이라고 해서 실행 한도를 우회하지 않습니다.
+
+## Control-plane evidence와 실제 World 분리
+
+Gap/Mission 상태는 제품 runtime health가 아닙니다. 따라서 autonomy summary는 실제 `World.runtime` source를 덮어쓰지 않고 `sakasaka-autonomy`의 `UNCERTAIN` metric evidence로 기록합니다. 이 evidence는 다음 Codex context에 들어가지만 제품 완료를 PASS로 증명하지 않습니다. 실제 preview/browser/test/world observation이 항상 우선합니다.
+
 ## Human asynchronous boundary
 
 기존 `blockingScope` / `continuingScope` 계약을 그대로 사용합니다. 질문 답변이 오기 전에도 독립 작업은 계속합니다. 답변이 늦게 도착하면 새 authoritative event로 처리하며 현재 world를 다시 관찰합니다.
 
 ## 저장 파일
+
+API/개발 모드의 기본 경로는 다음과 같습니다. 데스크톱은 같은 파일 이름을 OS 앱 데이터 디렉터리 아래에 둡니다.
 
 ```text
 .data/state.json              기존 source-linked runtime state
@@ -105,8 +114,9 @@ SAKASAKA_COVERAGE_REVIEW_MINUTES=60
 이 기능은 merge 전에 다음을 통과해야 합니다.
 
 - client/server TypeScript typecheck
-- gap merge / mission lifecycle / DecisionGateway / local secret config unit tests
+- gap merge / mission lifecycle / Intent rebase / DecisionGateway / local secret config / shared model-call cap unit tests
 - 기존 security gate와 workspace escape tests
+- Tauri Rust bridge `cargo check`
 - API / desktop / autonomous / UI acceptance
 - Ubuntu 22.04 native Codex sandbox integration
 
