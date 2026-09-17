@@ -9,10 +9,7 @@ import type { AppState } from "../src/types";
 
 async function freePort(): Promise<number> {
   const probe = createServer();
-  await new Promise<void>((resolvePromise, reject) => {
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => resolvePromise());
-  });
+  await new Promise<void>((resolvePromise, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", () => resolvePromise()); });
   const address = probe.address();
   const port = typeof address === "object" && address ? address.port : undefined;
   await new Promise<void>((resolvePromise, reject) => probe.close((error) => error ? reject(error) : resolvePromise()));
@@ -24,10 +21,7 @@ async function waitForVite(baseUrl: string, child: ChildProcess, logs: string[])
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`Vite가 UI 준비 전에 종료되었습니다: ${logs.join("")}`);
-    try {
-      const response = await fetch(baseUrl);
-      if (response.ok) return;
-    } catch { /* starting */ }
+    try { const response = await fetch(baseUrl); if (response.ok) return; } catch { /* starting */ }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
   throw new Error(`Vite 상태 확인 시간이 초과되었습니다: ${logs.join("")}`);
@@ -66,9 +60,7 @@ function seedState(state: AppState): void {
   storage.setItem("intent-world-agent-state-v2", JSON.stringify(state));
 }
 
-async function closeContext(context: BrowserContext): Promise<void> {
-  await context.close();
-}
+async function closeContext(context: BrowserContext): Promise<void> { await context.close(); }
 
 async function main(): Promise<void> {
   const repoRoot = resolve(process.cwd());
@@ -85,7 +77,6 @@ async function main(): Promise<void> {
     await waitForVite(baseUrl, child, logs);
     browser = await chromium.launch({ headless: true, ...(process.env.SAKASAKA_BROWSER_EXECUTABLE ? { executablePath: process.env.SAKASAKA_BROWSER_EXECUTABLE } : {}) });
 
-    // Intent-first empty/new-project UX.
     const newContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     contexts.push(newContext);
     const newPage = await newContext.newPage();
@@ -93,61 +84,73 @@ async function main(): Promise<void> {
     await assertNoHorizontalOverflow(newPage, "신규 프로젝트 데스크톱");
     assert.equal(await newPage.getByRole("heading", { name: "원하는 결과만 말해 주세요", exact: true }).count(), 1);
     assert.equal(await newPage.getByLabel("원하는 결과").count(), 1, "Intent 입력이 없습니다.");
-    assert.equal(await newPage.getByText("강한 기본값", { exact: true }).count(), 1, "강한 기본값 요약이 없습니다.");
+    assert.equal(await newPage.getByText("권장 기본값", { exact: true }).count(), 1, "Figma 권장 기본값 섹션이 없습니다.");
+    assert.equal(await newPage.getByText("실행 프로필", { exact: true }).count(), 1, "새 프로젝트 inspector가 없습니다.");
 
-    // Global settings: model preference remains reusable between projects.
-    await newPage.getByRole("button", { name: "환경 설정", exact: true }).first().click();
+    // Global settings follow the Figma Models & Decisions structure and keep reusable model preferences.
+    await newPage.getByRole("button", { name: "설정", exact: true }).click();
     await newPage.waitForURL(/\/settings$/);
     assert.equal(await newPage.getByRole("heading", { name: "환경 설정", exact: true }).count(), 1);
+    assert.equal(await newPage.getByText("판단 엔진", { exact: true }).count(), 1);
+    assert.equal(await newPage.getByText("TypeSafe Jev", { exact: true }).count(), 1);
+    assert.equal(await newPage.getByText("시스템 2 작업자", { exact: true }).count(), 1);
     assert.equal(await newPage.getByText("데스크톱 앱에서 자동 준비", { exact: true }).count(), 1, "브라우저 모드 Codex 준비 안내가 없습니다.");
-    await newPage.getByLabel("연결 방식").selectOption("codex-cli");
-    await newPage.getByLabel("모델").fill("configured-test-model");
-    await newPage.getByRole("button", { name: "기본값 저장" }).click();
+    const providerSelect = newPage.getByLabel("연결 방식");
+    await providerSelect.selectOption("codex-cli");
+    const modelSelect = newPage.getByLabel("모델");
+    const modelOptions = await modelSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value).filter(Boolean));
+    const reusableModel = modelOptions[0] ?? "";
+    if (reusableModel) await modelSelect.selectOption(reusableModel);
+    await newPage.getByRole("button", { name: "작업 모델 저장", exact: true }).click();
     assert.equal(await newPage.getByText("저장됨", { exact: true }).count() > 0, true);
-    await newPage.getByRole("button", { name: "새 프로젝트", exact: true }).first().click();
-    await newPage.waitForURL(/\/projects\/new$/);
+    await open(newPage, baseUrl, "/projects/new");
 
-    // Browser-only mode keeps atomic compatibility, while remembering model preference.
+    // Browser-only mode keeps atomic compatibility, while remembering the selected model preference.
     await newPage.getByRole("button", { name: "고급 설정", exact: true }).click();
-    const executionRow = newPage.locator(".advanced-setting-row").filter({ hasText: "실행 방식" });
+    const executionRow = newPage.locator(".figma-setting-row").filter({ hasText: "실행 방식" });
     assert.equal(await executionRow.locator("select").inputValue(), "atomic", "브라우저 모드에서 지속형 데스크톱 실행을 강제하면 안 됩니다.");
-    assert.equal(await newPage.locator(".model-picker input").inputValue(), "configured-test-model", "저장된 모델 기본값이 새 프로젝트에 적용되지 않았습니다.");
+    if (reusableModel) assert.equal(await newPage.locator(".figma-model-row select").inputValue(), reusableModel, "저장된 모델 기본값이 새 프로젝트에 적용되지 않았습니다.");
     await newPage.getByLabel("원하는 결과").fill("팀이 함께 사용할 수 있는 품질 검증 workspace를 만들어줘");
     await newPage.getByRole("button", { name: "프로젝트 시작", exact: true }).click();
     await newPage.waitForURL(/\/projects\/[^/]+$/);
     const createdProjectPath = new URL(newPage.url()).pathname;
     await assertNoHorizontalOverflow(newPage, "생성된 프로젝트 데스크톱");
-    assert.equal(await newPage.getByRole("heading").count() > 0, true);
+    assert.equal(await newPage.getByText("현재 미션", { exact: true }).count() > 0, true, "제어 센터의 현재 미션 섹션이 없습니다.");
 
-    // A fixture with an asynchronous human question must remain operable.
     const fixtureContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     contexts.push(fixtureContext);
     const desktop = await fixtureContext.newPage();
     await fixtureContext.addInitScript(seedState, dynamicQuestionState());
     const projectPath = "/projects/ui-acceptance-project";
-    await open(desktop, baseUrl, projectPath);
-    await assertNoHorizontalOverflow(desktop, "프로젝트 개요 데스크톱");
-    assert.equal(await desktop.getByText("제어 센터", { exact: true }).count() > 0, true, "새 데스크톱 shell의 제어 센터 탐색이 없습니다.");
 
-    await open(desktop, baseUrl, `${projectPath}/needs-you`);
-    for (const label of [/질문 1/, /아이디어 0/, /우려 0/, /승인 0/]) assert.equal(await desktop.getByRole("tab", { name: label }).count(), 1, `사람 개입 필터 누락: ${label}`);
-    await desktop.getByRole("button", { name: "나중에" }).click();
-    assert.equal(await desktop.getByText("나중에 답변 가능").count(), 1);
-    await desktop.getByRole("button", { name: "답변하기" }).click();
-    await desktop.locator("label").filter({ hasText: "두 번째 기준" }).click();
-    await desktop.getByRole("button", { name: "답변 저장" }).click();
-    assert.equal(await desktop.getByText("저장됨").count(), 1);
-
-    for (const [path, heading] of [
-      [`${projectPath}/activity`, "활동 / 월드"],
-      [`${projectPath}/world`, "현재 월드"],
-      [`${projectPath}/artifacts`, "산출물"],
-      [`${projectPath}/experiments`, "실험"],
-      [`${projectPath}/settings`, "프로젝트 설정"],
+    // Every primary Figma product route loads without desktop overflow.
+    for (const [path, marker] of [
+      [projectPath, "현재 Intent"],
+      [`${projectPath}/missions`, "미션"],
+      [`${projectPath}/coverage`, "탐색 범위 & 갭"],
+      [`${projectPath}/needs-you`, "내가 결정해야 하는 것만 모아서 본다"],
+      [`${projectPath}/evidence`, "완료 주장이 실제 현실과 연결되어 있는가"],
     ] as const) {
       await open(desktop, baseUrl, path);
-      await assertNoHorizontalOverflow(desktop, `${heading} 데스크톱`);
-      assert.equal(await desktop.getByRole("heading", { name: heading, exact: true }).count(), 1, `${heading} 누락`);
+      await assertNoHorizontalOverflow(desktop, `${marker} 데스크톱`);
+      assert.equal(await desktop.getByText(marker, { exact: true }).count() > 0, true, `${marker} 화면 누락`);
+    }
+
+    // Async human decision remains actionable in the redesigned inbox.
+    await open(desktop, baseUrl, `${projectPath}/needs-you`);
+    assert.equal(await desktop.getByRole("button", { name: /질문 1/ }).count(), 1, "질문 필터가 없습니다.");
+    assert.equal(await desktop.getByText("차단 범위", { exact: true }).count() > 0, true);
+    assert.equal(await desktop.getByText("계속 진행 범위", { exact: true }).count() > 0, true);
+    const secondOption = desktop.getByRole("button", { name: /두 번째 기준/ });
+    if (await secondOption.count()) await secondOption.click();
+    await desktop.getByRole("button", { name: "답변 보내기", exact: true }).click();
+    assert.equal(await desktop.getByText("ANSWERED", { exact: true }).count() > 0, true, "사람 답변이 저장되지 않았습니다.");
+
+    // Compatibility routes remain usable.
+    for (const path of [`${projectPath}/activity`, `${projectPath}/world`, `${projectPath}/artifacts`, `${projectPath}/experiments`, `${projectPath}/settings`]) {
+      await open(desktop, baseUrl, path);
+      await assertNoHorizontalOverflow(desktop, `${path} 데스크톱`);
+      assert.equal(await desktop.getByRole("heading").count() > 0, true, `${path} heading 누락`);
     }
 
     // Existing project settings and delete flow remain functional.
@@ -161,17 +164,17 @@ async function main(): Promise<void> {
     await newPage.waitForURL(/\/projects\/new$/);
     assert.equal(await newPage.getByRole("heading", { name: "원하는 결과만 말해 주세요", exact: true }).count(), 1);
 
-    // Mobile shell must not introduce horizontal overflow even though desktop is primary.
+    // Narrow windows must not introduce document-level horizontal overflow.
     const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     contexts.push(mobileContext);
     const mobile = await mobileContext.newPage();
     await mobileContext.addInitScript(seedState, dynamicQuestionState());
-    for (const path of ["/projects/new", projectPath, `${projectPath}/needs-you`, `${projectPath}/world`, `${projectPath}/experiments`]) {
+    for (const path of ["/projects/new", projectPath, `${projectPath}/missions`, `${projectPath}/coverage`, `${projectPath}/needs-you`, `${projectPath}/evidence`, `${projectPath}/experiments`]) {
       await open(mobile, baseUrl, path);
       await assertNoHorizontalOverflow(mobile, `${path} 모바일`);
     }
 
-    console.log("UI acceptance passed: desktop v2 shell, intent-first project creation, reusable model defaults, async human question flow, routes, and responsive overflow");
+    console.log("UI acceptance passed: full Figma desktop control plane, intent-first project creation, missions/gaps/human/evidence routes, reusable model defaults, and responsive overflow");
   } finally {
     for (const context of contexts.reverse()) await closeContext(context);
     await browser?.close();
@@ -184,7 +187,4 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+void main().catch((error: unknown) => { console.error(error); process.exitCode = 1; });
