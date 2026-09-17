@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { fetchModelCatalog, fetchWorkspaceRoot, isControlPlaneEnabled, setWorkspaceRoot } from "../apiClient";
 import { CodexSetupPanel } from "../components/CodexSetupPanel";
-import { Button, Card, InlineNotice, Label, PageHeading, Pill } from "../components/ui";
+import { Button, Card, InlineNotice, Label, PageHeading, Pill, SectionHeader } from "../components/ui";
 import { isDesktopApp, pickDirectory } from "../desktop";
 import { getRecommendedCodexModels } from "../modelCatalog";
 import { loadUserPreferences, saveUserPreferences } from "../preferences";
