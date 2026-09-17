@@ -94,6 +94,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     if (blocked) return stallProject(state, projectId, blocked);
     const native = run.nativeSession ?? newNativeSession();
     if (native.turnsStarted >= limit(project.settings.maxNativeTurns, 40, 1000)) return stallProject(state, projectId, "Native 작업 구간 상한에 도달했습니다.");
+    if (native.accountedTokens >= limit(project.settings.maxNativeTokens, 250000, 10000000)) return stallProject(state, projectId, "Native 토큰 상한에 도달했습니다.");
     claimed = true;
     return { ...state, runs: state.runs.map((r) => r.id === run.id ? { ...r, nativeSession: native, execution: { id: leaseId, owner: `native-${process.pid}`, stage: "decide", expiresAt: new Date(Date.now() + 60000).toISOString() }, phase: "decide" } : r) };
   });
@@ -101,7 +102,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
   const controller = new AbortController();
   let cancelReason = "실행 취소", terminal = false, fatal: Error | undefined;
   let client: AppServerClient | undefined, threadId = initialRun.nativeSession?.threadId, turnId: string | undefined;
-  let finalText = "", completedStatus = "", finalError: unknown;
+  let finalText = "", completedStatus = "", finalError: unknown, tokenLimited = false;
   const ignoredRawCalls = new Set<string>();
   const deliveryReceipts = new Map<string, number>();
   let operations = Promise.resolve(), polling = false;
@@ -274,8 +275,10 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
           const price = safeNumber(Number(process.env.MODEL_COST_PER_MILLION ?? 0));
           let next = accountModelUsage(s, projectId, { modelVersion: `codex-app-server:${initial.settings.modelName ?? "configured"}`, tokens: delta, inputTokens: input - previousInput, outputTokens: output - previousOutput, cost: delta * price / 1000000, latencyMs: 0, usageKnown: true, rawRef });
           next = patchNativeSession(next, projectId, { accountedTokens: tokens, accountedInputTokens: input, accountedCachedInputTokens: cachedInput, accountedOutputTokens: output });
+          if (tokens >= limit(initial.settings.maxNativeTokens, 250000, 10000000)) tokenLimited = true;
           return next;
         });
+        if (tokenLimited) interrupt("Native 토큰 한도에 도달했습니다.");
       });
       else if (method === "turn/completed") enqueue(async () => {
         persist(method, params);
@@ -374,7 +377,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
     await Promise.race([completed, client.closed.then((e) => { if (!terminal && !controller.signal.aborted) fail(e); })]);
     await operations;
     if (fatal) throw fatal;
-    if (controller.signal.aborted) throw new ModelGatewayError(modelFailure("CANCELLED", cancelReason, false, { rawRef }));
+    if (controller.signal.aborted) throw new ModelGatewayError(modelFailure(tokenLimited ? "OUTPUT_LIMIT" : "CANCELLED", cancelReason, false, { rawRef }));
     if (completedStatus !== "completed") throw new Error(`Codex 작업 구간 ${completedStatus}: ${JSON.stringify(finalError ?? {})}`);
     const parsedCheckpoint = inspectCheckpoint(finalText);
     const checkpoint = parsedCheckpoint.checkpoint;
@@ -415,7 +418,7 @@ export async function runNativeEpisode(store: CycleStateStore, projectId: string
       let next = patchNativeSession(state, projectId, { state: controller.signal.aborted ? "interrupted" : "failed", rawRef, turnId: undefined });
       // New human controls win. Never change PAUSED/KILLED or a replacement Intent.
       if (!sameControl(initial, getProject(state, projectId))) return missionEvent(next, projectId, "CYCLE_DISCARDED", "이전 작업 구간을 중단했습니다.", cancelReason, { payload: { rawRef } });
-      if (options.signal?.aborted) return missionEvent(next, projectId, "RUN_STATE_CHANGED", "ACTIVE · worker 재시작 시 세션 재개", "정상 종료 신호로 작업을 중단했습니다. thread와 이미 발생한 결과를 유지합니다.", { payload: { rawRef } });
+      if (options.signal?.aborted && !tokenLimited) return missionEvent(next, projectId, "RUN_STATE_CHANGED", "ACTIVE · worker 재시작 시 세션 재개", "정상 종료 신호로 작업을 중단했습니다. thread와 이미 발생한 결과를 유지합니다.", { payload: { rawRef } });
       next = recordModelFailure(next, projectId, typed);
       if (controller.signal.aborted) next = stallProject(next, projectId, cancelReason);
       return next;
