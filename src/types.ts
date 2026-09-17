@@ -86,11 +86,13 @@ export interface ProjectSettings {
   /** Explicit migration: absent on existing projects means the legacy atomic engine. */
   executionMode?: "atomic" | "native";
   maxNativeTurns?: number;
+  /** 0 means unlimited; token usage is still measured for observability. */
   maxNativeTokens?: number;
   nativeTurnTimeoutMs?: number;
+  /** 0 means unlimited; spend is still measured for observability. */
   budgetLimit: number;
   maxHours: number;
-  /** Hard cap even when CLI billing cannot be measured. */
+  /** 0 means unlimited; model calls are still counted for observability. */
   maxModelCalls?: number;
   localActions: boolean;
   requireExternalApproval: boolean;
@@ -350,8 +352,10 @@ export interface ContextPacket {
   openHumanItemRefs: string[];
   experienceRefs: string[];
   boundary: {
-    remainingBudget: number;
+    /** Omitted when project resource hard limits are disabled. */
+    remainingBudget?: number;
     remainingModelCalls?: number;
+    resourceLimits?: "unlimited" | "bounded";
     maxHours: number;
     networkPolicy: ProjectSettings["networkPolicy"];
     productionBlocked: boolean;
