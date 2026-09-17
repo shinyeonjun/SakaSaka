@@ -88,8 +88,9 @@ async function main(): Promise<void> {
   }
 
   if (provider === "codex-cli" && has("--clear-key")) clearApiKey = true;
-  const status = updateRuntimeDecisionConfig({ provider, typesafeModel: model, apiKey, clearApiKey });
+  const status = await updateRuntimeDecisionConfig({ provider, typesafeModel: model, apiKey, clearApiKey });
   stdout.write(`Saved local decision settings.\nProvider: ${status.provider}\nJev model: ${status.typesafeModel}\nAPI key: ${status.apiKeyConfigured ? `configured (${status.apiKeySource})` : "not configured"}\nConfig: ${status.configPath}\n`);
+  if (status.apiKeySource === "environment") stdout.write("Note: TYPESAFE_API_KEY from the environment overrides the local stored key.\n");
 }
 
 main().catch((error: unknown) => {
