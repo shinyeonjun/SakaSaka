@@ -27,8 +27,11 @@ export function NewProjectPage() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogEntry[]>(() => getRecommendedCodexModels());
   const [defaultModel, setDefaultModel] = useState("");
   const [sandboxMode, setSandboxMode] = useState<"process" | "docker">(isControlPlaneEnabled ? "docker" : "process");
+  const [budget, setBudget] = useState(30);
   const [maxHours, setMaxHours] = useState(12);
+  const [maxModelCalls, setMaxModelCalls] = useState(200);
   const [maxNativeTurns, setMaxNativeTurns] = useState(40);
+  const [maxNativeTokens, setMaxNativeTokens] = useState(250000);
 
   useEffect(() => {
     if (!isControlPlaneEnabled) return;
@@ -70,7 +73,7 @@ export function NewProjectPage() {
     const effectiveProvider = executionMode === "native" ? "codex-cli" : modelProvider;
     saveUserPreferences({ modelProvider: effectiveProvider, modelName: modelName.trim() || undefined });
     const settings: Partial<ProjectSettings> = {
-      budgetLimit: 0, maxHours, maxModelCalls: 0, executionMode, maxNativeTurns, maxNativeTokens: 0,
+      budgetLimit: budget, maxHours, maxModelCalls, executionMode, maxNativeTurns, maxNativeTokens,
       modelProvider: effectiveProvider, modelName: modelName.trim() || undefined, sandboxMode,
       networkPolicy: "allowlist", requireExternalApproval: true, productionBlocked: true, localActions: true,
     };
@@ -87,16 +90,16 @@ export function NewProjectPage() {
       <KeyValue label="샌드박스" value="workspace-write" tone="success" />
       <KeyValue label="네트워크" value="정책 경계" tone="success" />
       <KeyValue label="최대 작업 구간" value={maxNativeTurns} />
-      <KeyValue label="토큰 상한" value="무제한" tone="success" />
+      <KeyValue label="토큰 상한" value={`${Math.round(maxNativeTokens / 1000)}k`} />
     </InspectorCard>
-    <InspectorCard title="리소스 한도" meta="테스트 모드">
-      <KeyValue label="비용 hard stop" value="없음" tone="success" /><KeyValue label="모델 호출 상한" value="무제한" tone="success" /><KeyValue label="최대 시간" value={`${maxHours}h`} /><KeyValue label="재탐색" value="60m" />
+    <InspectorCard title="예산 & 한도" meta="수정 가능">
+      <KeyValue label="예산" value={`$${budget}`} /><KeyValue label="최대 시간" value={`${maxHours}h`} /><KeyValue label="모델 호출" value={maxModelCalls} /><KeyValue label="재탐색" value="60m" />
     </InspectorCard>
     <InspectorCard title="사람 경계" meta="강제">
       <strong className="text-success new-boundary-title">자동</strong><p className="product-muted">로컬 파일 · 테스트 · 분석 · 되돌릴 수 있는 작업</p>
       <strong className="text-danger new-boundary-title">승인 필요</strong><p className="product-muted">외부 배포 · 결제 · 데이터 삭제 · 되돌릴 수 없는 외부 영향</p>
     </InspectorCard>
-    <InspectorCard title="고급 설정" meta={advancedOpen ? "열림" : "접힘"}><p className="product-muted">Model · sandbox · runtime time · discovery cadence · preview URL</p></InspectorCard>
+    <InspectorCard title="고급 설정" meta={advancedOpen ? "열림" : "접힘"}><p className="product-muted">Model · sandbox · budgets · discovery cadence · preview URL</p></InspectorCard>
   </>;
 
   return <ProductWorkspace inspector={inspector}>
@@ -131,9 +134,10 @@ export function NewProjectPage() {
 
       {advancedOpen && <Surface className="figma-advanced-settings"><SurfaceHeader title="고급 설정" meta="필요할 때만" />
         <SettingRow label="실행 방식"><select value={executionMode} onChange={(event) => { const mode = event.target.value as "native" | "atomic"; setExecutionMode(mode); if (mode === "native") setModelProvider("codex-cli"); }}><option value="native">지속형 Codex</option><option value="atomic">Atomic 호환 실행</option></select></SettingRow>
+        <SettingRow label="예산"><input type="number" min="1" max="1000" value={budget} onChange={(event) => setBudget(Number(event.target.value) || 1)} /></SettingRow>
         <SettingRow label="최대 실행 시간"><input type="number" min="1" max="168" value={maxHours} onChange={(event) => setMaxHours(Number(event.target.value) || 1)} /></SettingRow>
-        {executionMode === "native" && <SettingRow label="최대 작업 구간"><input type="number" min="1" max="1000" value={maxNativeTurns} onChange={(event) => setMaxNativeTurns(Number(event.target.value) || 1)} /></SettingRow>}
-        <SettingRow label="비용 / 토큰 / 모델 호출"><strong className="text-success">무제한 · 사용량만 기록</strong></SettingRow>
+        <SettingRow label="모델 호출 상한"><input type="number" min="1" max="10000" value={maxModelCalls} onChange={(event) => setMaxModelCalls(Number(event.target.value) || 1)} /></SettingRow>
+        {executionMode === "native" && <><SettingRow label="최대 작업 구간"><input type="number" min="1" max="1000" value={maxNativeTurns} onChange={(event) => setMaxNativeTurns(Number(event.target.value) || 1)} /></SettingRow><SettingRow label="Codex 토큰 상한"><input type="number" min="1000" max="10000000" value={maxNativeTokens} onChange={(event) => setMaxNativeTokens(Number(event.target.value) || 1000)} /></SettingRow></>}
         <SettingRow label="모델"><div className="figma-model-row"><select value={availableModels.some((model) => model.id === selectedModel) ? selectedModel : ""} onChange={(event) => setModelName(event.target.value)}><option value="">기본 모델</option>{availableModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}</select><input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="직접 모델 ID" /></div></SettingRow>
         <SettingRow label="도구 샌드박스"><select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as "process" | "docker")}><option value="docker">Docker</option><option value="process">Host process</option></select></SettingRow>
       </Surface>}
