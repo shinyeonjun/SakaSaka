@@ -568,5 +568,10 @@ export function appendCoverageSnapshot(project: AutonomyProjectState, risk: numb
 export function hasMaterialUnresolvedWork(project: AutonomyProjectState): boolean {
   if (activeMission(project)) return true;
   if (project.gaps.some((gap) => !["RESOLVED", "DEFERRED"].includes(gap.status) && gap.priority >= 0.55)) return true;
-  return (project.surfaces ?? []).some((surface) => surface.status === "UNEXPLORED" && surface.risk >= 0.7);
+  const specialists = activeScoutSpecialists(project);
+  return (project.surfaces ?? []).some((surface) =>
+    surface.status === "UNEXPLORED"
+    && surface.risk >= 0.7
+    && specialists.some((specialist) => specialist.surfaceRefs.includes(surface.key))
+  );
 }
