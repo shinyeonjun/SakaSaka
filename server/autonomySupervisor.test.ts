@@ -7,6 +7,7 @@ import { createProject, getProject } from "../src/runtime";
 import type { AppState } from "../src/types";
 import type { CycleStateStore } from "./cycleCoordinator";
 import { FileAutonomyStore } from "./autonomyStore";
+import { specialistKey } from "./autonomyDomain";
 import { rebaseAutonomyForIntent, runAutonomyPostlude, runAutonomyPrelude } from "./autonomySupervisor";
 import type { DecisionGateway } from "./decisionGateway";
 
@@ -113,7 +114,7 @@ describe("autonomy supervisor", () => {
     expect(first?.specialists?.some((specialist) => specialist.name === "Migration compatibility specialist" && specialist.origin === "discovered" && !specialist.lastRunAt)).toBe(true);
 
     const second = await runAutonomyPrelude(store, "project-dynamic-scout", { store: fileStore, decisionGateway: gateway, scoutRunner: dynamicRunner as never, discoveryParallelism: 2, now: () => new Date("2026-09-17T00:00:01Z") });
-    expect(seenPurposes.some((purpose) => purpose.includes("migration-compatibility"))).toBe(true);
+    expect(seenPurposes).toContain(`coverage-scout-${specialistKey("Migration compatibility specialist")}`);
     expect(second?.specialists?.find((specialist) => specialist.name === "Migration compatibility specialist")?.lastRunAt).toBeTruthy();
     expect(second?.gaps.some((gap) => gap.title === "Upgrade fixture missing")).toBe(true);
   });
