@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { categoryLabel, categorySignal, coverageCategories, gapHistory, latestControlPlane, priorityBand, relativeAge, type ControlPlaneGapView } from "../controlPlaneView";
-import { autonomyCounts, autonomyGapHistory, unresolvedAutonomyGaps } from "../autonomyProjection";
+import { activeAutonomySpecialists, autonomyCounts, autonomyGapHistory, autonomySurfaces, unresolvedAutonomyGaps } from "../autonomyProjection";
 import { useAutonomyProjection } from "../useAutonomyProjection";
 import { getProject } from "../runtime";
 import { useApp } from "../store";
 import { InspectorCard, InspectorHeader, KeyValue, ProductHeader, ProductWorkspace, StatusDot, StatusPill, Surface, SurfaceHeader } from "../components/ProductWorkspace";
 
-const filters = ["전체 영역", "열린 갭", "미탐색", "검증 완료", "최근 발견"] as const;
+const filters = ["전체 갭", "열린 갭", "검증 완료", "최근 발견"] as const;
 
 export function CoveragePage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
@@ -18,25 +18,28 @@ export function CoveragePage({ projectId }: { projectId: string }) {
   const gaps = autonomy?.available ? fullGaps : legacyGaps;
   const current = autonomy?.available ? unresolvedAutonomyGaps(autonomy) : control?.gaps ?? [];
   const counts = autonomyCounts(autonomy);
-  const [filter, setFilter] = useState<(typeof filters)[number]>("전체 영역");
+  const specialists = activeAutonomySpecialists(autonomy);
+  const liveSurfaces = autonomySurfaces(autonomy);
+  const surfaces = autonomy?.available && liveSurfaces.length ? liveSurfaces : coverageCategories.map((name) => ({ key: `surface:${name.toLowerCase()}`, name, origin: "baseline" as const, status: categorySignal(state, projectId, name).state === "quiet" ? "UNEXPLORED" as const : "EXPLORED" as const, risk: categorySignal(state, projectId, name).risk }));
+  const [filter, setFilter] = useState<(typeof filters)[number]>("전체 갭");
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const filteredGaps = useMemo(() => {
     const sorted = [...gaps].sort((a, b) => b.priority - a.priority || b.observedAt.localeCompare(a.observedAt));
     if (!autonomy?.available) return filter === "최근 발견" ? [...gaps].sort((a, b) => b.observedAt.localeCompare(a.observedAt)) : (current.length ? current : sorted);
     if (filter === "열린 갭") return sorted.filter((gap) => ["OPEN", "INVESTIGATING", "BLOCKED"].includes(gap.status ?? "OPEN"));
-    if (filter === "미탐색") return sorted.filter((gap) => gap.status === "UNEXPLORED");
     if (filter === "검증 완료") return sorted.filter((gap) => gap.status === "RESOLVED");
     if (filter === "최근 발견") return [...gaps].sort((a, b) => b.observedAt.localeCompare(a.observedAt));
     return sorted;
   }, [autonomy?.available, current, filter, gaps]);
   const selected = gaps.find((gap) => gap.id === selectedId) ?? filteredGaps[0] ?? gaps[0];
-  const seenCategories = useMemo(() => new Set(gaps.map((gap) => gap.category)), [gaps]);
   const unresolved = counts
     ? counts.open + counts.investigating + counts.blocked
     : (control?.counts.open ?? 0) + (control?.counts.investigating ?? 0) + (control?.counts.blocked ?? 0);
-  const exploredCategories = coverageCategories.filter((category) => seenCategories.has(category) || categorySignal(state, projectId, category).state !== "quiet").length;
-  const coveragePercent = counts ? Math.round(counts.convergence * 100) : Math.round((exploredCategories / coverageCategories.length) * 100);
-  const unexplored = counts?.unexplored ?? control?.counts.unexplored ?? 0;
+  const exploredSurfaces = surfaces.filter((surface) => surface.status === "EXPLORED").length;
+  const coveragePercent = counts ? Math.round(counts.convergence * 100) : Math.round((exploredSurfaces / Math.max(1, surfaces.length)) * 100);
+  const unexplored = surfaces.filter((surface) => surface.status === "UNEXPLORED").length;
+  const baselineCount = surfaces.filter((surface) => surface.origin === "baseline").length;
+  const discoveredCount = surfaces.filter((surface) => surface.origin === "discovered").length;
   const highPriority = counts?.highPriority ?? control?.counts.highPriority ?? 0;
   const observedAt = counts?.observedAt || control?.observedAt;
 
@@ -69,38 +72,40 @@ export function CoveragePage({ projectId }: { projectId: string }) {
   </>;
 
   return <ProductWorkspace inspector={inspector}>
-    <ProductHeader eyebrow="탐색 범위 & 갭" title="무엇을 알고 있고, 무엇이 아직 비어 있는가" description="taxonomy + 독립 scout + runtime evidence로 problem space를 계속 갱신" actions={<><StatusPill tone="evidence">{coveragePercent}% 수렴</StatusPill><StatusPill tone="warning">{unresolved}개 열림</StatusPill></>} />
+    <ProductHeader eyebrow="탐색 범위 & 갭" title="문제 공간 자체도 스스로 확장합니다" description="baseline seed + 동적 Surface Registry + 독립 specialist + runtime evidence로 problem space 자체를 계속 확장" actions={<><StatusPill tone="evidence">{coveragePercent}% 수렴</StatusPill><StatusPill tone="warning">{unresolved}개 열림</StatusPill></>} />
 
     <div className="product-filters">{filters.map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>
 
     <div className="coverage-content-grid">
       <Surface className="coverage-domains">
-        <SurfaceHeader title="영역별 탐색" meta="17개 영역" />
-        <div className="domain-grid">{coverageCategories.map((category) => {
+        <SurfaceHeader title="Problem Surface Registry" meta={`${surfaces.length}개 · 기본 ${baselineCount} + 발견 ${discoveredCount}`} />
+        <div className="domain-grid">{surfaces.map((surface) => {
+          const category = surface.name;
           const categoryGaps = gaps.filter((gap) => gap.category === category);
           const unresolvedCategory = current.filter((gap) => gap.category === category);
           const legacySignal = categorySignal(state, projectId, category);
-          const risk = unresolvedCategory.length ? Math.max(...unresolvedCategory.map((gap) => gap.priority)) : categoryGaps.length ? Math.max(...categoryGaps.map((gap) => gap.priority)) : legacySignal.risk;
-          const resolvedCount = categoryGaps.filter((gap) => gap.status === "RESOLVED").length;
-          const tone = unresolvedCategory.length ? (risk >= .85 ? "danger" : risk >= .65 ? "warning" : "evidence") : categoryGaps.length || legacySignal.state === "seen" ? "success" : "neutral";
-          return <button key={category} className="domain-card" onClick={() => { const first = unresolvedCategory[0] ?? categoryGaps[0] ?? current.find((gap) => gap.category === category) ?? gaps.find((gap) => gap.category === category); if (first) setSelectedId(first.id); }}>
+          const risk = unresolvedCategory.length ? Math.max(...unresolvedCategory.map((gap) => gap.priority)) : categoryGaps.length ? Math.max(...categoryGaps.map((gap) => gap.priority)) : Math.max(surface.risk, legacySignal.risk);
+          const tone = unresolvedCategory.length ? (risk >= .85 ? "danger" : risk >= .65 ? "warning" : "evidence") : surface.status === "EXPLORED" ? "success" : "neutral";
+          return <button key={surface.key} className="domain-card" onClick={() => { const first = unresolvedCategory[0] ?? categoryGaps[0] ?? current.find((gap) => gap.category === category) ?? gaps.find((gap) => gap.category === category); if (first) setSelectedId(first.id); }}>
             <span className="domain-name"><StatusDot tone={tone} />{categoryLabel(category)}</span>
-            <strong className={`text-${tone}`}>{unresolvedCategory.length ? `${Math.round((1 - Math.min(.9, risk * .7)) * 100)}%` : resolvedCount ? "검증됨" : categoryGaps.length ? "검토됨" : "미탐색"}</strong>
-            <small>{unresolvedCategory.length ? `${unresolvedCategory.length}개 미해결` : categoryGaps.length ? `${categoryGaps.length}개 기록` : "새 scout 대상"}</small>
+            <strong className={`text-${tone}`}>{unresolvedCategory.length ? `${Math.round((1 - Math.min(.9, risk * .7)) * 100)}%` : surface.status === "EXPLORED" ? "탐색됨" : "미탐색"}</strong>
+            <small>{surface.origin === "discovered" ? "AI 발견" : "기본 seed"} · {unresolvedCategory.length ? `${unresolvedCategory.length}개 미해결` : categoryGaps.length ? `${categoryGaps.length}개 기록` : "gap 없음"}</small>
           </button>;
         })}</div>
       </Surface>
 
       <Surface className="coverage-gaps">
-        <SurfaceHeader title={filter === "전체 영역" ? "Gap Graph" : filter} meta={`${filteredGaps.length}개 · 가치순`} />
+        <SurfaceHeader title={filter === "전체 갭" ? "Gap Graph" : filter} meta={`${filteredGaps.length}개 · 가치순`} />
         <div className="gap-list coverage-gap-list">{filteredGaps.slice(0, 18).map((gap) => <GapButton key={gap.id} gap={gap} selected={selected?.id === gap.id} onClick={() => setSelectedId(gap.id)} />)}{!filteredGaps.length && <div className="product-empty">이 필터에 해당하는 gap이 없습니다.</div>}</div>
       </Surface>
     </div>
 
     <div className="discovery-strip">
-      <Discovery label="전체 갭" value={`${gaps.length}`} tone="evidence" />
+      <Discovery label="기본 영역" value={`${baselineCount}`} tone="neutral" />
+      <Discovery label="AI 발견 영역" value={`${discoveredCount}`} tone="evidence" />
+      <Discovery label="활성 전문 관점" value={`${specialists.length}`} tone="working" />
+      <Discovery label="미탐색 영역" value={`${unexplored}`} tone="warning" />
       <Discovery label="현재 중요 갭" value={`${highPriority}`} tone="warning" />
-      <Discovery label="미탐색" value={`${unexplored}`} tone="neutral" />
       <Discovery label="최근 갱신" value={observedAt ? relativeAge(observedAt) : "-"} tone="working" />
     </div>
   </ProductWorkspace>;

@@ -3,6 +3,35 @@ import type { ControlPlaneGapView, ControlPlaneMissionView } from "./controlPlan
 export type AutonomyGapStatus = "UNEXPLORED" | "OPEN" | "INVESTIGATING" | "BLOCKED" | "RESOLVED" | "DEFERRED";
 export type AutonomyMissionStatus = "PROPOSED" | "READY" | "RUNNING" | "VERIFYING" | "SUCCEEDED" | "BLOCKED" | "FAILED" | "SUPERSEDED" | "CANCELLED";
 
+export interface AutonomySurfaceProjection {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  parentKey?: string;
+  origin: "baseline" | "discovered" | "human" | "standard";
+  status: "UNEXPLORED" | "EXPLORED" | "RETIRED";
+  risk: number;
+  sourceRefs: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastExploredAt?: string;
+}
+
+export interface AutonomySpecialistProjection {
+  id: string;
+  key: string;
+  name: string;
+  focus: string;
+  rationale?: string;
+  surfaceRefs: string[];
+  origin: "baseline" | "discovered" | "human";
+  status: "ACTIVE" | "RETIRED";
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+}
+
 export interface AutonomyGapProjection {
   id: string;
   category: string;
@@ -68,10 +97,20 @@ export interface AutonomyProjectProjection {
   intentVersion?: number;
   updatedAt?: string;
   lastDiscoveryAt?: string;
+  surfaces: AutonomySurfaceProjection[];
+  specialists: AutonomySpecialistProjection[];
   gaps: AutonomyGapProjection[];
   missions: AutonomyMissionProjection[];
   decisions: AutonomyDecisionProjection[];
   coverageSnapshots: AutonomyCoverageProjection[];
+}
+
+export function autonomySurfaces(projection: AutonomyProjectProjection | undefined): AutonomySurfaceProjection[] {
+  return projection?.available ? projection.surfaces.filter((surface) => surface.status !== "RETIRED") : [];
+}
+
+export function activeAutonomySpecialists(projection: AutonomyProjectProjection | undefined): AutonomySpecialistProjection[] {
+  return projection?.available ? projection.specialists.filter((specialist) => specialist.status === "ACTIVE") : [];
 }
 
 const terminalMission = new Set<AutonomyMissionStatus>(["SUCCEEDED", "SUPERSEDED", "CANCELLED"]);
@@ -146,18 +185,20 @@ export function autonomyCounts(projection: AutonomyProjectProjection | undefined
     risk: latest.risk,
     observedAt: latest.createdAt,
   };
-  const counts = { open: 0, investigating: 0, blocked: 0, unexplored: 0, resolved: 0, highPriority: 0, convergence: 0, risk: 0, observedAt: projection.updatedAt ?? "" };
+  const counts = { open: 0, investigating: 0, blocked: 0, unexplored: projection.surfaces.filter((surface) => surface.status === "UNEXPLORED").length, resolved: 0, highPriority: 0, convergence: 0, risk: 0, observedAt: projection.updatedAt ?? "" };
   for (const gap of projection.gaps) {
     if (gap.status === "OPEN") counts.open += 1;
     else if (gap.status === "INVESTIGATING") counts.investigating += 1;
     else if (gap.status === "BLOCKED") counts.blocked += 1;
-    else if (gap.status === "UNEXPLORED") counts.unexplored += 1;
     else if (gap.status === "RESOLVED") counts.resolved += 1;
     if (!closedGap.has(gap.status) && gap.priority >= .75) counts.highPriority += 1;
     if (!closedGap.has(gap.status)) counts.risk = Math.max(counts.risk, gap.priority);
   }
-  const total = projection.gaps.length;
-  counts.convergence = total ? counts.resolved / total : 0;
+  const activeSurfaces = projection.surfaces.filter((surface) => surface.status !== "RETIRED");
+  const surfaceCoverage = activeSurfaces.length ? activeSurfaces.filter((surface) => surface.status === "EXPLORED").length / activeSurfaces.length : 1;
+  const materialGaps = projection.gaps.filter((gap) => gap.status !== "DEFERRED");
+  const gapClosure = materialGaps.length ? materialGaps.filter((gap) => gap.status === "RESOLVED").length / materialGaps.length : 1;
+  counts.convergence = Math.max(0, Math.min(1, surfaceCoverage * .4 + gapClosure * .6));
   return counts;
 }
 

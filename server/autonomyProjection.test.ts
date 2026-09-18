@@ -11,6 +11,8 @@ describe("autonomy UI projection", () => {
       missions: [],
       decisions: [],
       coverageSnapshots: [],
+      surfaces: [],
+      specialists: [],
     });
   });
 
