@@ -379,9 +379,12 @@ async function prioritize(store: CycleStateStore, projectId: string, autonomy: A
 
 function controlPlaneSummary(autonomy: AutonomyProjectState): string {
   const mission = activeMission(autonomy), counts = coverageCounts(autonomy), top = autonomy.gaps.filter((gap) => !["RESOLVED", "DEFERRED"].includes(gap.status)).sort((a, b) => b.priority - a.priority).slice(0, 5);
+  const surfaces = (autonomy.surfaces ?? []).filter((surface) => surface.status !== "RETIRED");
+  const discoveredSurfaces = surfaces.filter((surface) => surface.origin === "discovered").length;
+  const specialists = activeScoutSpecialists(autonomy);
   const provider = decisionProviderStatus();
   return [
-    `SakaSaka autonomy: decision=${provider.effective}; open=${counts.open}, investigating=${counts.investigating}, blocked=${counts.blocked}, unexplored=${counts.unexplored}, highPriority=${counts.highPriorityOpen}.`,
+    `SakaSaka autonomy: decision=${provider.effective}; open=${counts.open}, investigating=${counts.investigating}, blocked=${counts.blocked}, unexplored=${counts.unexplored}, highPriority=${counts.highPriorityOpen}; surfaces=${surfaces.length}, discoveredSurfaces=${discoveredSurfaces}, specialists=${specialists.length}.`,
     mission ? `Active mission [${mission.role}] ${mission.objective}. Evidence contract: ${mission.evidenceContract.join(" | ")}.` : "No active specialist mission.",
     top.length ? `Priority gaps: ${top.map((gap) => `${gap.id} ${gap.category}/${gap.title}(${gap.priority.toFixed(2)})`).join("; ")}.` : "No unresolved priority gaps.",
     "This is control-plane state, not permission to bypass policy or proof that a product claim is true.",
@@ -406,7 +409,7 @@ async function publishControlPlaneEvidence(store: CycleStateStore, projectId: st
       source: "sakasaka-autonomy",
       createdAt: at,
       evaluator: "autonomy-control-plane",
-      evaluatorVersion: "2",
+      evaluatorVersion: "3",
       rawRef: `autonomy://${projectId}/${digest.slice(0, 16)}`,
       metadata: {
         open: counts.open,
@@ -414,6 +417,9 @@ async function publishControlPlaneEvidence(store: CycleStateStore, projectId: st
         investigating: counts.investigating,
         blocked: counts.blocked,
         highPriorityOpen: counts.highPriorityOpen,
+        surfaces: (next.surfaces ?? []).filter((surface) => surface.status !== "RETIRED").length,
+        discoveredSurfaces: (next.surfaces ?? []).filter((surface) => surface.status !== "RETIRED" && surface.origin === "discovered").length,
+        activeSpecialists: activeScoutSpecialists(next).length,
         activeMission: Boolean(mission),
       },
     };
