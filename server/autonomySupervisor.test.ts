@@ -28,7 +28,7 @@ const gateway: DecisionGateway = {
   }),
 };
 
-const scoutRunner = async <T,>() => ({ value: { gaps: [{ category: "Security", title: "OAuth token storage", summary: "Storage and rotation have not been verified", impact: .95, uncertainty: .8, novelty: .9, urgency: .9, roleHint: "OAuth security specialist", evidenceNeeded: ["token storage code"], sourceRefs: [] }] } as T, usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 } });
+const scoutRunner = async <T,>() => ({ value: { gaps: [{ category: "Security", title: "OAuth token storage", summary: "Storage and rotation have not been verified", impact: .95, uncertainty: .8, novelty: .9, urgency: .9, roleHint: "OAuth security specialist", evidenceNeeded: ["token storage code"], sourceRefs: [] }], newSurfaces: [], newSpecialists: [] } as T, usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 } });
 
 describe("autonomy supervisor", () => {
   it("discovers gaps, creates one mission, and publishes UNCERTAIN control-plane evidence without overwriting World runtime", async () => {
@@ -82,10 +82,39 @@ describe("autonomy supervisor", () => {
     const rebased = rebaseAutonomyForIntent(autonomy!, 2, "2026-09-17T01:00:00Z");
     expect(rebased.intentVersion).toBe(2);
     expect(rebased.missions.some((mission) => mission.status === "SUPERSEDED")).toBe(true);
-    expect(rebased.gaps.filter((gap) => gap.source === "taxonomy").every((gap) => gap.status === "UNEXPLORED")).toBe(true);
+    expect(rebased.surfaces?.filter((surface) => surface.status !== "RETIRED").every((surface) => surface.status === "UNEXPLORED")).toBe(true);\n    expect(rebased.specialists?.filter((specialist) => specialist.status === "ACTIVE").every((specialist) => specialist.lastRunAt === undefined)).toBe(true);
     expect(rebased.gaps.some((gap) => gap.title === "Primary intent outcome v1" && gap.status === "DEFERRED")).toBe(true);
     expect(rebased.lastDiscoveryAt).toBeUndefined();
     expect(rebased.lastPublishedDigest).toBeUndefined();
+  });
+
+  it("persists newly discovered surfaces and schedules a newly proposed specialist on the next discovery cycle", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sakasaka-autonomy-test-")); directories.push(directory);
+    const fileStore = new FileAutonomyStore(join(directory, "autonomy.json"));
+    const initial = createProject(createEmptyState(), "Build a durable local-first desktop app", "project-dynamic-scout", { workspacePath: directory, modelProvider: "codex-cli", executionMode: "native" });
+    const store = memoryStore(initial);
+    const seenPurposes: string[] = [];
+    const dynamicRunner = async <T,>(request: { purpose: string }) => {
+      seenPurposes.push(request.purpose);
+      const isDynamic = request.purpose.includes("migration-compatibility");
+      return {
+        value: {
+          gaps: isDynamic ? [{ category: "Migration & Compatibility", title: "Upgrade fixture missing", summary: "No persisted-data upgrade fixture exists.", impact: .8, uncertainty: .8, novelty: .8, urgency: .7, roleHint: "Migration compatibility specialist", evidenceNeeded: ["upgrade fixture"], sourceRefs: ["storage.ts"] }] : [],
+          newSurfaces: isDynamic ? [] : [{ name: "Migration & Compatibility", description: "Persisted local data needs upgrade and rollback semantics.", parentName: "Data", rationale: "Local-first persistence evolves across releases.", risk: .8, sourceRefs: ["storage.ts"] }],
+          newSpecialists: isDynamic ? [] : [{ name: "Migration compatibility specialist", focus: "Inspect schema evolution, import/export compatibility, rollback, and upgrade safety.", rationale: "This concern needs a dedicated compatibility lens.", surfaceNames: ["Migration & Compatibility"] }],
+        } as T,
+        usage: { modelVersion: "test", tokens: 0, cost: 0, latencyMs: 1 },
+      };
+    };
+
+    const first = await runAutonomyPrelude(store, "project-dynamic-scout", { store: fileStore, decisionGateway: gateway, scoutRunner: dynamicRunner as never, discoveryParallelism: 1, now: () => new Date("2026-09-17T00:00:00Z") });
+    expect(first?.surfaces?.some((surface) => surface.name === "Migration & Compatibility" && surface.origin === "discovered")).toBe(true);
+    expect(first?.specialists?.some((specialist) => specialist.name === "Migration compatibility specialist" && specialist.origin === "discovered" && !specialist.lastRunAt)).toBe(true);
+
+    const second = await runAutonomyPrelude(store, "project-dynamic-scout", { store: fileStore, decisionGateway: gateway, scoutRunner: dynamicRunner as never, discoveryParallelism: 2, now: () => new Date("2026-09-17T00:00:01Z") });
+    expect(seenPurposes.some((purpose) => purpose.includes("migration-compatibility"))).toBe(true);
+    expect(second?.specialists?.find((specialist) => specialist.name === "Migration compatibility specialist")?.lastRunAt).toBeTruthy();
+    expect(second?.gaps.some((gap) => gap.title === "Upgrade fixture missing")).toBe(true);
   });
 
   it("counts scouts and bounded decisions against the project's hard model-call cap", async () => {
