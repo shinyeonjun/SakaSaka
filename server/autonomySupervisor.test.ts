@@ -82,7 +82,8 @@ describe("autonomy supervisor", () => {
     const rebased = rebaseAutonomyForIntent(autonomy!, 2, "2026-09-17T01:00:00Z");
     expect(rebased.intentVersion).toBe(2);
     expect(rebased.missions.some((mission) => mission.status === "SUPERSEDED")).toBe(true);
-    expect(rebased.surfaces?.filter((surface) => surface.status !== "RETIRED").every((surface) => surface.status === "UNEXPLORED")).toBe(true);\n    expect(rebased.specialists?.filter((specialist) => specialist.status === "ACTIVE").every((specialist) => specialist.lastRunAt === undefined)).toBe(true);
+    expect(rebased.surfaces?.filter((surface) => surface.status !== "RETIRED").every((surface) => surface.status === "UNEXPLORED")).toBe(true);
+    expect(rebased.specialists?.filter((specialist) => specialist.status === "ACTIVE").every((specialist) => specialist.lastRunAt === undefined)).toBe(true);
     expect(rebased.gaps.some((gap) => gap.title === "Primary intent outcome v1" && gap.status === "DEFERRED")).toBe(true);
     expect(rebased.lastDiscoveryAt).toBeUndefined();
     expect(rebased.lastPublishedDigest).toBeUndefined();
