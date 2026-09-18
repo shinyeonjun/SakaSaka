@@ -8,6 +8,8 @@ export function projectAutonomyState(projectId: string, project: AutonomyProject
     missions: [],
     decisions: [],
     coverageSnapshots: [],
+    surfaces: [],
+    specialists: [],
   };
 
   return {
@@ -16,6 +18,33 @@ export function projectAutonomyState(projectId: string, project: AutonomyProject
     intentVersion: project.intentVersion,
     updatedAt: project.updatedAt,
     lastDiscoveryAt: project.lastDiscoveryAt,
+    surfaces: (project.surfaces ?? []).map((surface) => ({
+      id: surface.id,
+      key: surface.key,
+      name: surface.name,
+      description: surface.description,
+      parentKey: surface.parentKey,
+      origin: surface.origin,
+      status: surface.status,
+      risk: surface.risk,
+      sourceRefs: [...surface.sourceRefs],
+      createdAt: surface.createdAt,
+      updatedAt: surface.updatedAt,
+      lastExploredAt: surface.lastExploredAt,
+    })),
+    specialists: (project.specialists ?? []).map((specialist) => ({
+      id: specialist.id,
+      key: specialist.key,
+      name: specialist.name,
+      focus: specialist.focus,
+      rationale: specialist.rationale,
+      surfaceRefs: [...specialist.surfaceRefs],
+      origin: specialist.origin,
+      status: specialist.status,
+      createdAt: specialist.createdAt,
+      updatedAt: specialist.updatedAt,
+      lastRunAt: specialist.lastRunAt,
+    })),
     gaps: project.gaps.map((gap) => ({
       id: gap.id,
       category: gap.category,
