@@ -232,7 +232,7 @@ async function accountUsage(store: CycleStateStore, projectId: string, usage: Mo
 
 async function runScout(specialist: ScoutSpecialist, stateView: Record<string, unknown>, workspacePath: string, runner: typeof runCodexStructured, signal?: AbortSignal): Promise<CodexStructuredResult<ScoutOutput>> {
   return runner<ScoutOutput>({
-    purpose: `coverage-scout-${specialist.key.slice(-32)}`,
+    purpose: `coverage-scout-${specialist.key}`,
     signal,
     cwd: workspacePath,
     toolMode: "read-only",
