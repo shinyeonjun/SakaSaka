@@ -3,6 +3,35 @@ import type { ControlPlaneGapView, ControlPlaneMissionView } from "./controlPlan
 export type AutonomyGapStatus = "UNEXPLORED" | "OPEN" | "INVESTIGATING" | "BLOCKED" | "RESOLVED" | "DEFERRED";
 export type AutonomyMissionStatus = "PROPOSED" | "READY" | "RUNNING" | "VERIFYING" | "SUCCEEDED" | "BLOCKED" | "FAILED" | "SUPERSEDED" | "CANCELLED";
 
+export interface AutonomySurfaceProjection {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  parentKey?: string;
+  origin: "baseline" | "discovered" | "human" | "standard";
+  status: "UNEXPLORED" | "EXPLORED" | "RETIRED";
+  risk: number;
+  sourceRefs: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastExploredAt?: string;
+}
+
+export interface AutonomySpecialistProjection {
+  id: string;
+  key: string;
+  name: string;
+  focus: string;
+  rationale?: string;
+  surfaceRefs: string[];
+  origin: "baseline" | "discovered" | "human";
+  status: "ACTIVE" | "RETIRED";
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+}
+
 export interface AutonomyGapProjection {
   id: string;
   category: string;
@@ -68,10 +97,20 @@ export interface AutonomyProjectProjection {
   intentVersion?: number;
   updatedAt?: string;
   lastDiscoveryAt?: string;
+  surfaces: AutonomySurfaceProjection[];
+  specialists: AutonomySpecialistProjection[];
   gaps: AutonomyGapProjection[];
   missions: AutonomyMissionProjection[];
   decisions: AutonomyDecisionProjection[];
   coverageSnapshots: AutonomyCoverageProjection[];
+}
+
+export function autonomySurfaces(projection: AutonomyProjectProjection | undefined): AutonomySurfaceProjection[] {
+  return projection?.available ? projection.surfaces.filter((surface) => surface.status !== "RETIRED") : [];
+}
+
+export function activeAutonomySpecialists(projection: AutonomyProjectProjection | undefined): AutonomySpecialistProjection[] {
+  return projection?.available ? projection.specialists.filter((specialist) => specialist.status === "ACTIVE") : [];
 }
 
 const terminalMission = new Set<AutonomyMissionStatus>(["SUCCEEDED", "SUPERSEDED", "CANCELLED"]);
