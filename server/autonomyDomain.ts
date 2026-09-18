@@ -247,11 +247,11 @@ function seedSpecialists(projectId: string, at: string, id: IdFactory): ScoutSpe
 }
 
 export function ensureAutonomyRegistries(project: AutonomyProjectState, at: string, id: IdFactory): AutonomyProjectState {
-  if (project.surfaces?.length && project.specialists?.length) return project;
   const seededSurfaces = seedSurfaces(project.projectId, at, id);
   const seededSpecialists = seedSpecialists(project.projectId, at, id);
   const legacySurfaceNames = [...new Set(project.gaps.map((gap) => boundedText(gap.category, 120)).filter(Boolean))];
-  const surfaces = [...(project.surfaces ?? seededSurfaces)];
+  const surfaces = [...(project.surfaces?.length ? project.surfaces : seededSurfaces)];
+
   for (const name of legacySurfaceNames) {
     const key = surfaceKey(name);
     if (surfaces.some((surface) => surface.key === key)) continue;
@@ -264,7 +264,20 @@ export function ensureAutonomyRegistries(project: AutonomyProjectState, at: stri
       createdAt: at, updatedAt: at, lastExploredAt: at,
     });
   }
-  return { ...project, surfaces, specialists: project.specialists ?? seededSpecialists, updatedAt: at };
+
+  // Pre-registry releases created one synthetic taxonomy gap per baseline category.
+  // They are coverage placeholders, not observed project defects, so retire them
+  // from the real Gap Graph when loading into the dynamic-registry model.
+  let retiredLegacyGap = false;
+  const gaps = project.gaps.map((gap) => {
+    if (gap.source !== "taxonomy" || gap.status === "DEFERRED" || gap.status === "RESOLVED") return gap;
+    retiredLegacyGap = true;
+    return { ...gap, status: "DEFERRED" as const, priority: 0, resolvedAt: undefined, updatedAt: at };
+  });
+
+  const specialists = project.specialists?.length ? project.specialists : seededSpecialists;
+  if (project.surfaces?.length && project.specialists?.length && !retiredLegacyGap) return project;
+  return { ...project, gaps, surfaces, specialists, updatedAt: at };
 }
 
 export function createAutonomyProject(projectId: string, intentVersion: number, at: string, id: IdFactory): AutonomyProjectState {
