@@ -6,7 +6,7 @@ import { getProject } from "../runtime";
 import { useApp } from "../store";
 import { InspectorCard, InspectorHeader, KeyValue, ProductHeader, ProductWorkspace, StatusDot, StatusPill, Surface, SurfaceHeader } from "../components/ProductWorkspace";
 
-const filters = ["전체 영역", "열린 갭", "미탐색", "검증 완료", "최근 발견"] as const;
+const filters = ["전체 갭", "열린 갭", "검증 완료", "최근 발견"] as const;
 
 export function CoveragePage({ projectId }: { projectId: string }) {
   const { state, dispatch } = useApp();
@@ -21,13 +21,12 @@ export function CoveragePage({ projectId }: { projectId: string }) {
   const specialists = activeAutonomySpecialists(autonomy);
   const liveSurfaces = autonomySurfaces(autonomy);
   const surfaces = autonomy?.available && liveSurfaces.length ? liveSurfaces : coverageCategories.map((name) => ({ key: `surface:${name.toLowerCase()}`, name, origin: "baseline" as const, status: categorySignal(state, projectId, name).state === "quiet" ? "UNEXPLORED" as const : "EXPLORED" as const, risk: categorySignal(state, projectId, name).risk }));
-  const [filter, setFilter] = useState<(typeof filters)[number]>("전체 영역");
+  const [filter, setFilter] = useState<(typeof filters)[number]>("전체 갭");
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const filteredGaps = useMemo(() => {
     const sorted = [...gaps].sort((a, b) => b.priority - a.priority || b.observedAt.localeCompare(a.observedAt));
     if (!autonomy?.available) return filter === "최근 발견" ? [...gaps].sort((a, b) => b.observedAt.localeCompare(a.observedAt)) : (current.length ? current : sorted);
     if (filter === "열린 갭") return sorted.filter((gap) => ["OPEN", "INVESTIGATING", "BLOCKED"].includes(gap.status ?? "OPEN"));
-    if (filter === "미탐색") return sorted.filter((gap) => gap.status === "UNEXPLORED");
     if (filter === "검증 완료") return sorted.filter((gap) => gap.status === "RESOLVED");
     if (filter === "최근 발견") return [...gaps].sort((a, b) => b.observedAt.localeCompare(a.observedAt));
     return sorted;
@@ -73,7 +72,7 @@ export function CoveragePage({ projectId }: { projectId: string }) {
   </>;
 
   return <ProductWorkspace inspector={inspector}>
-    <ProductHeader eyebrow="탐색 범위 & 갭" title="무엇을 알고 있고, 무엇이 아직 비어 있는가" description="baseline seed + 동적 Surface Registry + 독립 specialist + runtime evidence로 problem space 자체를 계속 확장" actions={<><StatusPill tone="evidence">{coveragePercent}% 수렴</StatusPill><StatusPill tone="warning">{unresolved}개 열림</StatusPill></>} />
+    <ProductHeader eyebrow="탐색 범위 & 갭" title="문제 공간 자체도 스스로 확장합니다" description="baseline seed + 동적 Surface Registry + 독립 specialist + runtime evidence로 problem space 자체를 계속 확장" actions={<><StatusPill tone="evidence">{coveragePercent}% 수렴</StatusPill><StatusPill tone="warning">{unresolved}개 열림</StatusPill></>} />
 
     <div className="product-filters">{filters.map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>
 
@@ -96,7 +95,7 @@ export function CoveragePage({ projectId }: { projectId: string }) {
       </Surface>
 
       <Surface className="coverage-gaps">
-        <SurfaceHeader title={filter === "전체 영역" ? "Gap Graph" : filter} meta={`${filteredGaps.length}개 · 가치순`} />
+        <SurfaceHeader title={filter === "전체 갭" ? "Gap Graph" : filter} meta={`${filteredGaps.length}개 · 가치순`} />
         <div className="gap-list coverage-gap-list">{filteredGaps.slice(0, 18).map((gap) => <GapButton key={gap.id} gap={gap} selected={selected?.id === gap.id} onClick={() => setSelectedId(gap.id)} />)}{!filteredGaps.length && <div className="product-empty">이 필터에 해당하는 gap이 없습니다.</div>}</div>
       </Surface>
     </div>
