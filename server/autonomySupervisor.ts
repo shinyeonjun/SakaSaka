@@ -181,7 +181,15 @@ function needsDiscovery(autonomy: AutonomyProjectState, intentVersion: number, n
   if (autonomy.intentVersion !== intentVersion) return true;
   const activeSpecialists = activeScoutSpecialists(autonomy);
   if (activeSpecialists.some((specialist) => !specialist.lastRunAt)) return true;
-  if ((autonomy.surfaces ?? []).some((surface) => surface.status === "UNEXPLORED" && surface.origin === "discovered")) return true;
+
+  // A newly discovered surface triggers immediate follow-up only when a
+  // specialist actually claims that surface. Otherwise the general scout will
+  // revisit it on the normal review cadence instead of creating a tight loop.
+  const discoveredUnexplored = (autonomy.surfaces ?? []).filter((surface) => surface.status === "UNEXPLORED" && surface.origin === "discovered");
+  if (discoveredUnexplored.some((surface) => activeSpecialists.some((specialist) =>
+    specialist.surfaceRefs.includes(surface.key) && (!specialist.lastRunAt || Date.parse(specialist.lastRunAt) < Date.parse(surface.updatedAt))
+  ))) return true;
+
   if (!autonomy.lastDiscoveryAt) return true;
   const lastDiscovery = Date.parse(autonomy.lastDiscoveryAt);
   if (!Number.isFinite(lastDiscovery) || nowMs - lastDiscovery >= discoveryIntervalMs()) return true;
@@ -212,7 +220,7 @@ async function accountUsage(store: CycleStateStore, projectId: string, usage: Mo
       type: "MODEL_TURN" as const,
       actor: "system" as const,
       summary: `Autonomy model call · ${purpose}`,
-      detail: "Coverage/decision-plane model usage is counted against the same project model-call and budget limits as execution models.",
+      detail: "Coverage/decision-plane model usage shares the project resource ledger; enforcement follows the project resource-limit mode.",
       createdAt: new Date().toISOString(),
       runId: run.id,
       schemaVersion: 1 as const,
