@@ -5,21 +5,20 @@ import { redactSecretLikeText } from "../src/security";
 import { accountModelUsage, executionBlockReason, getIntent, getProject, getProjectHumanItems, getRun, getWorldSnapshot, makeId, wakeProject } from "../src/runtime";
 import type { CycleStateStore } from "./cycleCoordinator";
 import {
-  activeMission, appendCoverageSnapshot, appendDecision, completeDiscoveryPass, coverageCategories, coverageCounts,
-  createAutonomyProject, hasMaterialUnresolvedWork, mergeGapCandidates, priorityForGap, selectableGaps, settleMission, startMissionForGap,
-  type AutonomyProjectState, type DecisionTrace, type GapCandidate,
+  activeMission, activeScoutSpecialists, appendCoverageSnapshot, appendDecision, completeDiscoveryPass, coverageCounts,
+  createAutonomyProject, ensureAutonomyRegistries, hasMaterialUnresolvedWork, mergeGapCandidates, mergeSpecialistProposals, mergeSurfaceProposals,
+  priorityForGap, selectableGaps, settleMission, startMissionForGap, surfaceKey,
+  type AutonomyProjectState, type DecisionTrace, type GapCandidate, type ScoutSpecialist, type SpecialistProposal, type SurfaceProposal,
 } from "./autonomyDomain";
 import { autonomyStore, type FileAutonomyStore } from "./autonomyStore";
 import { createDecisionGateway, decisionProviderStatus, type DecisionAnswer, type DecisionBatchResult, type DecisionGateway } from "./decisionGateway";
 import { runCodexStructured, type CodexStructuredResult } from "./codexStructured";
 
-const scoutLenses = [
-  "Product, user value, requirements, UX, accessibility, privacy, hidden user assumptions and edge cases.",
-  "Security, authorization, networking, infrastructure, reliability, operations, deployment, rollback, cost and abuse/failure modes.",
-  "Architecture, application boundaries, data integrity, concurrency, testing, observability, performance, dependencies and maintainability.",
-] as const;
-
-interface ScoutOutput { gaps: GapCandidate[] }
+interface ScoutOutput {
+  gaps: GapCandidate[];
+  newSurfaces: SurfaceProposal[];
+  newSpecialists: SpecialistProposal[];
+}
 
 export interface AutonomySupervisorOptions {
   decisionGateway?: DecisionGateway;
@@ -51,7 +50,23 @@ function discoveryIntervalMs(): number {
 }
 
 function defaultParallelism(): number {
-  return Math.floor(boundedNumber(process.env.SAKASAKA_DISCOVERY_PARALLELISM, 3, 1, scoutLenses.length));
+  return Math.floor(boundedNumber(process.env.SAKASAKA_DISCOVERY_PARALLELISM, 4, 1, 8));
+}
+
+function selectScoutSpecialists(autonomy: AutonomyProjectState, maximum: number): ScoutSpecialist[] {
+  const active = activeScoutSpecialists(autonomy);
+  if (!active.length) return [];
+  const general = active.find((specialist) => /general problem-space/i.test(specialist.name));
+  const others = active
+    .filter((specialist) => specialist !== general)
+    .sort((a, b) => {
+      const aNever = a.lastRunAt ? 1 : 0;
+      const bNever = b.lastRunAt ? 1 : 0;
+      if (aNever !== bNever) return aNever - bNever;
+      if (a.origin !== b.origin) return a.origin === "discovered" ? -1 : 1;
+      return (a.lastRunAt ?? "").localeCompare(b.lastRunAt ?? "") || a.createdAt.localeCompare(b.createdAt);
+    });
+  return [...(general ? [general] : []), ...others].slice(0, Math.max(1, maximum));
 }
 
 function remainingModelCalls(state: AppState, projectId: string): number {
@@ -64,7 +79,7 @@ function remainingModelCalls(state: AppState, projectId: string): number {
 
 function candidateSchema(): Record<string, unknown> {
   const gapProperties = {
-    category: { type: "string", enum: [...coverageCategories] },
+    category: { type: "string", minLength: 1, maxLength: 120 },
     title: { type: "string", minLength: 1, maxLength: 240 },
     summary: { type: "string", minLength: 1, maxLength: 2_000 },
     impact: { type: "number", minimum: 0, maximum: 1 },
@@ -75,7 +90,28 @@ function candidateSchema(): Record<string, unknown> {
     evidenceNeeded: { type: "array", maxItems: 8, items: { type: "string", maxLength: 500 } },
     sourceRefs: { type: "array", maxItems: 16, items: { type: "string", maxLength: 500 } },
   };
-  return { type: "object", additionalProperties: false, required: ["gaps"], properties: { gaps: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["category", "title", "summary", "impact", "uncertainty", "novelty", "urgency", "roleHint", "evidenceNeeded", "sourceRefs"], properties: gapProperties } } } };
+  const surfaceProperties = {
+    name: { type: "string", minLength: 1, maxLength: 120 },
+    description: { type: "string", minLength: 1, maxLength: 2_000 },
+    parentName: { type: "string", maxLength: 120 },
+    rationale: { type: "string", maxLength: 1_000 },
+    risk: { type: "number", minimum: 0, maximum: 1 },
+    sourceRefs: { type: "array", maxItems: 16, items: { type: "string", maxLength: 500 } },
+  };
+  const specialistProperties = {
+    name: { type: "string", minLength: 1, maxLength: 160 },
+    focus: { type: "string", minLength: 1, maxLength: 2_000 },
+    rationale: { type: "string", maxLength: 1_000 },
+    surfaceNames: { type: "array", maxItems: 12, items: { type: "string", maxLength: 120 } },
+  };
+  return {
+    type: "object", additionalProperties: false, required: ["gaps", "newSurfaces", "newSpecialists"],
+    properties: {
+      gaps: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["category", "title", "summary", "impact", "uncertainty", "novelty", "urgency", "roleHint", "evidenceNeeded", "sourceRefs"], properties: gapProperties } },
+      newSurfaces: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["name", "description", "parentName", "rationale", "risk", "sourceRefs"], properties: surfaceProperties } },
+      newSpecialists: { type: "array", maxItems: 8, items: { type: "object", additionalProperties: false, required: ["name", "focus", "rationale", "surfaceNames"], properties: specialistProperties } },
+    },
+  };
 }
 
 function compactState(state: AppState, projectId: string, autonomy: AutonomyProjectState): Record<string, unknown> | undefined {
@@ -93,6 +129,8 @@ function compactState(state: AppState, projectId: string, autonomy: AutonomyProj
     evidence: latestEvidence.map((item) => ({ verdict: item.verdict, kind: item.kind, summary: redactSecretLikeText(item.summary), source: redactSecretLikeText(item.source), createdAt: item.createdAt })),
     autonomy: {
       currentMission,
+      surfaces: (autonomy.surfaces ?? []).filter((surface) => surface.status !== "RETIRED").map((surface) => ({ key: surface.key, name: surface.name, origin: surface.origin, status: surface.status, risk: surface.risk, description: surface.description })).slice(0, 64),
+      specialists: (autonomy.specialists ?? []).filter((specialist) => specialist.status === "ACTIVE").map((specialist) => ({ key: specialist.key, name: specialist.name, origin: specialist.origin, focus: specialist.focus, surfaceRefs: specialist.surfaceRefs, lastRunAt: specialist.lastRunAt })).slice(0, 24),
       knownGaps: autonomy.gaps.filter((gap) => gap.status !== "RESOLVED").sort((a, b) => b.priority - a.priority).slice(0, 24).map((gap) => ({ id: gap.id, category: gap.category, title: gap.title, summary: gap.summary, status: gap.status, priority: gap.priority })),
     },
   };
